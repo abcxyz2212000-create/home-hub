@@ -10,6 +10,8 @@ import { parseCSV, toCSV, decodeCSVBytes, unescapeFormula } from './csv.js';
 import { createZip } from './zip.js';
 import { compressImage } from './image.js';
 import * as push from './push.js';
+import { icon, LEDGER_ICONS } from './icons.js';
+import { timelineChart, barChart, flowChart, urgency } from './charts.js';
 
 const FREE_DB_BYTES = 500 * 1024 * 1024;
 const FREE_STORAGE_BYTES = 1024 * 1024 * 1024;
@@ -253,6 +255,7 @@ async function render() {
   else if (page === 'view' && LEDGERS[a]) renderView(a, b);
   else if (page === 'edit' && LEDGERS[a]) renderEdit(a, b);
   else if (page === 'settings') renderSettings();
+  else if (page === 'flow') renderFlow();
   else if (page === 'member') renderMember(a);
   else location.hash = '#/';
 }
@@ -314,10 +317,19 @@ function renderLogin() {
 
 // ---------------------------------------------------------------- home
 
+const URGENCY_ICON = { past: 'check', crit: 'alert', warn: 'clock', ok: 'clock' };
+// Short ledger names for the small dashboard tiles.
+const TILE_LABELS = { accounts: '口座', cards: 'カード', contracts: '契約・固定費', items: '書類・家電', memberships: '会員情報' };
+
+function ledgerIcon(ledger, extra = '') {
+  return h('span', { class: `icbox lg-${ledger} ${extra}`.trim() }, icon(LEDGER_ICONS[ledger]));
+}
+
+// Status is shown by color + icon + text (never by color alone).
 function eventBadge(e) {
-  if (e.daysLeft < 0) return h('span', { class: 'badge badge-past' }, `${-e.daysLeft}日前に過ぎました`);
-  if (e.daysLeft === 0) return h('span', { class: 'badge badge-soon' }, '今日');
-  return h('span', { class: `badge ${e.daysLeft <= 7 ? 'badge-soon' : ''}` }, `あと${e.daysLeft}日`);
+  const u = urgency(e.daysLeft);
+  const text = e.daysLeft < 0 ? `${-e.daysLeft}日前に過ぎました` : e.daysLeft === 0 ? '今日' : `あと${e.daysLeft}日`;
+  return h('span', { class: `badge badge-${u}` }, icon(URGENCY_ICON[u]), text);
 }
 
 function eventList(events) {
@@ -325,8 +337,35 @@ function eventList(events) {
   return h('ul', { class: 'events' }, events.map((e) => h('li', {},
     eventBadge(e),
     h('div', {},
-      h('div', {}, h('a', { href: `#/view/${e.ledger}/${e.id}` }, e.name)),
+      h('div', { class: 'event-name' }, h('a', { href: `#/view/${e.ledger}/${e.id}` }, e.name)),
       h('div', { class: 'muted small' }, `${e.label}・${e.date}`)))));
+}
+
+// Big "days left" panel on a detail page, with an elapsed-period gauge when the start date is known.
+function deadlineHero(e, r) {
+  const u = urgency(e.daysLeft);
+  const start = e.type === 'warranty' ? r.purchase_date : e.type === 'contract_renewal' ? r.contract_date : null;
+  const startN = start ? toDayNumber(start) : null;
+  const endN = toDayNumber(e.date);
+  const todayN = toDayNumber(todayJST());
+  let gauge = null;
+  if (startN !== null && endN > startN) {
+    const ratio = Math.min(Math.max((todayN - startN) / (endN - startN), 0), 1);
+    const fill = h('div', { class: `gauge-fill gauge-${u}` });
+    fill.style.width = `${Math.round(ratio * 100)}%`; // CSSOM, allowed by the CSP
+    gauge = [
+      h('div', { class: 'gauge', role: 'meter', 'aria-valuemin': 0, 'aria-valuemax': 100, 'aria-valuenow': Math.round(ratio * 100), 'aria-label': `期間の経過 ${Math.round(ratio * 100)}%` }, fill),
+      h('div', { class: 'gauge-scale muted small' }, h('span', {}, start), h('span', {}, `経過 ${Math.round(ratio * 100)}%`), h('span', {}, e.date)),
+    ];
+  }
+  return h('section', { class: `card deadline deadline-${u}` },
+    h('h2', { class: 'with-icon' }, icon('clock'), e.label),
+    h('div', { class: 'deadline-main' },
+      e.daysLeft < 0
+        ? h('span', { class: 'deadline-days' }, '過ぎました')
+        : [h('span', { class: 'deadline-days num' }, e.daysLeft === 0 ? '今日' : String(e.daysLeft)), e.daysLeft === 0 ? null : h('span', { class: 'deadline-unit' }, '日')],
+      h('span', { class: 'deadline-date' }, eventBadge(e), h('span', { class: 'muted small' }, `${e.date}まで`))),
+    gauge);
 }
 
 function bankShortcuts() {
@@ -350,51 +389,190 @@ function backupReminder() {
     h('a', { href: '#/settings', class: 'button' }, '設定画面でバックアップする'));
 }
 
+function weekdayJa(iso) {
+  return '日月火水木金土'[new Date(`${iso}T00:00:00Z`).getUTCDay()];
+}
+
+function kpi(label, value, unit, cls = '') {
+  return h('div', { class: `kpi ${cls}`.trim() }, h('div', { class: 'kpi-label' }, label), h('div', { class: 'kpi-value num' }, value, h('small', {}, unit)));
+}
+
+function sectionHead(iconName, title, link) {
+  return h('h2', { class: 'with-icon' }, icon(iconName), title,
+    link ? h('a', { class: 'more', href: link.href }, link.text, icon('chevron', 'ic ic-sm')) : null);
+}
+
 function renderHome() {
   const today = todayJST();
-  const events = upcomingEvents(collectEvents(state.data, today));
+  const all = collectEvents(state.data, today);
+  const events = upcomingEvents(all);
+  const soon = all.filter((e) => e.daysLeft >= 0 && e.daysLeft <= 30).length;
   const active = state.data.contracts.filter((c) => c.status !== 'closed' && monthlyCost(c) > 0);
   const byCategory = new Map();
   for (const c of active) byCategory.set(c.category || '未分類', (byCategory.get(c.category || '未分類') || 0) + monthlyCost(c));
   const shortcuts = [...(state.settings.shortcuts || DEFAULT_SHORTCUTS), ...bankShortcuts()];
+  const records = LEDGER_ORDER.reduce((n, k) => n + state.data[k].filter((r) => r.status !== 'closed').length, 0);
+  const flow = flowModel();
   const pushHint = h('div');
+  const [y, m, d] = today.split('-').map(Number);
 
   setView('ホーム',
+    h('div', { class: 'dash-head' },
+      h('div', { class: 'dash-date' }, `${y}年${m}月${d}日（${weekdayJa(today)}）`),
+      h('h1', {}, `こんにちは、${me().name}さん`)),
     backupReminder(),
     pushHint,
-    h('section', { class: 'card' }, h('h2', {}, '期限が近い予定'), eventList(events)),
-    h('section', { class: 'card' },
-      h('h2', {}, '固定費の月額合計'),
-      h('p', { class: 'hero' }, yen(monthlyTotal(state.data.contracts))),
-      active.length === 0
-        ? h('p', { class: 'muted' }, '金額が入力された契約はまだありません。')
-        : h('table', { class: 'table' },
-          h('thead', {}, h('tr', {}, h('th', {}, '種類'), h('th', { class: 'num' }, '月額'))),
-          h('tbody', {}, [...byCategory.entries()].sort((x, y) => y[1] - x[1]).map(([k, v]) => h('tr', {}, h('td', {}, k), h('td', { class: 'num' }, yen(v)))))),
-      h('p', { class: 'muted small' }, '年払いの契約は12で割った月額で計算しています。解約済みは含みません。')),
-    h('section', { class: 'card' },
-      h('h2', {}, 'ショートカット'),
-      h('div', { class: 'shortcuts' }, shortcuts.map((s) => extLink(s.url, s.label))),
-      h('p', { class: 'muted small' }, '銀行のリンクは口座台帳の「関連リンク」から表示します。その他は設定画面で変更できます。')));
+    h('div', { class: 'kpis' },
+      kpi('固定費 / 月', yen(monthlyTotal(state.data.contracts)).replace('円', ''), '円', 'kpi-main'),
+      kpi('期限 30日以内', String(soon), '件', soon > 0 ? 'kpi-alert' : ''),
+      kpi('登録データ', String(records), '件')),
+    h('div', { class: 'dash-grid' },
+      h('section', { class: 'card' },
+        sectionHead('clock', '期限が近い予定'),
+        events.some((e) => e.daysLeft >= 0) ? timelineChart(events) : null,
+        eventList(events)),
+      h('section', { class: 'card' },
+        sectionHead('yen', '固定費の内訳（月額）', { href: '#/list/contracts', text: '契約へ' }),
+        byCategory.size === 0
+          ? h('p', { class: 'muted' }, '金額が入力された契約はまだありません。')
+          : barChart([...byCategory.entries()], '固定費の種類別の月額'),
+        h('p', { class: 'muted small' }, '年払いの契約は12で割った月額で計算しています。解約済みは含みません。')),
+      h('section', { class: 'card' },
+        sectionHead('flow', 'お金の流れ', { href: '#/flow', text: '拡大' }),
+        flow.columns[2].length === 0
+          ? h('p', { class: 'muted' }, '支払方法と金額が入った契約を登録すると、口座からの流れを表示します。')
+          : [flowChart(flow.columns, flow.links, { compact: true, ariaLabel: '口座からカード・契約へのお金の流れ（月額）' }), flowLegend(flow)]),
+      h('section', { class: 'card' },
+        sectionHead('grid', '台帳'),
+        h('div', { class: 'tiles' }, LEDGER_ORDER.map((k) => h('a', { class: 'tile', href: `#/list/${k}` },
+          ledgerIcon(k),
+          h('div', { class: 'tile-count num' }, String(state.data[k].filter((r) => r.status !== 'closed').length), h('small', {}, ' 件')),
+          h('div', { class: 'tile-label' }, TILE_LABELS[k]))))),
+      h('section', { class: 'card' },
+        sectionHead('link', 'ショートカット'),
+        h('div', { class: 'chips' }, shortcuts.map((s) => {
+          const a = extLink(s.url, s.label);
+          a.classList.add('chip');
+          a.prepend(icon('link'));
+          return a;
+        })),
+        h('p', { class: 'muted small' }, '銀行のリンクは口座台帳の「関連リンク」から表示します。その他は設定画面で変更できます。'))));
 
   push.currentSubscription().then((sub) => {
     if (!sub && push.pushSupported()) {
       pushHint.replaceChildren(h('section', { class: 'card notice' },
-        h('p', {}, 'この端末ではまだ通知を受け取る設定をしていません。'),
+        h('p', { class: 'with-icon' }, icon('bell'), 'この端末ではまだ通知を受け取る設定をしていません。'),
         h('a', { href: '#/settings', class: 'button' }, '通知を設定する')));
     }
   }).catch((e) => console.error(`push status check failed: ${e.message}`));
 }
 
+// ---------------------------------------------------------------- money flow
+
+const MAX_FLOW_ACCOUNTS = 8; // categorical palette slots; the rest is folded into "その他"
+
+// accounts -> cards -> contracts, monthly amounts of active contracts
+function flowModel() {
+  const contracts = state.data.contracts.filter((c) => c.status !== 'closed' && monthlyCost(c) > 0);
+  const cardOf = (id) => (id ? find('cards', id) : null);
+  const source = (c) => {
+    const card = cardOf(c.pay_card_id);
+    if (card) return card.debit_account_id && find('accounts', card.debit_account_id) ? card.debit_account_id : 'none';
+    return c.pay_account_id && find('accounts', c.pay_account_id) ? c.pay_account_id : 'none';
+  };
+  const totals = new Map();
+  for (const c of contracts) totals.set(source(c), (totals.get(source(c)) || 0) + monthlyCost(c));
+  const ranked = [...totals.entries()].filter(([k]) => k !== 'none').sort((a, b) => b[1] - a[1]);
+  const kept = new Set(ranked.slice(0, ranked.length > MAX_FLOW_ACCOUNTS ? MAX_FLOW_ACCOUNTS - 1 : MAX_FLOW_ACCOUNTS).map(([k]) => k));
+  const group = (acc) => (acc === 'none' ? 'none' : kept.has(acc) ? acc : 'other');
+  const color = new Map([...kept].map((k, i) => [k, `var(--series-${i + 1})`]));
+  color.set('other', 'var(--series-other)');
+  color.set('none', 'var(--series-none)');
+
+  const accNodes = new Map();
+  const cardNodes = new Map();
+  const leaves = [];
+  const links = new Map();
+  const addLink = (from, to, value, col) => {
+    const key = `${from}>${to}`;
+    const l = links.get(key) || { from, to, value: 0, color: col };
+    l.value += value;
+    links.set(key, l);
+  };
+  for (const c of contracts) {
+    const g = group(source(c));
+    const v = monthlyCost(c);
+    const acc = accNodes.get(g) || {
+      id: `a:${g}`,
+      label: g === 'none' ? '口座が未設定' : g === 'other' ? 'その他の口座' : find('accounts', g).name,
+      value: 0,
+      color: color.get(g),
+      href: g === 'none' || g === 'other' ? null : `#/view/accounts/${g}`,
+    };
+    acc.value += v;
+    accNodes.set(g, acc);
+    const card = cardOf(c.pay_card_id);
+    leaves.push({ id: `k:${c.id}`, label: c.name, value: v, color: color.get(g), href: `#/view/contracts/${c.id}`, sub: c.cycle === 'yearly' ? '※' : '', group: g, via: card ? card.id : '' });
+    if (card) {
+      const cn = cardNodes.get(card.id) || { id: `c:${card.id}`, label: card.name, value: 0, color: color.get(g), href: `#/view/cards/${card.id}`, group: g };
+      cn.value += v;
+      cardNodes.set(card.id, cn);
+      addLink(acc.id, cn.id, v, color.get(g));
+      addLink(cn.id, `k:${c.id}`, v, color.get(g));
+    } else {
+      addLink(acc.id, `k:${c.id}`, v, color.get(g));
+    }
+  }
+  const order = ['none', 'other'];
+  const groupRank = (g) => (order.includes(g) ? 100 + order.indexOf(g) : [...kept].indexOf(g));
+  const left = [...accNodes.entries()].sort((a, b) => groupRank(a[0]) - groupRank(b[0])).map(([, n]) => n);
+  const mid = [...cardNodes.values()].sort((a, b) => groupRank(a.group) - groupRank(b.group) || b.value - a.value);
+  const right = leaves.sort((a, b) => groupRank(a.group) - groupRank(b.group) || (a.via ? 0 : 1) - (b.via ? 0 : 1)
+    || a.via.localeCompare(b.via) || b.value - a.value);
+  return { columns: [left, mid, right], links: [...links.values()] };
+}
+
+function flowLegend(flow) {
+  return h('div', { class: 'legend' }, flow.columns[0].map((n) => {
+    const sw = h('span', { class: 'swatch' });
+    sw.style.background = n.color;
+    return h('span', {}, sw, n.label);
+  }));
+}
+
+function renderFlow() {
+  const flow = flowModel();
+  const rows = flow.columns[0];
+  setView('お金の流れ',
+    h('h1', { class: 'with-icon' }, icon('flow'), 'お金の流れ'),
+    h('section', { class: 'card' },
+      h('h2', {}, '口座 → カード → 契約（月額）'),
+      rows.length === 0
+        ? h('p', { class: 'muted' }, '支払方法と金額が入った契約を登録すると、口座からの流れを表示します。')
+        : [flowChart(flow.columns, flow.links, { ariaLabel: '口座からカード・契約へのお金の流れ（月額）' }), flowLegend(flow)],
+      h('p', { class: 'muted small' }, '帯の太さは月額です。※ 年払いは12で割った月額。カードの利用額（変動分）と年会費は含みません。名前を押すと詳細を開きます。')),
+    rows.length === 0 ? null : h('section', { class: 'card' },
+      h('h2', { class: 'with-icon' }, icon('bank'), '口座ごとの引き落とし（月額）'),
+      h('table', { class: 'table' },
+        h('thead', {}, h('tr', {}, h('th', {}, '口座'), h('th', { class: 'num' }, '月額'))),
+        h('tbody', {}, rows.map((n) => {
+          const sw = h('span', { class: 'swatch' });
+          sw.style.background = n.color;
+          return h('tr', {}, h('td', {}, sw, n.href ? h('a', { href: n.href }, n.label) : n.label), h('td', { class: 'num' }, yen(n.value)));
+        })))));
+}
+
 // ---------------------------------------------------------------- ledgers / list
 
 function renderLedgers() {
-  setView('台帳', h('h1', {}, '台帳'), h('div', { class: 'ledger-grid' }, LEDGER_ORDER.map((k) => {
+  setView('台帳', h('h1', {}, '台帳'), h('div', { class: 'tiles tiles-wide' }, LEDGER_ORDER.map((k) => {
     const rows = state.data[k];
     const active = rows.filter((r) => r.status !== 'closed').length;
-    return h('a', { class: 'card ledger-tile', href: `#/list/${k}` },
-      h('strong', {}, LEDGERS[k].label),
-      h('span', { class: 'muted small' }, `利用中 ${active}件 / 全${rows.length}件`));
+    return h('a', { class: 'tile', href: `#/list/${k}` },
+      ledgerIcon(k),
+      h('div', { class: 'tile-count num' }, String(active), h('small', {}, ' 件')),
+      h('div', { class: 'tile-label' }, LEDGERS[k].label),
+      h('div', { class: 'muted small' }, `全${rows.length}件（解約済みを含む）`));
   })));
 }
 
@@ -407,26 +585,61 @@ function summaryLine(ledger, r) {
   return LEDGERS[ledger].summary(r).filter(Boolean).join('・');
 }
 
+const BRAND_CLASS = { VISA: 'visa', Mastercard: 'master', JCB: 'jcb', 'American Express': 'amex', 'Diners Club': 'diners' };
+
+// A credit card drawn as a card face (brand color, last 4 digits, expiry).
+function cardFace(r) {
+  const expiry = collectEvents({ cards: [r] }, todayJST()).find((e) => e.type === 'card_expiry');
+  const account = r.debit_account_id ? find('accounts', r.debit_account_id) : null;
+  const flag = r.status === 'closed'
+    ? h('span', { class: 'cc-flag' }, '解約済み')
+    : expiry && expiry.daysLeft >= 0 && expiry.daysLeft <= 30
+      ? h('span', { class: 'cc-flag' }, icon('alert', 'ic ic-sm'), `期限まで${expiry.daysLeft}日`)
+      : null;
+  return h('a', { class: 'cc-wrap', href: `#/view/cards/${r.id}` },
+    h('div', { class: `cc cc-${BRAND_CLASS[r.brand] || 'other'}${r.status === 'closed' ? ' cc-closed' : ''}` },
+      h('div', { class: 'cc-row' }, h('span', { class: 'cc-name' }, r.name), h('span', { class: 'cc-brand' }, r.brand || '')),
+      h('div', { class: 'cc-chip' }),
+      h('div', { class: 'cc-digits num' }, `●●●● ●●●● ●●●● ${r.last4 || '●●●●'}`),
+      h('div', { class: 'cc-row cc-meta' },
+        h('span', {}, r.expiry_ym ? `有効期限 ${r.expiry_ym.slice(5)}/${r.expiry_ym.slice(2, 4)}` : '有効期限 未入力'),
+        flag)),
+    h('div', { class: 'cc-info' },
+      h('span', { class: 'with-icon' }, icon('bank', 'ic ic-sm'), `引き落とし: ${account ? account.name : '未設定'}`),
+      h('span', {}, r.annual_fee ? `年会費 ${yen(r.annual_fee)}${r.annual_fee_month ? `（${r.annual_fee_month}月）` : ''}` : r.annual_fee === 0 ? '年会費 無料' : '')));
+}
+
 function renderList(ledger) {
   const def = LEDGERS[ledger];
   const q = h('input', { type: 'search', placeholder: '名前・メモ・タグで検索', 'aria-label': '検索' });
   const status = h('select', { 'aria-label': '状態で絞り込み' },
     h('option', { value: 'active' }, '利用中のみ'), h('option', { value: 'all' }, 'すべて'), h('option', { value: 'closed' }, '解約済みのみ'));
-  const list = h('div', { class: 'list' });
+  const list = h('div', { class: ledger === 'cards' ? 'cc-list' : 'list' });
   const update = () => {
     const words = q.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
     const rows = state.data[ledger].filter((r) => (status.value === 'all' || (status.value === 'closed') === (r.status === 'closed'))
       && words.every((w) => searchText(r).includes(w)));
-    list.replaceChildren(...(rows.length === 0 ? [h('p', { class: 'muted' }, '該当するデータはありません。')] : rows.map((r) => h('a', { class: 'list-item', href: `#/view/${ledger}/${r.id}` },
-      h('div', { class: 'list-title' }, r.name, r.status === 'closed' ? h('span', { class: 'badge badge-past' }, '解約済み') : null),
-      h('div', { class: 'muted small' }, summaryLine(ledger, r)),
-      r.tags && r.tags.length ? h('div', { class: 'tags' }, r.tags.map((t) => h('span', { class: 'tag' }, t))) : null))));
+    if (rows.length === 0) {
+      list.replaceChildren(h('p', { class: 'muted' }, '該当するデータはありません。'));
+      return;
+    }
+    if (ledger === 'cards') {
+      list.replaceChildren(...rows.map(cardFace));
+      return;
+    }
+    list.replaceChildren(...rows.map((r) => h('a', { class: 'list-item', href: `#/view/${ledger}/${r.id}` },
+      ledgerIcon(ledger, 'icbox-sm'),
+      h('div', { class: 'list-body' },
+        h('div', { class: 'list-title' }, r.name, r.status === 'closed' ? h('span', { class: 'badge badge-past' }, '解約済み') : null),
+        h('div', { class: 'muted small' }, summaryLine(ledger, r)),
+        r.tags && r.tags.length ? h('div', { class: 'tags' }, r.tags.map((t) => h('span', { class: 'tag' }, t))) : null),
+      icon('chevron', 'ic ic-sm list-chevron'))));
   };
   q.addEventListener('input', update);
   status.addEventListener('change', update);
   update();
   setView(def.label,
-    h('div', { class: 'title-row' }, h('h1', {}, def.label), h('a', { class: 'button primary', href: `#/edit/${ledger}/new` }, '＋ 追加')),
+    h('div', { class: 'title-row' }, h('h1', { class: 'with-icon' }, ledgerIcon(ledger), def.label), h('a', { class: 'button primary', href: `#/edit/${ledger}/new` }, '＋ 追加')),
     h('div', { class: 'filters' }, q, status),
     list);
 }
@@ -548,12 +761,13 @@ function renderView(ledger, id) {
     return [`通知: ${EVENT_TYPES[type].label}`, text];
   });
   const events = collectEvents({ [ledger]: [r] }, todayJST()).filter((e) => e.daysLeft >= -30);
+  const heroes = events.map((e) => deadlineHero(e, r));
   const delBtn = h('button', { type: 'button', class: 'danger', onclick: (ev) => busy(ev.currentTarget, () => deleteRecord(ledger, r)) }, '削除');
 
   setView(r.name,
     h('p', {}, h('a', { href: `#/list/${ledger}` }, `← ${def.label}の一覧`)),
-    h('div', { class: 'title-row' }, h('h1', {}, r.name), h('a', { class: 'button primary', href: `#/edit/${ledger}/${r.id}` }, '編集')),
-    events.length ? h('section', { class: 'card' }, h('h2', {}, '期限'), eventList(events)) : null,
+    h('div', { class: 'title-row' }, h('h1', { class: 'with-icon' }, ledgerIcon(ledger), r.name), h('a', { class: 'button primary', href: `#/edit/${ledger}/${r.id}` }, '編集')),
+    heroes.length ? h('div', { class: 'hero-grid' }, heroes) : null,
     h('section', { class: 'card' }, h('dl', { class: 'fields' }, [...rows, ...notifyRows].map(([k, v]) => [h('dt', {}, k), h('dd', {}, v)]))),
     def.photos ? photoSection(r) : null,
     relations(ledger, r),

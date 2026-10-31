@@ -131,7 +131,12 @@ try {
 
   step('home: events, monthly total, shortcuts');
   await page.goto(appUrl);
-  await page.getByText('7,000円').waitFor();
+  await page.getByText('7,000円', { exact: true }).waitFor();
+  assert.ok(await page.getByRole('img', { name: /今日から60日先までの期限/ }).isVisible(), 'deadline timeline');
+  assert.ok(await page.getByRole('img', { name: '固定費の種類別の月額' }).isVisible(), 'fixed cost bars');
+  assert.ok(await page.getByRole('img', { name: /お金の流れ/ }).isVisible(), 'money flow (compact)');
+  assert.match(await page.locator('.dash-head').innerText(), /こんにちは、共通（管理者）さん/);
+  assert.match(await page.locator('.kpis').innerText(), /固定費 \/ 月\n7,000円[\s\S]*期限 30日以内\n\d+件/);
   const home = await page.locator('#view').innerText();
   assert.match(home, /あと7日[\s\S]*火災保険/);
   assert.match(home, /メインカード\nカード有効期限/);
@@ -212,6 +217,26 @@ try {
   await page.getByText(/管理者が1人もいなくなるため/).waitFor();
   assert.equal(mock.db.members.find((m) => m.id === 'm-admin').role, 'admin');
   await page.getByRole('link', { name: 'キャンセル' }).click();
+
+  step('money flow page: accounts -> cards -> contracts with links to the records');
+  await page.getByRole('link', { name: 'お金の流れ' }).click();
+  await page.getByRole('heading', { name: '口座 → カード → 契約（月額）' }).waitFor();
+  const flowSvg = page.getByRole('img', { name: /口座からカード・契約へのお金の流れ/ });
+  const flowText = await flowSvg.evaluate((el) => el.textContent);
+  for (const t of ['生活費口座', '月 7,000円', 'メインカード', '火災保険', '2,000円※', 'インターネット', '5,000円']) assert.ok(flowText.includes(t), `flow shows ${t}`);
+  assert.match(await page.locator('table').innerText(), /生活費口座\s+7,000円/);
+  await flowSvg.locator('a', { hasText: 'メインカード' }).click();
+  await page.getByRole('heading', { name: 'メインカード' }).waitFor();
+
+  step('card list shows card faces');
+  await page.goto(`${appUrl}#/list/cards`);
+  await page.locator('.cc').first().waitFor();
+  const face = await page.locator('.cc-wrap').first().innerText();
+  assert.match(face, /メインカード/);
+  assert.match(face, /●●●● ●●●● ●●●● ●●●●|●●●● ●●●● ●●●● \d{4}/);
+  assert.match(face, /引き落とし: 生活費口座/);
+  assert.match(face, /年会費 1,100円（12月）/);
+  assert.match(face, /期限まで\d+日/, 'expiring card is flagged');
 
   step('item with photo upload');
   await page.goto(`${appUrl}#/edit/items/new`);
