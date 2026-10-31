@@ -51,6 +51,21 @@ do $$ begin
   exception when insufficient_privilege then null; end;
 end $$;
 
+-- the daily notification job (service_role) can do everything scripts/notify.mjs needs
+reset role;
+set role service_role;
+do $$ begin
+  perform * from public.settings;
+  perform * from public.push_subscriptions;
+  perform * from public.cards;
+  perform * from public.contracts;
+  perform * from public.items;
+  perform * from public.notification_log;
+  insert into public.notification_log (key) values ('test:key');
+  delete from public.notification_log where key = 'test:key';
+  delete from public.push_subscriptions where id = gen_random_uuid();
+end $$;
+
 -- anonymous users get nothing
 reset role;
 set role anon;
