@@ -12,6 +12,9 @@ do $$ begin
   if (select count(*) from public.chores c join public.members m on m.id = c.assignee_id where m.nickname = 'しん') <> 1 then
     raise exception 'chores not usable after the upgrade';
   end if;
+  if not exists (select 1 from information_schema.columns where table_name = 'cards' and column_name = 'kind') then
+    raise exception 'cards.kind missing after the upgrade';
+  end if;
   if not exists (select 1 from pg_policies where tablename = 'chores' and policyname = 'member_all') then
     raise exception 'chores has no access policy';
   end if;

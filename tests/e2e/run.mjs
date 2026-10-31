@@ -90,6 +90,8 @@ try {
   step('card linked to the account');
   await page.goto(`${appUrl}#/edit/cards/new`);
   await fill('カード名 *', 'メインカード');
+  await page.getByLabel('種別', { exact: true }).selectOption('クレジット');
+  await page.getByLabel('ブランド', { exact: true }).selectOption('JCB');
   await page.getByLabel('有効期限（年月）', { exact: true }).fill(todayJST().slice(0, 7));
   await page.getByLabel('引き落とし口座', { exact: true }).selectOption({ label: '生活費口座' });
   await fill('年会費（円）', '1100');
@@ -98,6 +100,7 @@ try {
   await save();
   await page.getByRole('heading', { name: 'メインカード' }).waitFor();
   assert.deepEqual(mock.db.cards[0].notify_days, { card_expiry: [60, 30] });
+  assert.equal(mock.db.cards[0].kind, 'クレジット');
 
   step('contracts (card and account payment)');
   const in7 = fromDayNumber(toDayNumber(todayJST()) + 7);
@@ -233,6 +236,7 @@ try {
   await page.locator('.cc').first().waitFor();
   const face = await page.locator('.cc-wrap').first().innerText();
   assert.match(face, /メインカード/);
+  assert.match(face, /クレジット · JCB/);
   assert.match(face, /●●●● ●●●● ●●●● ●●●●|●●●● ●●●● ●●●● \d{4}/);
   assert.match(face, /引き落とし: 生活費口座/);
   assert.match(face, /年会費 1,100円（12月）/);
@@ -323,17 +327,18 @@ try {
   assert.match(exported, /^﻿ID,名称,金融機関名/);
   assert.match(exported, /生活費口座,みどり銀行/);
   const csv = (text) => ({ name: 'cards.csv', mimeType: 'text/csv', buffer: Buffer.from(`﻿${text}`) });
-  await page.getByLabel('取り込む台帳', { exact: true }).selectOption({ label: 'クレジットカード' });
+  await page.getByLabel('取り込む台帳', { exact: true }).selectOption({ label: 'カード' });
   await page.getByLabel(/CSVファイル/).setInputFiles(csv('カード名,引き落とし口座,有効期限（年月）\r\nサブカード,存在しない口座,2027/5/1\r\n'));
   await page.getByRole('button', { name: '取り込む' }).click();
   await page.getByText('エラーがあるため取り込みませんでした。').waitFor();
   await page.getByText(/2行目: 引き落とし口座「存在しない口座」/).waitFor();
-  await page.getByLabel(/CSVファイル/).setInputFiles(csv('カード名,引き落とし口座,有効期限（年月）,家族カードあり\r\nサブカード,生活費口座,2027/5/1,はい\r\n'));
+  await page.getByLabel(/CSVファイル/).setInputFiles(csv('カード名,種別,引き落とし口座,有効期限（年月）,家族カードあり\r\nサブカード,デビット,生活費口座,2027/5/1,はい\r\n'));
   await page.getByRole('button', { name: '取り込む' }).click();
   await page.getByText('取り込みました（追加 1件、更新 0件）。').waitFor();
   const sub = mock.db.cards.find((c) => c.name === 'サブカード');
   assert.equal(sub.expiry_ym, '2027-05');
   assert.equal(sub.family_card, true);
+  assert.equal(sub.kind, 'デビット');
   assert.equal(sub.debit_account_id, mock.db.accounts[0].id);
 
   step('CSV: holder must be in the user master; codes are padded');
@@ -372,7 +377,7 @@ try {
   const zipPath = join(OUT, 'backup.zip');
   writeFileSync(zipPath, readFileSync(await zipDl.path()));
   const listing = execFileSync('python3', ['-I', '-c', 'import sys,zipfile; z=zipfile.ZipFile(sys.argv[1]); assert z.testzip() is None; print("\\n".join(z.namelist()))', zipPath]).toString();
-  for (const name of ['口座.csv', 'クレジットカード.csv', '契約・固定費.csv', '書類・家電.csv', 'ポイントカード・会員情報.csv', '写真一覧.csv']) assert.ok(listing.includes(name), name);
+  for (const name of ['口座.csv', 'カード.csv', '契約・固定費.csv', '書類・家電.csv', 'ポイントカード・会員情報.csv', '写真一覧.csv']) assert.ok(listing.includes(name), name);
   assert.match(listing, /photos\/.+\.jpg/);
   const accountsCsv = execFileSync('python3', ['-I', '-c', 'import sys,zipfile; print(zipfile.ZipFile(sys.argv[1]).read("口座.csv").decode("utf-8-sig"))', zipPath]).toString();
   assert.match(accountsCsv, /7654321/, 'backup keeps the full account number');

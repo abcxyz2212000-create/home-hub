@@ -156,6 +156,15 @@ do $$ begin
   exception when insufficient_privilege then null; end;
 end $$;
 
+-- card type: only the listed values
+select pg_temp.login('member@example.com');
+insert into public.cards (name, kind, brand, last4) values ('テストデビット', 'デビット', 'VISA', '0001');
+do $$ begin
+  begin insert into public.cards (name, kind) values ('x', 'ポイント'); raise exception 'bad card kind accepted';
+  exception when check_violation then null; end;
+end $$;
+delete from public.cards where name = 'テストデビット';
+
 -- nicknames (unique) are shown as the actor; chores follow the same access rules and history
 select pg_temp.login('owner@example.com');
 update public.members set nickname = 'はる' where name = '佐藤 春子';

@@ -116,6 +116,7 @@ create table if not exists public.cards (
   memo text check (char_length(memo) <= 5000),
   tags text[] not null default '{}',
   notify_days jsonb not null default '{}'::jsonb check (jsonb_typeof(notify_days) = 'object'),
+  kind text check (kind in ('クレジット', 'デビット', 'キャッシュ', 'プリペイド', 'その他')),
   brand text check (char_length(brand) <= 50),
   last4 text check (last4 ~ '^[0-9]{4}$'),
   expiry_ym text check (expiry_ym ~ '^[0-9]{4}-(0[1-9]|1[0-2])$'),
@@ -278,6 +279,8 @@ alter table public.push_subscriptions add column if not exists member_id uuid re
 -- Nickname used on screens (holder fields keep the legal name). Added 2026-11-01.
 alter table public.members add column if not exists nickname text check (char_length(nickname) between 1 and 30);
 create unique index if not exists members_nickname_key on public.members (nickname) where nickname is not null;
+-- Card type (credit / debit / ...). Added 2026-11-01 when the ledger was renamed to "カード".
+alter table public.cards add column if not exists kind text check (kind in ('クレジット', 'デビット', 'キャッシュ', 'プリペイド', 'その他'));
 
 do $$
 declare
