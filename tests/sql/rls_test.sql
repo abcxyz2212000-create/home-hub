@@ -1,5 +1,13 @@
 -- RLS checks. Every failed check raises an exception.
 \set ON_ERROR_STOP on
+-- data created before the upgrade survived it, and the new columns exist
+do $$ begin
+  if (select count(*) from public.accounts where name = 'upgrade-survivor' and last4 = '9999' and bank_code is null and branch_code is null) <> 1 then
+    raise exception 'row lost or new columns missing after upgrade';
+  end if;
+end $$;
+delete from public.accounts where name = 'upgrade-survivor';
+
 insert into auth.users values ('11111111-1111-1111-1111-111111111111', 'owner@example.com'),
                               ('22222222-2222-2222-2222-222222222222', 'other@example.com');
 insert into public.app_owner (user_id)
@@ -29,6 +37,17 @@ do $$ begin
     select 'x', c.id, a.id from public.cards c, public.accounts a; raise exception 'two payment methods accepted';
   exception when check_violation then null; end;
 end $$;
+
+do $$ begin
+  insert into public.accounts (name, bank_code, branch_code) values ('コード付き口座', '0036', '225');
+  begin insert into public.accounts (name, bank_code) values ('x', '36'); raise exception 'short bank_code accepted';
+  exception when check_violation then null; end;
+  begin insert into public.accounts (name, branch_code) values ('x', '2250'); raise exception 'long branch_code accepted';
+  exception when check_violation then null; end;
+  begin insert into public.accounts (name, bank_code) values ('x', '00a6'); raise exception 'non-digit bank_code accepted';
+  exception when check_violation then null; end;
+end $$;
+delete from public.accounts where name = 'コード付き口座';
 
 -- another logged-in user sees nothing and cannot write
 select set_config('request.jwt.claim.sub', '22222222-2222-2222-2222-222222222222', false);

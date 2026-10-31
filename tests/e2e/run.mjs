@@ -125,6 +125,42 @@ try {
   assert.ok(await page.getByRole('link', { name: 'みどり銀行' }).isVisible());
   await page.screenshot({ path: join(OUT, 'home.png'), fullPage: true });
 
+  step('family members, holder drop-down, bank code and branch number');
+  await page.goto(`${appUrl}#/edit/accounts/new`);
+  assert.equal(await page.getByLabel('名義人', { exact: true }).evaluate((el) => el.tagName), 'INPUT', 'free text until members exist');
+  await page.goto(`${appUrl}#/settings`);
+  await page.getByLabel('家族の名前（1行に1人）', { exact: true }).fill('山田 太郎\n\n山田 花子\n山田 太郎');
+  await page.getByRole('button', { name: '家族の名前を保存' }).click();
+  await page.getByText('家族の名前を保存しました。').waitFor();
+  assert.deepEqual(mock.db.settings.find((s) => s.key === 'members').value, ['山田 太郎', '山田 花子']);
+  await page.goto(`${appUrl}#/edit/accounts/new`);
+  assert.equal(await page.getByLabel('名義人', { exact: true }).evaluate((el) => el.tagName), 'SELECT');
+  assert.deepEqual(await page.getByLabel('名義人', { exact: true }).locator('option').allInnerTexts(), ['（未設定）', '山田 太郎', '山田 花子']);
+  await fill('名称 *', '給与口座');
+  await page.getByLabel('名義人', { exact: true }).selectOption('山田 花子');
+  await fill('金融機関コード', '12a4'); // the input itself stops at 4 characters; non-digits are caught on save
+  await fill('支店番号', '25');
+  await save();
+  await page.getByText('金融機関コードは数字4桁で入力してください。').waitFor();
+  await fill('金融機関コード', '36');
+  await save();
+  await page.getByRole('heading', { name: '給与口座' }).waitFor();
+  const salary = mock.db.accounts.find((a) => a.name === '給与口座');
+  assert.equal(salary.bank_code, '0036');
+  assert.equal(salary.branch_code, '025');
+  assert.equal(salary.holder, '山田 花子');
+  assert.match(await page.locator('#view').innerText(), /金融機関コード\n0036/);
+  assert.equal(salary.last4 ?? null, null, 'no full account number stored');
+
+  step('holder outside the list stays visible and editable');
+  mock.db.accounts.find((a) => a.name === '生活費口座').holder = '旧姓 太郎';
+  await page.goto(`${appUrl}#/edit/accounts/${mock.db.accounts.find((a) => a.name === '生活費口座').id}`);
+  await page.reload(); // the app keeps loaded data in memory; reload to read the changed row
+  await page.getByLabel('名義人', { exact: true }).waitFor();
+  assert.equal(await page.getByLabel('名義人', { exact: true }).inputValue(), '旧姓 太郎');
+  await page.getByText('旧姓 太郎（一覧にない）').waitFor({ state: 'attached' });
+  await page.getByRole('link', { name: 'キャンセル' }).click();
+
   step('item with photo upload');
   await page.goto(`${appUrl}#/edit/items/new`);
   await fill('品名 *', '冷蔵庫');
@@ -167,6 +203,23 @@ try {
   assert.equal(sub.family_card, true);
   assert.equal(sub.debit_account_id, mock.db.accounts[0].id);
 
+  step('CSV: holder must be in the family list; codes are padded');
+  await page.goto(`${appUrl}#/settings`);
+  await page.getByLabel('取り込む台帳').selectOption({ label: '口座' });
+  await page.getByLabel(/CSVファイル/).setInputFiles(csv('名称,金融機関コード,支店番号,名義人\r\n貯蓄口座,36,225,佐藤 一郎\r\n長すぎ口座,00369,1,山田 太郎\r\n'));
+  await page.getByRole('button', { name: '取り込む' }).click();
+  await page.getByText(/2行目: 名義人「佐藤 一郎」が家族の名前の一覧にありません/).waitFor();
+  await page.getByText(/3行目: 金融機関コードは数字4桁で入力してください。/).waitFor();
+  assert.ok(!mock.db.accounts.some((a) => a.name === '貯蓄口座'));
+  await page.getByLabel(/CSVファイル/).setInputFiles(csv('名称,金融機関コード,支店番号,名義人\r\n貯蓄口座,36,225,山田 太郎\r\n'));
+  await page.getByRole('button', { name: '取り込む' }).click();
+  await page.getByText('取り込みました（追加 1件、更新 0件）。').waitFor();
+  const saving = mock.db.accounts.find((a) => a.name === '貯蓄口座');
+  assert.equal(saving.bank_code, '0036');
+  assert.equal(saving.holder, '山田 太郎');
+  const [tpl] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: '口座', exact: true }).first().click()]);
+  assert.match(readFileSync(await tpl.path(), 'utf8'), /^\ufeffID,名称,金融機関名,金融機関コード,支店,支店番号,種別,口座番号下4桁/);
+
   step('full backup ZIP');
   const [zipDl] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: '全データを書き出す（ZIP）' }).click()]);
   const zipPath = join(OUT, 'backup.zip');
@@ -177,11 +230,13 @@ try {
   assert.ok(mock.db.settings.some((s) => s.key === 'last_backup_at'));
 
   step('delete account (references are cleared)');
-  await page.goto(`${appUrl}#/view/accounts/${mock.db.accounts[0].id}`);
+  const accountsBefore = mock.db.accounts.length;
+  const removedId = mock.db.accounts[0].id;
+  await page.goto(`${appUrl}#/view/accounts/${removedId}`);
   await page.getByRole('button', { name: '削除' }).click();
   await page.getByRole('heading', { name: '口座', exact: true }).waitFor();
-  assert.equal(mock.db.accounts.length, 0);
-  assert.ok(mock.db.cards.every((c) => c.debit_account_id === null));
+  assert.equal(mock.db.accounts.length, accountsBefore - 1);
+  assert.ok(mock.db.cards.every((c) => c.debit_account_id !== removedId));
 
   step('logout');
   await page.goto(`${appUrl}#/settings`);

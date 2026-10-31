@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseCSV, toCSV, unescapeFormula, decodeCSVBytes } from '../../web/js/csv.js';
 import { createZip, crc32 } from '../../web/js/zip.js';
-import { parseField, parseNotifyDays, parseLinksCell, findCardNumberLike, safeUrl, parseTags } from '../../web/js/validate.js';
+import { parseField, parseNotifyDays, parseLinksCell, findCardNumberLike, safeUrl, parseTags, parseMembers } from '../../web/js/validate.js';
 import { LEDGERS } from '../../web/js/schema.js';
 
 test('CSV round trip with quotes, newlines and formula guard', () => {
@@ -51,6 +51,32 @@ test('field validation', () => {
   assert.ok(parseField(f('manual_url', 'items'), 'javascript:alert(1)').error);
   assert.equal(safeUrl('javascript:alert(1)'), null);
   assert.equal(safeUrl(' https://example.com/a '), 'https://example.com/a');
+});
+
+test('bank code / branch number are zero-padded and length-checked', () => {
+  const bank = LEDGERS.accounts.fields.find((x) => x.key === 'bank_code');
+  const branch = LEDGERS.accounts.fields.find((x) => x.key === 'branch_code');
+  assert.deepEqual(parseField(bank, '36'), { value: '0036' }); // Excel dropped the leading zeros
+  assert.deepEqual(parseField(bank, '０００９'), { value: '0009' });
+  assert.deepEqual(parseField(branch, '225'), { value: '225' });
+  assert.deepEqual(parseField(branch, '7'), { value: '007' });
+  assert.deepEqual(parseField(branch, ''), { value: null });
+  assert.equal(parseField(bank, '00369').error, '金融機関コードは数字4桁で入力してください。');
+  assert.equal(parseField(branch, 'abc').error, '支店番号は数字3桁で入力してください。');
+  assert.deepEqual(LEDGERS.accounts.fields.map((f) => f.key).slice(1, 6), ['institution', 'bank_code', 'branch', 'branch_code', 'kind']);
+  // the account number stays last-4 only
+  assert.ok(parseField(LEDGERS.accounts.fields.find((x) => x.key === 'last4'), '4041311').error);
+});
+
+test('holder is a plain text value; family names are cleaned and limited', () => {
+  const holder = LEDGERS.cards.fields.find((x) => x.key === 'holder');
+  assert.equal(holder.type, 'holder');
+  assert.deepEqual(parseField(holder, ' 山田 太郎 '), { value: '山田 太郎' });
+  assert.deepEqual(parseField(holder, ''), { value: null });
+  assert.deepEqual(parseMembers('山田 太郎\r\n\n 山田 花子 \n山田 太郎'), { value: ['山田 太郎', '山田 花子'] });
+  assert.deepEqual(parseMembers(''), { value: [] });
+  assert.ok(parseMembers(Array.from({ length: 11 }, (_, i) => `n${i}`).join('\n')).error);
+  assert.ok(parseMembers('あ'.repeat(21)).error);
 });
 
 test('notify days, links and tags', () => {
