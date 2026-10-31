@@ -1,0 +1,13 @@
+{
+  "name": "home-hub",
+  "private": true,
+  "type": "module",
+  "description": "家の管理ハブ (no runtime dependencies)",
+  "scripts": {
+    "test": "node --test \"tests/unit/*.test.mjs\"",
+    "notify": "node scripts/notify.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

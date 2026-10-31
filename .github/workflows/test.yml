@@ -1,0 +1,37 @@
+# Unit tests (Node.js built-ins only) and database/RLS tests on a throwaway PostgreSQL.
+name: Tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Syntax check
+        run: for f in web/js/*.js web/sw.js scripts/*.mjs; do node --check "$f"; done
+      - name: Unit tests
+        run: npm test
+      - name: Database and RLS tests
+        run: sh tests/sql/run.sh
+        env:
+          PGHOST: localhost
+          PGUSER: postgres
+          PGPASSWORD: postgres

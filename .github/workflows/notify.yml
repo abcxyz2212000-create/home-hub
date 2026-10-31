@@ -1,0 +1,36 @@
+# Daily deadline check and push notifications (8:00 Japan time = 23:00 UTC).
+# Required repository secrets: SUPABASE_SERVICE_ROLE_KEY, VAPID_PRIVATE_KEY (see docs/setup.md).
+# Logs of a public repository are public: scripts/notify.mjs never prints ledger names.
+name: 毎朝の通知
+
+on:
+  schedule:
+    - cron: '0 23 * * *'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 実行内容
+        type: choice
+        options:
+          - 通常の期限チェック
+          - テスト通知
+        default: 通常の期限チェック
+
+permissions:
+  contents: read
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Send notifications
+        run: node scripts/notify.mjs
+        env:
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          VAPID_PRIVATE_KEY: ${{ secrets.VAPID_PRIVATE_KEY }}
+          NOTIFY_TEST: ${{ github.event.inputs.mode == 'テスト通知' && '1' || '0' }}
