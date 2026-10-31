@@ -213,6 +213,9 @@ begin
                            'item_photos', 'settings', 'push_subscriptions', 'notification_log'] loop
     execute format('alter table public.%I enable row level security', t);
     execute format('revoke all on public.%I from anon, authenticated', t);
+    -- service_role (used only by the daily GitHub Actions job) bypasses RLS but still needs table
+    -- privileges when "Automatically expose new tables" is off for the project.
+    execute format('grant select, insert, update, delete on public.%I to service_role', t);
   end loop;
 
   foreach t in array array['accounts', 'cards', 'contracts', 'items', 'memberships',

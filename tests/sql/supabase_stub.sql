@@ -20,4 +20,6 @@ alter table storage.objects enable row level security;
 grant usage on schema storage to authenticated, service_role;
 grant all on storage.objects to authenticated, service_role;
 grant usage on schema public to anon, authenticated, service_role;
-alter default privileges in schema public grant all on tables to anon, authenticated, service_role;
+-- service_role is deliberately NOT given default privileges: this mirrors a Supabase project created with
+-- "Automatically expose new tables" turned off, where schema.sql must grant what the daily job needs.
+alter default privileges in schema public grant all on tables to anon, authenticated;
