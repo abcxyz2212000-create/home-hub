@@ -623,7 +623,7 @@ function cardFace(r) {
       : null;
   return h('a', { class: 'cc-wrap', href: `#/view/cards/${r.id}` },
     h('div', { class: `cc cc-${BRAND_CLASS[r.brand] || 'other'}${r.status === 'closed' ? ' cc-closed' : ''}` },
-      h('div', { class: 'cc-row' }, h('span', { class: 'cc-name' }, r.name), h('span', { class: 'cc-brand' }, r.brand || '')),
+      h('div', { class: 'cc-row' }, h('span', { class: 'cc-name' }, r.name), h('span', { class: 'cc-brand' }, [r.kind, r.brand].filter(Boolean).join(' · '))),
       h('div', { class: 'cc-chip' }),
       h('div', { class: 'cc-digits num' }, `●●●● ●●●● ●●●● ${r.last4 || '●●●●'}`),
       h('div', { class: 'cc-row cc-meta' },
@@ -991,7 +991,7 @@ function fieldInput(field, r, ledger) {
     case 'payment': {
       const cur = r && r.pay_card_id ? `card:${r.pay_card_id}` : r && r.pay_account_id ? `account:${r.pay_account_id}` : '';
       const el = h('select', { id }, h('option', { value: '' }, '（未設定・現金など）'),
-        h('optgroup', { label: 'クレジットカード' }, [...state.data.cards].sort(byName).map((c) => h('option', { value: `card:${c.id}`, selected: cur === `card:${c.id}` }, c.name))),
+        h('optgroup', { label: 'カード' }, [...state.data.cards].sort(byName).map((c) => h('option', { value: `card:${c.id}`, selected: cur === `card:${c.id}` }, c.name))),
         h('optgroup', { label: '口座（直接引き落とし）' }, [...state.data.accounts].sort(byName).map((a) => h('option', { value: `account:${a.id}`, selected: cur === `account:${a.id}` }, a.name))));
       return wrap(el, () => el.value);
     }
@@ -1375,7 +1375,7 @@ function importSection() {
     h('div', { class: 'button-row' }, LEDGER_ORDER.map((k) => h('button', { type: 'button', class: 'small', onclick: () => download(`テンプレート_${LEDGERS[k].csvName}.csv`, ledgerCSV(k, false), 'text/csv') }, LEDGERS[k].label))),
     isAdmin() ? [h('h3', {}, '取り込み'),
     h('ul', { class: 'muted small' },
-      h('li', {}, '順番: 口座 → クレジットカード → 契約・固定費／ポイントカード・会員情報（引き落とし口座などは名前で結びつけるため）。'),
+      h('li', {}, '順番: 口座 → カード → 契約・固定費／ポイントカード・会員情報（引き落とし口座などは名前で結びつけるため）。'),
       h('li', {}, 'ID が空欄の行は追加、書き出したCSVの ID が入った行はその内容で更新します。'),
       h('li', {}, 'はい/いいえ、日付は 2026-01-31、年月は 2027-05、リンクは1行に「名前|URL」、タグは空白区切り。'),
       h('li', {}, 'エラーが1件でもあると何も取り込みません。'),

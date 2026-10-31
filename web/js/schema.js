@@ -53,11 +53,12 @@ export const LEDGERS = {
   }),
   cards: ledger({
     key: 'cards',
-    label: 'クレジットカード',
+    label: 'カード',
     nameLabel: 'カード名',
-    csvName: 'クレジットカード',
+    csvName: 'カード',
     events: ['card_expiry', 'annual_fee'],
     fields: [
+      { key: 'kind', label: '種別', type: 'select', options: ['クレジット', 'デビット', 'キャッシュ', 'プリペイド', 'その他'] },
       { key: 'brand', label: 'ブランド', type: 'select', options: ['VISA', 'Mastercard', 'JCB', 'American Express', 'Diners Club', 'その他'] },
       { key: 'last4', label: '下4桁', type: 'last4' },
       { key: 'expiry_ym', label: '有効期限（年月）', type: 'month' },
@@ -69,7 +70,7 @@ export const LEDGERS = {
       { key: 'family_card', label: '家族カードあり', type: 'bool' },
       { key: 'etc_card', label: 'ETCカードあり', type: 'bool' },
     ],
-    summary: (r) => [r.brand, r.last4 && `下4桁 ${r.last4}`, r.expiry_ym && `有効期限 ${r.expiry_ym}`],
+    summary: (r) => [r.kind, r.brand, r.last4 && `下4桁 ${r.last4}`, r.expiry_ym && `有効期限 ${r.expiry_ym}`],
   }),
   contracts: ledger({
     key: 'contracts',
