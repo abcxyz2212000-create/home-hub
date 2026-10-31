@@ -146,11 +146,11 @@ try {
   step('user master: an administrator adds members; holder is chosen from them');
   await page.goto(`${appUrl}#/settings`);
   await page.getByRole('link', { name: '＋ ユーザーを追加' }).click();
-  await fill('名前 *', '山田 太郎');
+  await fill('本名 *', '山田 太郎');
   await save();
   await page.getByRole('heading', { name: '設定', exact: true }).waitFor();
   await page.getByRole('link', { name: '＋ ユーザーを追加' }).click();
-  await fill('名前 *', '山田 花子');
+  await fill('本名 *', '山田 花子');
   await fill('ログイン用メールアドレス', 'Hanako@Example.com');
   await save();
   await page.getByRole('heading', { name: '設定', exact: true }).waitFor();
@@ -237,6 +237,62 @@ try {
   assert.match(face, /引き落とし: 生活費口座/);
   assert.match(face, /年会費 1,100円（12月）/);
   assert.match(face, /期限まで\d+日/, 'expiring card is flagged');
+
+  step('nickname: shown on screens, legal name kept for the holder');
+  await page.goto(`${appUrl}#/member/${hanako.id}`);
+  await fill('ニックネーム', 'はなこ');
+  await save();
+  await page.getByRole('heading', { name: '設定', exact: true }).waitFor();
+  assert.equal(mock.db.members.find((m) => m.id === hanako.id).nickname, 'はなこ');
+  assert.match(await page.locator('.member-list').innerText(), /はなこ（山田 花子）/);
+  await page.goto(`${appUrl}#/view/accounts/${salary.id}`);
+  await page.reload();
+  await page.getByRole('heading', { name: '給与口座' }).waitFor();
+  assert.match(await page.locator('#view').innerText(), /名義人\n山田 花子/, 'holder keeps the legal name');
+
+  step('chores: choose days (times follow), workload and today');
+  const dow = new Date(`${todayJST()}T00:00:00Z`).getUTCDay();
+  await page.goto(`${appUrl}#/chore-edit/new`);
+  await fill('タスク名 *', 'ゴミ出し');
+  await page.getByLabel('カテゴリ', { exact: true }).selectOption('住');
+  await page.locator('.day-picker .day').nth(dow).click();
+  await page.locator('.day-picker .day').nth((dow + 3) % 7).click();
+  assert.equal(await page.getByLabel('回数（サイクルあたり）', { exact: true }).inputValue(), '2');
+  assert.equal(await page.getByLabel('回数（サイクルあたり）', { exact: true }).isDisabled(), true);
+  await fill('1回の時間（分）', '5');
+  await fill('調整係数', '1.1');
+  await page.getByLabel('担当', { exact: true }).selectOption({ label: 'はなこ' });
+  assert.match(await page.locator('.preview').innerText(), /0\.67時間\/月・733点\/月/);
+  await save();
+  await page.getByRole('heading', { name: 'ゴミ出し' }).waitFor();
+  const gomi = mock.db.chores.find((c) => c.name === 'ゴミ出し');
+  assert.deepEqual([gomi.cycle, gomi.schedule, gomi.times, gomi.minutes, gomi.adjust, gomi.assignee_type, gomi.assignee_id],
+    ['week', [dow, (dow + 3) % 7].sort((a, b) => a - b), 2, 5, 1.1, 'member', hanako.id]);
+  assert.match(await page.locator('#view').innerText(), /733点/);
+  await page.goto(`${appUrl}#/chore-edit/new`);
+  await fill('タスク名 *', '各種支払い');
+  await page.getByLabel('サイクル *', { exact: true }).selectOption({ label: '随時' });
+  await save();
+  await page.getByText('随時の家事は、点数/月を入力してください。').waitFor();
+  await fill('点数/月（随時のみ）', '300');
+  await page.getByLabel('担当', { exact: true }).selectOption({ label: '全員（等分）' });
+  await save();
+  await page.getByRole('heading', { name: '各種支払い' }).waitFor();
+  await page.getByRole('link', { name: '家事' }).first().click();
+  await page.getByRole('img', { name: '担当ごとの月の負担（調整後の点数）' }).waitFor();
+  const choresText = await page.locator('#view').innerText();
+  assert.match(choresText, /今日の家事[\s\S]*ゴミ出し/);
+  assert.match(choresText, /合計\s+1,033点/, 'only はなこ has chores, so the "all" chore is hers: 733 + 300');
+  mock.db.chores.push({ id: 'ch-taro', name: '風呂掃除', status: 'active', cycle: 'month', schedule: [], times: 1, minutes: 60, adjust: 1,
+    assignee_type: 'member', assignee_id: taro.id, category: '住', created_at: now, updated_at: now });
+  await page.reload();
+  await page.getByRole('img', { name: '担当ごとの月の負担（調整後の点数）' }).waitFor();
+  const split = await page.locator('table').innerText();
+  assert.match(split, /合計\s+883点\s+1,150点|合計\s+1,150点\s+883点/, 'はなこ 733+150, 太郎 1000+150');
+  assert.match(await page.locator('.balance').innerText(), /山田 太郎 が はなこ より 267点 多い/);
+  await page.goto(appUrl);
+  await page.locator('.dash-head').waitFor();
+  assert.match(await page.locator('#view').innerText(), /今日の家事\n[\s\S]*ゴミ出し/);
 
   step('item with photo upload');
   await page.goto(`${appUrl}#/edit/items/new`);
@@ -348,7 +404,7 @@ try {
   await mp.getByRole('heading', { name: 'ユーザー', exact: true }).waitFor();
   const memberSettings = await mp.locator('#view').innerText();
   assert.ok(memberSettings.includes('CSV の取り込みは管理者だけが行えます。'));
-  assert.ok(memberSettings.includes('ログイン中: 山田 花子（一般）'));
+  assert.ok(memberSettings.includes('ログイン中: はなこ（一般）'), 'the nickname is shown');
   assert.equal(await mp.getByRole('link', { name: '＋ ユーザーを追加' }).count(), 0);
   assert.equal(await mp.getByRole('heading', { name: 'ショートカット' }).count(), 0);
   assert.equal(await mp.getByRole('button', { name: '取り込む' }).count(), 0);

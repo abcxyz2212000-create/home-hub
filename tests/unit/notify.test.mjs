@@ -45,6 +45,15 @@ test('daily run sends each due notification once and removes expired devices', a
       { id: 'old', endpoint: `${apiUrl}/push/gone`, p256dh: b64urlEncode(ua.getPublicKey()), auth: b64urlEncode(auth) },
     );
     mock.db.contracts.push({ id: 'k1', name: '火災保険', status: 'active', auto_renew: true, renewal_date: in7, notify_days: {} });
+    // chores: a device linked to a member gets one summary of that member's (and everyone's) chores due today
+    mock.db.members.push({ id: 'm-shin', name: '佐藤 真一', nickname: 'しん', active: true }, { id: 'm-haru', name: '佐藤 春子', nickname: 'はる', active: true });
+    mock.db.push_subscriptions.push({ id: 'dev2', endpoint: `${apiUrl}/push/dev2`, p256dh: b64urlEncode(ua.getPublicKey()), auth: b64urlEncode(auth), member_id: 'm-shin' });
+    mock.db.chores.push(
+      { id: 'ch1', name: 'ゴミ出し', status: 'active', cycle: 'day', schedule: [], assignee_type: 'member', assignee_id: 'm-shin' },
+      { id: 'ch2', name: '郵便物回収', status: 'active', cycle: 'day', schedule: [], assignee_type: 'all' },
+      { id: 'ch3', name: '洗面所', status: 'active', cycle: 'day', schedule: [], assignee_type: 'member', assignee_id: 'm-haru' },
+      { id: 'ch4', name: '家計簿', status: 'active', cycle: 'week', schedule: [], times: 1, assignee_type: 'member', assignee_id: 'm-shin' },
+    );
     mock.db.items.push({ id: 'i1', name: '洗濯機', status: 'active', warranty_until: in7, notify_days: { warranty: [] } });
 
     const env = { ...process.env, SUPABASE_URL: apiUrl, SUPABASE_SERVICE_ROLE_KEY: SERVICE_KEY, VAPID_PRIVATE_KEY: b64urlEncode(vapid.getPrivateKey()), GITHUB_REPOSITORY: 'Owner/home-hub' };
@@ -60,14 +69,22 @@ test('daily run sends each due notification once and removes expired devices', a
     assert.equal(payload.title, '契約の自動更新日: 火災保険');
     assert.match(payload.body, /^あと7日/);
     assert.equal(payload.url, '#/view/contracts/k1');
-    assert.deepEqual(mock.db.push_subscriptions.map((s) => s.id), ['dev1']);
-    assert.equal(mock.db.notification_log.length, 1);
+    assert.deepEqual(mock.db.push_subscriptions.map((s) => s.id), ['dev1', 'dev2']);
+    const choresPush = mock.pushes.filter((p) => p.id === 'dev2').map((p) => decrypt(p.body, ua, auth)).find((p) => p.title.startsWith('今日の家事'));
+    assert.equal(choresPush.title, '今日の家事（2件）');
+    assert.equal(choresPush.body, 'ゴミ出し、郵便物回収');
+    assert.equal(choresPush.url, '#/chores');
+    assert.ok(!mock.pushes.filter((p) => p.id === 'dev1').map((p) => decrypt(p.body, ua, auth)).some((p) => p.title.startsWith('今日の家事')),
+      'a device without a member gets no chore reminder');
+    assert.doesNotMatch(first.stdout + first.stderr, /ゴミ出し|郵便物/, 'chore names never appear in public logs');
+    assert.equal(mock.db.notification_log.length, 2);
 
     await run('node', [SCRIPT], { env });
     assert.equal(mock.pushes.filter((p) => p.id === 'dev1').length, 1, 'no duplicate on the second run');
+    assert.equal(mock.pushes.filter((p) => p.id === 'dev2').length, 2, 'deadline + chores once each');
 
     const t = await run('node', [SCRIPT], { env: { ...env, NOTIFY_TEST: '1' } });
-    assert.match(t.stdout, /delivered to 1\/1/);
+    assert.match(t.stdout, /delivered to 2\/2/);
     assert.equal(decrypt(mock.pushes.at(-1).body, ua, auth).title, 'テスト通知');
 
     // wrong key is rejected

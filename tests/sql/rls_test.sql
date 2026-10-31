@@ -10,7 +10,7 @@ $$;
 
 insert into public.members (name, email, role, active) values
   ('共通（管理者）', 'owner@example.com', 'admin', true),
-  ('筒井 春香', 'member@example.com', 'member', true),
+  ('佐藤 春子', 'member@example.com', 'member', true),
   ('退会者', 'old@example.com', 'member', false),
   ('子ども', null, 'member', true);
 insert into storage.objects (bucket_id, name, metadata) values ('item-photos', 'x/a.jpg', '{"size": 1234}');
@@ -22,7 +22,7 @@ insert into public.accounts (name, account_no, last4, holder_id)
   select '生活費口座', '0001234', '1234', id from public.members where name = '子ども';
 do $$ begin
   if (select count(*) from public.accounts) <> 1 then raise exception 'member cannot read accounts'; end if;
-  if (select created_by from public.accounts) is distinct from (select id from public.members where name = '筒井 春香') then
+  if (select created_by from public.accounts) is distinct from (select id from public.members where name = '佐藤 春子') then
     raise exception 'created_by not stamped';
   end if;
   if (select count(*) from public.members) <> 4 then raise exception 'member cannot read the user master'; end if;
@@ -35,8 +35,8 @@ end $$;
 do $$ begin
   begin insert into public.members (name) values ('勝手に追加'); raise exception 'member added a member';
   exception when insufficient_privilege then null; end;
-  update public.members set role = 'admin' where name = '筒井 春香';
-  if (select role from public.members where name = '筒井 春香') <> 'member' then raise exception 'member promoted self'; end if;
+  update public.members set role = 'admin' where name = '佐藤 春子';
+  if (select role from public.members where name = '佐藤 春子') <> 'member' then raise exception 'member promoted self'; end if;
   begin insert into public.settings (key, value) values ('shortcuts', '[]'); raise exception 'member changed shortcuts';
   exception when insufficient_privilege then null; end;
   insert into public.settings (key, value) values ('last_backup_at', '"2026-11-01T00:00:00Z"');
@@ -51,7 +51,7 @@ declare
 begin
   if (select count(*) from public.audit_log where table_name = 'accounts') <> 2 then raise exception 'history count wrong'; end if;
   select * into h from public.audit_log where action = 'update';
-  if h.actor_name <> '筒井 春香' or h.record_name <> '生活費口座' then raise exception 'history actor/record wrong'; end if;
+  if h.actor_name <> '佐藤 春子' or h.record_name <> '生活費口座' then raise exception 'history actor/record wrong'; end if;
   if h.changes <> '{"bank_code": [null, "0036"], "account_no": ["●●●1234", "●●●5678"]}'::jsonb then
     raise exception 'history changes wrong: %', h.changes;
   end if;
@@ -79,7 +79,7 @@ select pg_temp.login('owner@example.com');
 update public.accounts set purpose = '生活費';
 do $$ begin
   if (select updated_by from public.accounts) is distinct from (select id from public.members where name = '共通（管理者）') then raise exception 'updated_by wrong'; end if;
-  if (select created_by from public.accounts) is distinct from (select id from public.members where name = '筒井 春香') then raise exception 'created_by changed'; end if;
+  if (select created_by from public.accounts) is distinct from (select id from public.members where name = '佐藤 春子') then raise exception 'created_by changed'; end if;
   if not public.is_admin() then raise exception 'admin not detected'; end if;
 end $$;
 insert into public.settings (key, value) values ('shortcuts', '[]');
@@ -92,7 +92,7 @@ do $$ begin
   begin update public.members set active = false where email = 'owner@example.com'; raise exception 'last admin deactivated';
   exception when sqlstate 'HH001' then null; end;
 end $$;
-update public.members set role = 'admin' where name = '筒井 春香';
+update public.members set role = 'admin' where name = '佐藤 春子';
 update public.members set role = 'member' where email = 'owner@example.com';
 do $$ begin
   if (select role from public.members where email = 'owner@example.com') <> 'member' then raise exception 'demotion with another admin failed'; end if;
@@ -156,6 +156,37 @@ do $$ begin
   exception when insufficient_privilege then null; end;
 end $$;
 
+-- nicknames (unique) are shown as the actor; chores follow the same access rules and history
+select pg_temp.login('owner@example.com');
+update public.members set nickname = 'はる' where name = '佐藤 春子';
+do $$ begin
+  begin update public.members set nickname = 'はる' where name = '祖母'; raise exception 'duplicate nickname accepted';
+  exception when unique_violation then null; end;
+end $$;
+select pg_temp.login('member@example.com');
+insert into public.chores (name, category, cycle, schedule, times, minutes, assignee_type, assignee_id)
+  select 'ゴミ出し', '住', 'week', '[2, 5]', 2, 5, 'member', id from public.members where name = '佐藤 春子';
+update public.chores set minutes = 10;
+do $$ begin
+  if (select count(*) from public.chores) <> 1 then raise exception 'member cannot read chores'; end if;
+  if (select actor_name from public.audit_log where table_name = 'chores' and action = 'update') <> 'はる' then
+    raise exception 'actor nickname not used in the history';
+  end if;
+  if (select created_by from public.chores) is distinct from (select id from public.members where name = '佐藤 春子') then
+    raise exception 'chore not stamped';
+  end if;
+  begin insert into public.chores (name, cycle) values ('x', 'hour'); raise exception 'bad cycle accepted';
+  exception when check_violation then null; end;
+  begin insert into public.chores (name, adjust) values ('x', 0); raise exception 'zero adjust accepted';
+  exception when check_violation then null; end;
+end $$;
+select pg_temp.login('stranger@example.com');
+do $$ begin
+  if (select count(*) from public.chores) <> 0 then raise exception 'stranger can read chores'; end if;
+  begin insert into public.chores (name) values ('hack'); raise exception 'stranger can add chores';
+  exception when insufficient_privilege then null; end;
+end $$;
+
 -- changes made without a login (Supabase MCP / SQL editor) are recorded as the admin tool
 reset role;
 select pg_temp.login(null);
@@ -173,6 +204,8 @@ do $$ begin
   perform * from public.cards;
   perform * from public.contracts;
   perform * from public.items;
+  perform * from public.chores;
+  perform * from public.members;
   perform * from public.notification_log;
   insert into public.notification_log (key) values ('test:key');
   delete from public.notification_log where key = 'test:key';
