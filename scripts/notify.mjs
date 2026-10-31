@@ -8,6 +8,7 @@
 //   VAPID_SUBJECT              optional, defaults to the GitHub Pages URL of this repository
 import { CONFIG } from '../web/js/config.js';
 import { collectEvents, dueNotifications, notificationText, todayJST } from '../web/js/events.js';
+import { dueFor } from '../web/js/chores.js';
 import { loadVapidKeys, sendPush } from './webpush.mjs';
 
 const LOG_RETENTION_DAYS = 400;
@@ -67,9 +68,9 @@ async function main() {
   if (subscriptions.length === 0) console.warn('No device has subscribed to notifications.');
 
   let failures = 0;
-  const sendToAll = async (payload) => {
+  const sendTo = async (targets, payload) => {
     let delivered = 0;
-    for (const sub of subscriptions) {
+    for (const sub of targets) {
       try {
         const status = await sendPush(sub, payload, vapid, subject);
         if (status >= 200 && status < 300) delivered += 1;
@@ -87,6 +88,7 @@ async function main() {
     }
     return delivered;
   };
+  const sendToAll = (payload) => sendTo(subscriptions, payload);
 
   if (env('NOTIFY_TEST', false) === '1') {
     const delivered = await sendToAll({ title: 'テスト通知', body: '家の管理ハブからの通知は正しく届いています。', url: '#/', tag: 'test' });
@@ -111,6 +113,29 @@ async function main() {
     const delivered = await sendToAll({ ...text, url: `#/view/${d.event.ledger}/${d.event.id}`, tag: d.key });
     if (delivered > 0) await db.insert('notification_log', [{ key: d.key }]);
     console.log(`- ${d.event.type} ${d.event.date} (stage ${d.stage}d): delivered to ${delivered} device(s)`);
+  }
+
+  // Today's chores: one summary per member, sent only to that member's devices (devices registered
+  // before the user master have no member and get no chore reminders). Names never go to the log.
+  const [chores, members] = await Promise.all([
+    db.select('chores', '&status=eq.active'),
+    db.select('members', '&active=eq.true'),
+  ]);
+  const devicesByMember = new Map();
+  for (const sub of subscriptions) {
+    if (!sub.member_id || !members.some((m) => m.id === sub.member_id)) continue;
+    if (!devicesByMember.has(sub.member_id)) devicesByMember.set(sub.member_id, []);
+    devicesByMember.get(sub.member_id).push(sub);
+  }
+  for (const [memberId, devices] of devicesByMember) {
+    const list = dueFor(chores, today, memberId);
+    const key = `chores:${today}:${memberId}`;
+    if (list.length === 0 || sent.has(key)) continue;
+    const names = list.map((c) => c.name);
+    const body = names.slice(0, 3).join('、') + (names.length > 3 ? ` ほか${names.length - 3}件` : '');
+    const delivered = await sendTo(devices, { title: `今日の家事（${list.length}件）`, body, url: '#/chores', tag: key });
+    if (delivered > 0) await db.insert('notification_log', [{ key }]);
+    console.log(`- chores: ${list.length} task(s) for a member, delivered to ${delivered} device(s)`);
   }
 
   const cutoff = new Date(Date.now() - LOG_RETENTION_DAYS * 86400000).toISOString();

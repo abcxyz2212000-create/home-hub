@@ -62,7 +62,7 @@ export function timelineChart(events, span = 60) {
 }
 
 // Ranked horizontal bars of one hue (magnitude). rows: [[label, value]] (sorted by the caller or here).
-export function barChart(rows, ariaLabel) {
+export function barChart(rows, ariaLabel, format = yen) {
   const sorted = [...rows].sort((a, b) => b[1] - a[1]);
   const max = Math.max(...sorted.map((r) => r[1]), 1);
   const W = 360;
@@ -76,7 +76,7 @@ export function barChart(rows, ariaLabel) {
     svg.append(s('text', { x: 0, y: y + 18, class: 'bar-label' }, shorten(label, 6)));
     svg.append(s('rect', { x: labelW, y: y + 8, width: trackW, height: 12, rx: 4, class: 'bar-track' }));
     svg.append(s('rect', { x: labelW, y: y + 8, width: Math.max((trackW * value) / max, 3), height: 12, rx: 4, class: 'bar-fill' }));
-    svg.append(s('text', { x: W, y: y + 18, class: 'bar-value', 'text-anchor': 'end' }, yen(value)));
+    svg.append(s('text', { x: W, y: y + 18, class: 'bar-value', 'text-anchor': 'end' }, format(value)));
   });
   return svg;
 }

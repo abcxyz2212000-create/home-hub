@@ -70,6 +70,15 @@ export function parseField(field, raw) {
       if (!/^\d+$/.test(t) || Number(t) > (field.max || 100000000)) return { error: `${label}は0以上の整数で入力してください。` };
       return { value: Number(t) };
     }
+    case 'decimal': {
+      if (empty) return field.required ? { error: `${label}を入力してください。` } : { value: null };
+      const t = toHalfWidth(String(s));
+      const n = Number(t);
+      if (!/^\d+(\.\d+)?$/.test(t) || n < (field.min ?? 0) || n > (field.max ?? 100000)) {
+        return { error: `${label}は${field.min ?? 0}〜${field.max ?? 100000}の数で入力してください。` };
+      }
+      return { value: n };
+    }
     case 'code': {
       // Fixed-length numeric code (bank code 4 digits, branch number 3 digits). Excel drops leading zeros, so pad.
       if (empty) return { value: null };

@@ -15,6 +15,7 @@
 create table if not exists public.members (
   id uuid primary key default gen_random_uuid(),
   name text not null unique check (char_length(name) between 1 and 50),
+  nickname text check (char_length(nickname) between 1 and 30),
   email text unique check (
     email is null
     or (char_length(email) <= 254 and email = lower(email) and email ~ '^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$')
@@ -241,6 +242,30 @@ create table if not exists public.audit_log (
 );
 create index if not exists audit_log_record_idx on public.audit_log (table_name, record_id, at desc);
 
+-- Household chores (plan and workload). schedule holds weekdays 0-6 (week), days 1-31 (month) or
+-- months 1-12 (year); when it is not empty, times = number of entries (kept in sync by the app).
+create table if not exists public.chores (
+  id uuid primary key default gen_random_uuid(),
+  name text not null check (char_length(name) between 1 and 200),
+  status text not null default 'active' check (status in ('active', 'closed')),
+  category text check (char_length(category) <= 20),
+  chore_group text check (char_length(chore_group) <= 20),
+  cycle text not null default 'week' check (cycle in ('day', 'week', 'month', 'year', 'adhoc')),
+  schedule jsonb not null default '[]'::jsonb check (jsonb_typeof(schedule) = 'array'),
+  times numeric(7, 2) check (times > 0 and times <= 1000),
+  minutes numeric(7, 1) check (minutes >= 0 and minutes <= 10000),
+  adjust numeric(4, 2) not null default 1.0 check (adjust > 0 and adjust <= 5),
+  points_override numeric(10, 2) check (points_override >= 0 and points_override <= 1000000),
+  assignee_type text not null default 'member' check (assignee_type in ('member', 'all', 'tbd')),
+  assignee_id uuid references public.members (id) on delete set null,
+  memo text check (char_length(memo) <= 5000),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  created_by uuid references public.members (id) on delete set null,
+  updated_by uuid references public.members (id) on delete set null
+);
+create index if not exists chores_assignee_id_idx on public.chores (assignee_id);
+
 -- ---------------------------------------------------------------------------
 -- Upgrades for projects created from an older version of this file ("create table if not exists"
 -- above does not add columns to an existing table). Safe to run any number of times.
@@ -250,6 +275,9 @@ alter table public.accounts add column if not exists branch_code text check (bra
 -- Full account number (decided 2026-11-01 when migrating from Google Drive). last4 is derived from it by the app.
 alter table public.accounts add column if not exists account_no text check (account_no ~ '^[0-9]{4,14}$');
 alter table public.push_subscriptions add column if not exists member_id uuid references public.members (id) on delete set null;
+-- Nickname used on screens (holder fields keep the legal name). Added 2026-11-01.
+alter table public.members add column if not exists nickname text check (char_length(nickname) between 1 and 30);
+create unique index if not exists members_nickname_key on public.members (nickname) where nickname is not null;
 
 do $$
 declare
@@ -379,7 +407,7 @@ begin
   insert into public.audit_log (table_name, record_id, record_name, action, actor_member_id, actor_name, changes)
   values (
     tbl, rid, rname, act, actor,
-    coalesce((select name from public.members where id = actor),
+    coalesce((select coalesce(nickname, name) from public.members where id = actor),
              case when auth.uid() is null then '管理ツール' else '登録されていないユーザー' end),
     diff
   );
@@ -412,7 +440,7 @@ do $$
 declare
   t text;
 begin
-  foreach t in array array['accounts', 'cards', 'contracts', 'items', 'memberships'] loop
+  foreach t in array array['accounts', 'cards', 'contracts', 'items', 'memberships', 'chores'] loop
     execute format('drop trigger if exists %I_touch on public.%I', t, t);
     execute format('drop trigger if exists %I_stamp on public.%I', t, t);
     execute format('create trigger %I_stamp before insert or update on public.%I for each row execute function public.stamp_row()', t, t);
@@ -423,7 +451,7 @@ begin
     execute format('drop trigger if exists %I_touch on public.%I', t, t);
     execute format('create trigger %I_touch before update on public.%I for each row execute function public.touch_updated_at()', t, t);
   end loop;
-  foreach t in array array['accounts', 'cards', 'contracts', 'items', 'memberships', 'item_photos', 'members'] loop
+  foreach t in array array['accounts', 'cards', 'contracts', 'items', 'memberships', 'item_photos', 'members', 'chores'] loop
     execute format('drop trigger if exists %I_audit on public.%I', t, t);
     execute format('create trigger %I_audit after insert or update or delete on public.%I for each row execute function public.audit_row()', t, t);
   end loop;
@@ -431,7 +459,7 @@ begin
   execute 'create trigger members_guard_last_admin after update or delete on public.members for each statement execute function public.guard_last_admin()';
 
   foreach t in array array['members', 'accounts', 'cards', 'contracts', 'items', 'memberships',
-                           'item_photos', 'settings', 'push_subscriptions', 'notification_log', 'audit_log'] loop
+                           'item_photos', 'settings', 'push_subscriptions', 'notification_log', 'audit_log', 'chores'] loop
     execute format('alter table public.%I enable row level security', t);
     execute format('revoke all on public.%I from anon, authenticated', t);
     -- service_role (used only by the daily GitHub Actions job) bypasses RLS but still needs table
@@ -441,7 +469,7 @@ begin
   end loop;
 
   -- household data: every active member can read and write
-  foreach t in array array['accounts', 'cards', 'contracts', 'items', 'memberships', 'item_photos', 'push_subscriptions'] loop
+  foreach t in array array['accounts', 'cards', 'contracts', 'items', 'memberships', 'item_photos', 'push_subscriptions', 'chores'] loop
     execute format('grant select, insert, update, delete on public.%I to authenticated', t);
     execute format('drop policy if exists member_all on public.%I', t);
     execute format('create policy member_all on public.%I for all to authenticated using (public.is_member()) with check (public.is_member())', t);

@@ -18,12 +18,16 @@ const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '
 const DEFAULTS = {
   status: 'active', links: [], tags: [], notify_days: {}, mf_linked: false, family_card: false, etc_card: false, auto_renew: false,
 };
-const TABLES = ['accounts', 'cards', 'contracts', 'items', 'memberships', 'item_photos', 'settings', 'push_subscriptions', 'notification_log', 'members', 'audit_log'];
-const TABLE_DEFAULTS = { members: { role: 'member', active: true, email: null }, settings: {}, notification_log: {}, push_subscriptions: {}, audit_log: {} };
+const TABLES = ['accounts', 'cards', 'contracts', 'items', 'memberships', 'item_photos', 'settings', 'push_subscriptions', 'notification_log', 'members', 'audit_log', 'chores'];
+const TABLE_DEFAULTS = {
+  members: { role: 'member', active: true, email: null, nickname: null },
+  settings: {}, notification_log: {}, push_subscriptions: {}, audit_log: {},
+  chores: { status: 'active', schedule: [], adjust: 1, assignee_type: 'member', assignee_id: null },
+};
 const SET_NULL = {
   accounts: [['cards', 'debit_account_id'], ['contracts', 'pay_account_id']],
   cards: [['contracts', 'pay_card_id'], ['memberships', 'card_id']],
-  members: ['accounts', 'cards', 'contracts', 'items', 'memberships'].map((t) => [t, 'holder_id']),
+  members: [...['accounts', 'cards', 'contracts', 'items', 'memberships'].map((t) => [t, 'holder_id']), ['chores', 'assignee_id']],
 };
 
 export function createMock() {

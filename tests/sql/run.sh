@@ -28,4 +28,13 @@ run homehub_upgrade -f tests/sql/upgrade_stage1_test.sql
 run homehub_upgrade -f supabase/schema.sql
 run homehub_upgrade -f supabase/schema.sql
 run homehub_upgrade -f tests/sql/upgrade_final_test.sql
+
+# 3. upgrade of the current production state (tests/sql/schema_v3.sql) to this version
+psql -q -v ON_ERROR_STOP=1 -c "drop database if exists homehub_v3" -c "create database homehub_v3" >/dev/null
+run homehub_v3 -f tests/sql/supabase_stub.sql
+run homehub_v3 -f tests/sql/schema_v3.sql
+run homehub_v3 -f tests/sql/upgrade_v3_seed.sql
+run homehub_v3 -f supabase/schema.sql
+run homehub_v3 -f supabase/schema.sql
+run homehub_v3 -f tests/sql/upgrade_v3_test.sql
 rm -f "$STAGE1"

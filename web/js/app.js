@@ -12,6 +12,9 @@ import { compressImage } from './image.js';
 import * as push from './push.js';
 import { icon, LEDGER_ICONS } from './icons.js';
 import { timelineChart, barChart, flowChart, urgency } from './charts.js';
+import {
+  CATEGORIES, GROUPS, CYCLES, WEEKDAYS, monthlyHours, basePoints, adjustedPoints, timesPerCycle, workload, choreSharers, isDueOn, scheduleText,
+} from './chores.js';
 
 const FREE_DB_BYTES = 500 * 1024 * 1024;
 const FREE_STORAGE_BYTES = 1024 * 1024 * 1024;
@@ -33,6 +36,7 @@ const state = {
   photos: [],
   settings: {},
   members: [],
+  chores: [],
 };
 const photoUrls = new Map();
 
@@ -141,11 +145,24 @@ function memberById(id) {
   return state.members.find((m) => m.id === id) || null;
 }
 
+function nick(m) {
+  return m.nickname || m.name;
+}
+
+// Holder fields show the legal name; everything else (greeting, assignee, history) the nickname.
 function memberName(id) {
   const m = memberById(id);
   if (!m) return '（削除済み）';
   return m.active ? m.name : `${m.name}（無効）`;
 }
+
+function memberNick(id) {
+  const m = memberById(id);
+  if (!m) return '（削除済み）';
+  return m.active ? nick(m) : `${nick(m)}（無効）`;
+}
+
+const ROLE_FIELD = MEMBER_DEF.fields.find((f) => f.key === 'role');
 
 function activeAdminsWithLogin(exceptId) {
   return state.members.filter((m) => m.role === 'admin' && m.active && m.email && m.id !== exceptId);
@@ -163,7 +180,7 @@ function recordLink(ledger, record) {
 // ---------------------------------------------------------------- data loading
 
 async function loadAll() {
-  const [accounts, cards, contracts, items, memberships, photos, settings, members] = await Promise.all([
+  const [accounts, cards, contracts, items, memberships, photos, settings, members, chores] = await Promise.all([
     db.selectAll('accounts'),
     db.selectAll('cards'),
     db.selectAll('contracts'),
@@ -172,11 +189,13 @@ async function loadAll() {
     db.selectAll('item_photos', 'created_at.asc'),
     db.selectAll('settings', 'key.asc'),
     db.selectAll('members'),
+    db.selectAll('chores'),
   ]);
   state.data = { accounts, cards, contracts, items, memberships };
   state.photos = photos;
   state.settings = Object.fromEntries(settings.map((s) => [s.key, s.value]));
   state.members = members;
+  state.chores = chores;
   state.loaded = true;
 }
 
@@ -195,6 +214,7 @@ function resetState() {
   state.photos = [];
   state.settings = {};
   state.members = [];
+  state.chores = [];
   for (const url of photoUrls.values()) URL.revokeObjectURL(url);
   photoUrls.clear();
 }
@@ -210,7 +230,8 @@ function setNav(page) {
   for (const a of document.querySelectorAll('#nav a')) {
     const target = a.dataset.page;
     const active = target === page || (target === 'ledgers' && ['list', 'view', 'edit'].includes(page))
-      || (target === 'settings' && page === 'member');
+      || (target === 'settings' && page === 'member')
+      || (target === 'chores' && ['chore', 'chore-edit'].includes(page));
     a.classList.toggle('active', active);
     if (active) a.setAttribute('aria-current', 'page');
     else a.removeAttribute('aria-current');
@@ -256,6 +277,9 @@ async function render() {
   else if (page === 'edit' && LEDGERS[a]) renderEdit(a, b);
   else if (page === 'settings') renderSettings();
   else if (page === 'flow') renderFlow();
+  else if (page === 'chores') renderChores();
+  else if (page === 'chore') renderChore(a);
+  else if (page === 'chore-edit') renderChoreEdit(a);
   else if (page === 'member') renderMember(a);
   else location.hash = '#/';
 }
@@ -419,7 +443,7 @@ function renderHome() {
   setView('ホーム',
     h('div', { class: 'dash-head' },
       h('div', { class: 'dash-date' }, `${y}年${m}月${d}日（${weekdayJa(today)}）`),
-      h('h1', {}, `こんにちは、${me().name}さん`)),
+      h('h1', {}, `こんにちは、${nick(me())}さん`)),
     backupReminder(),
     pushHint,
     h('div', { class: 'kpis' },
@@ -427,6 +451,7 @@ function renderHome() {
       kpi('期限 30日以内', String(soon), '件', soon > 0 ? 'kpi-alert' : ''),
       kpi('登録データ', String(records), '件')),
     h('div', { class: 'dash-grid' },
+      todayChoresCard(),
       h('section', { class: 'card' },
         sectionHead('clock', '期限が近い予定'),
         events.some((e) => e.daysLeft >= 0) ? timelineChart(events) : null,
@@ -796,6 +821,8 @@ function historyValue(field, key, v) {
     if (field.type === 'bool') return v ? 'はい' : 'いいえ';
     if (field.type === 'ref') return (find(field.ref, v) || { name: '（削除済み）' }).name;
     if (field.type === 'member') return memberName(v);
+    if (field.type === 'member-nick') return memberNick(v);
+    if (field.type === 'schedule') return Array.isArray(v) ? v.join('・') : String(v);
     if (field.type === 'select' || field.type === 'status') return optionLabel(field, v);
     if (field.type === 'links') return v.map((l) => l.label).join('、');
     if (field.type === 'tags') return v.join(' ');
@@ -820,7 +847,7 @@ function historyLine(entry, fields) {
 // Who created / last changed the record, and its change history (newest first).
 function historySection(table, record, fields) {
   const box = h('div', {}, h('p', { class: 'muted' }, '読み込み中…'));
-  const who = (id) => (id ? memberName(id) : '—');
+  const who = (id) => (id ? memberNick(id) : '—');
   const stamps = [
     record.created_at ? `作成: ${who(record.created_by)}（${formatTime(record.created_at)}）` : null,
     record.updated_at ? `最終更新: ${who(record.updated_by)}（${formatTime(record.updated_at)}）` : null,
@@ -1006,7 +1033,7 @@ function fieldInput(field, r, ledger) {
     case 'member': {
       const choices = [...state.members].filter((m) => m.active || m.id === v).sort(byName);
       const el = h('select', { id }, h('option', { value: '' }, '（未設定）'),
-        choices.map((m) => h('option', { value: m.id, selected: m.id === v }, m.active ? m.name : `${m.name}（無効）`)),
+        choices.map((m) => h('option', { value: m.id, selected: m.id === v }, `${m.name}${m.nickname ? `（${m.nickname}）` : ''}${m.active ? '' : '（無効）'}`)),
         v && !memberById(v) ? h('option', { value: v, selected: true }, '（削除済み）') : null);
       return wrap(el, () => el.value || null, '設定画面の「ユーザー」に登録した人から選びます。');
     }
@@ -1249,7 +1276,7 @@ function prepareImport(ledger, text) {
           } else raw[f.key] = null;
         } else if (f.type === 'member') {
           if (v.trim()) {
-            const hit = state.members.find((m) => m.name === v.trim());
+            const hit = state.members.find((m) => m.name === v.trim()) || state.members.find((m) => m.nickname === v.trim());
             if (hit) raw[f.key] = hit.id;
             else rowErrors.push(`${f.label}「${v.trim()}」がユーザーマスターにありません。設定画面の「ユーザー」に先に登録してください。`);
           } else raw[f.key] = null;
@@ -1366,6 +1393,7 @@ function importSection() {
 async function fullBackup(status) {
   await loadAll();
   const files = LEDGER_ORDER.map((k) => ({ name: `${LEDGERS[k].csvName}.csv`, data: ledgerCSV(k) }));
+  files.push({ name: '家事.csv', data: choresCSV() });
   const photoRows = [['写真ID', '品名', '品ID', 'ファイル', '登録日時']];
   let i = 0;
   for (const p of state.photos) {
@@ -1508,8 +1536,9 @@ function membersSection() {
     h('div', { class: 'title-row' }, h('h2', {}, 'ユーザー'),
       isAdmin() ? h('a', { class: 'button small primary', href: '#/member/new' }, '＋ ユーザーを追加') : null),
     h('ul', { class: 'member-list' }, rows.map((m) => h('li', {},
-      h('a', { href: `#/member/${m.id}` }, m.name),
-      h('span', { class: 'muted small' }, ` ${optionLabel(MEMBER_DEF.fields[2], m.role)}・${m.email ? 'ログインあり' : 'ログインなし'}${m.active ? '' : '・無効'}`)))),
+      h('a', { href: `#/member/${m.id}` }, nick(m)),
+      m.nickname ? h('span', { class: 'muted small' }, `（${m.name}）`) : null,
+      h('span', { class: 'muted small' }, ` ${optionLabel(ROLE_FIELD, m.role)}・${m.email ? 'ログインあり' : 'ログインなし'}${m.active ? '' : '・無効'}`)))),
     h('p', { class: 'muted small' }, '各台帳の「名義人」は、ここに登録した人から選びます。ログイン用メールアドレスを入れた人は、管理者が Supabase で同じメールアドレスのユーザーを作るとログインできます（新規登録は止めてあります）。'));
 }
 
@@ -1614,7 +1643,7 @@ function shortcutSection() {
 
 function accountSection() {
   return h('section', { class: 'card' }, h('h2', {}, 'アカウント'),
-    h('p', {}, `ログイン中: ${me().name}（${optionLabel(MEMBER_DEF.fields[2], me().role)}）`),
+    h('p', {}, `ログイン中: ${nick(me())}（${optionLabel(ROLE_FIELD, me().role)}）`),
     h('p', { class: 'muted small' }, db.currentEmail() || ''),
     h('div', { class: 'button-row' },
       h('button', { type: 'button', onclick: (ev) => busy(ev.currentTarget, async () => { await db.signOut('local'); resetState(); render(); }) }, 'ログアウト'),
@@ -1629,6 +1658,282 @@ function accountSection() {
 
 function renderSettings() {
   setView('設定', h('h1', {}, '設定'), notifySection(), membersSection(), backupSection(), importSection(), shortcutSection(), usageSection(), accountSection());
+}
+
+// ---------------------------------------------------------------- chores (plan, workload, today)
+
+const CYCLE_FIELD = { key: 'cycle', label: 'サイクル', type: 'select', required: true, options: Object.entries(CYCLES).map(([k, v]) => [k, v.label]) };
+const CHORE_FIELDS = [
+  { key: 'name', label: 'タスク名', type: 'text', required: true, max: 200 },
+  { key: 'category', label: 'カテゴリ', type: 'select', options: CATEGORIES },
+  { key: 'chore_group', label: 'グループ', type: 'select', options: GROUPS },
+  CYCLE_FIELD,
+  { key: 'schedule', label: 'やる日', type: 'schedule' },
+  { key: 'times', label: '回数（サイクルあたり）', type: 'decimal', min: 0.1, max: 1000 },
+  { key: 'minutes', label: '1回の時間（分）', type: 'decimal', min: 0, max: 10000 },
+  { key: 'adjust', label: '調整係数', type: 'decimal', min: 0.1, max: 5 },
+  { key: 'points_override', label: '点数/月（随時のみ）', type: 'decimal', min: 0, max: 1000000 },
+  { key: 'assignee', label: '担当', type: 'assignee' },
+  { key: 'status', label: '状態', type: 'status', options: [['active', '利用中'], ['closed', '停止']] },
+  { key: 'memo', label: 'メモ', type: 'textarea', max: 5000 },
+];
+const ASSIGNEE_LABEL = { all: '全員', tbd: '未定' };
+
+function points(n) {
+  return `${Math.round(n).toLocaleString('ja-JP')}点`;
+}
+
+function hours(n) {
+  return `${(Math.round(n * 100) / 100).toLocaleString('ja-JP')}時間`;
+}
+
+function assigneeText(c) {
+  if (c.assignee_type === 'member' && c.assignee_id) return memberNick(c.assignee_id);
+  return ASSIGNEE_LABEL[c.assignee_type] || '未定';
+}
+
+function choreSummary(c) {
+  const parts = [scheduleText(c)];
+  if (c.cycle !== 'adhoc' && c.minutes !== null && c.minutes !== undefined) parts.push(`${Number(c.minutes)}分/回`);
+  parts.push(assigneeText(c));
+  return parts.join('・');
+}
+
+function choreRow(c) {
+  const h1 = monthlyHours(c);
+  return h('a', { class: 'list-item', href: `#/chore/${c.id}` },
+    h('span', { class: 'icbox icbox-sm lg-chores' }, icon('chore')),
+    h('div', { class: 'list-body' },
+      h('div', { class: 'list-title' }, c.name, c.status === 'closed' ? h('span', { class: 'badge badge-past' }, '停止') : null),
+      h('div', { class: 'muted small' }, [c.category, choreSummary(c)].filter(Boolean).join('・'))),
+    h('div', { class: 'chore-figure num' }, h('strong', {}, points(adjustedPoints(c))), h('span', { class: 'muted small' }, h1 === null ? '随時' : `${hours(h1)}/月`)),
+    icon('chevron', 'ic ic-sm list-chevron'));
+}
+
+// Today's chores: mine first, then the others; "all" chores are everyone's.
+function todayChores() {
+  const today = todayJST();
+  const mine = me() ? me().id : null;
+  const due = state.chores.filter((c) => isDueOn(c, today));
+  const isMine = (c) => c.assignee_type === 'all' || (c.assignee_type === 'member' && c.assignee_id === mine);
+  return [...due.filter(isMine), ...due.filter((c) => !isMine(c))].map((c) => ({ chore: c, mine: isMine(c) }));
+}
+
+function todayChoresCard() {
+  const list = todayChores();
+  return h('section', { class: 'card' },
+    sectionHead('chore', '今日の家事', { href: '#/chores', text: '家事へ' }),
+    list.length === 0
+      ? h('p', { class: 'muted' }, '今日の家事はありません（やる日を決めた家事だけ表示します）。')
+      : h('ul', { class: 'today-chores' }, list.map(({ chore, mine }) => h('li', { class: mine ? 'mine' : '' },
+        h('a', { href: `#/chore/${chore.id}` }, chore.name),
+        h('span', { class: `badge ${mine ? 'badge-warn' : ''}` }, icon('user'), assigneeText(chore))))));
+}
+
+function workloadSection() {
+  const { rows, tbd } = workload(state.chores, state.members);
+  if (rows.length === 0 && tbd.count === 0) return h('section', { class: 'card' }, h('p', { class: 'muted' }, '家事を登録すると、担当ごとの負担を表示します。'));
+  const sorted = [...rows].sort((a, b) => b.points - a.points);
+  const diff = sorted.length >= 2 ? sorted[0].points - sorted[sorted.length - 1].points : 0;
+  const categories = [...new Set(rows.flatMap((r) => Object.keys(r.byCategory)))].sort((a, b) => CATEGORIES.indexOf(a) - CATEGORIES.indexOf(b));
+  return h('section', { class: 'card' },
+    h('h2', { class: 'with-icon' }, icon('user'), '分担（月あたりの負担）'),
+    barChart(rows.map((r) => [nick(r.member), r.points]), '担当ごとの月の負担（調整後の点数）', points),
+    sorted.length >= 2
+      ? h('p', { class: 'balance' }, diff < 0.5 ? '負担は同じです。' : `${nick(sorted[0].member)} が ${nick(sorted[sorted.length - 1].member)} より ${points(diff)} 多い`)
+      : null,
+    h('table', { class: 'table' },
+      h('thead', {}, h('tr', {}, h('th', {}, ''), rows.map((r) => h('th', { class: 'num' }, nick(r.member))))),
+      h('tbody', {},
+        categories.map((cat) => h('tr', {}, h('td', {}, cat), rows.map((r) => h('td', { class: 'num' }, points(r.byCategory[cat] || 0))))),
+        h('tr', { class: 'total' }, h('td', {}, '合計'), rows.map((r) => h('td', { class: 'num' }, points(r.points)))),
+        h('tr', {}, h('td', {}, '時間/月'), rows.map((r) => h('td', { class: 'num' }, hours(r.hours)))))),
+    tbd.count > 0 ? h('p', { class: 'muted small' }, `担当が未定: ${points(tbd.points)}（${Math.round(tbd.count)}件）。合計には含めていません。`) : null,
+    h('p', { class: 'muted small' }, '点数＝月の時間×1000×調整係数（随時は入力した点数×調整係数）。「全員」の家事は、担当のある人で等分しています。'));
+}
+
+function renderChores() {
+  const who = h('select', { 'aria-label': '担当で絞り込み' }, h('option', { value: '' }, '担当: すべて'),
+    choreSharers(state.chores, state.members).map((m) => h('option', { value: `member:${m.id}` }, nick(m))),
+    h('option', { value: 'all' }, '全員'), h('option', { value: 'tbd' }, '未定'));
+  const cat = h('select', { 'aria-label': 'カテゴリで絞り込み' }, h('option', { value: '' }, 'カテゴリ: すべて'), CATEGORIES.map((c) => h('option', { value: c }, c)));
+  const list = h('div', { class: 'list' });
+  const update = () => {
+    const [type, id] = who.value.split(':');
+    const rows = state.chores
+      .filter((c) => !who.value || (type === 'member' ? c.assignee_type === 'member' && c.assignee_id === id : c.assignee_type === type))
+      .filter((c) => !cat.value || c.category === cat.value)
+      .sort((a, b) => (a.status === 'closed') - (b.status === 'closed') || CATEGORIES.indexOf(a.category) - CATEGORIES.indexOf(b.category) || a.name.localeCompare(b.name, 'ja'));
+    list.replaceChildren(...(rows.length === 0 ? [h('p', { class: 'muted' }, '該当する家事はありません。')] : rows.map(choreRow)));
+  };
+  who.addEventListener('change', update);
+  cat.addEventListener('change', update);
+  update();
+  setView('家事',
+    h('div', { class: 'title-row' }, h('h1', { class: 'with-icon' }, h('span', { class: 'icbox lg-chores' }, icon('chore')), '家事'),
+      h('a', { class: 'button primary', href: '#/chore-edit/new' }, '＋ 追加')),
+    todayChoresCard(),
+    workloadSection(),
+    h('div', { class: 'filters filters-2' }, who, cat),
+    list);
+}
+
+function renderChore(id) {
+  const c = state.chores.find((x) => x.id === id);
+  if (!c) {
+    setView('見つかりません', h('section', { class: 'card' }, h('p', {}, '家事が見つかりません。削除された可能性があります。'), h('a', { href: '#/chores' }, '家事の一覧へ')));
+    return;
+  }
+  const h1 = monthlyHours(c);
+  const formula = c.cycle === 'adhoc'
+    ? `随時: ${points(basePoints(c))} × 調整係数 ${Number(c.adjust)} = ${points(adjustedPoints(c))}`
+    : `${Number(c.minutes || 0)}分 × ${timesPerCycle(c)}回 × ${CYCLES[c.cycle].label}の換算 ${CYCLES[c.cycle].perMonth === 1 / 12 ? '1/12' : CYCLES[c.cycle].perMonth} ÷ 60 = ${hours(h1)}/月 → ${points(basePoints(c))} × 調整係数 ${Number(c.adjust)} = ${points(adjustedPoints(c))}`;
+  const rows = [
+    ['カテゴリ', c.category || '—'], ['グループ', c.chore_group || '—'], ['やる日', scheduleText(c)],
+    ['担当', assigneeText(c)], ['状態', c.status === 'closed' ? '停止' : '利用中'], ['メモ', c.memo || '—'],
+  ];
+  const del = h('button', { type: 'button', class: 'danger', onclick: (ev) => busy(ev.currentTarget, async () => {
+    if (!window.confirm(`「${c.name}」を削除します。元に戻せません。よろしいですか？（やめた家事は「停止」にもできます）`)) return;
+    await db.deleteWhere('chores', 'id', c.id);
+    state.chores = await db.selectAll('chores');
+    toast('削除しました。');
+    location.hash = '#/chores';
+  }) }, '削除');
+  setView(c.name,
+    h('p', {}, h('a', { href: '#/chores' }, '← 家事の一覧')),
+    h('div', { class: 'title-row' }, h('h1', { class: 'with-icon' }, h('span', { class: 'icbox lg-chores' }, icon('chore')), c.name),
+      h('a', { class: 'button primary', href: `#/chore-edit/${c.id}` }, '編集')),
+    h('section', { class: 'card' },
+      h('div', { class: 'kpis kpis-2' },
+        h('div', { class: 'kpi kpi-main' }, h('div', { class: 'kpi-label' }, '点数 / 月'), h('div', { class: 'kpi-value num' }, Math.round(adjustedPoints(c)).toLocaleString('ja-JP'), h('small', {}, '点'))),
+        h('div', { class: 'kpi' }, h('div', { class: 'kpi-label' }, '時間 / 月'), h('div', { class: 'kpi-value num' }, h1 === null ? '—' : (Math.round(h1 * 100) / 100).toLocaleString('ja-JP'), h('small', {}, h1 === null ? '' : '時間')))),
+      h('p', { class: 'muted small formula' }, formula)),
+    h('section', { class: 'card' }, h('dl', { class: 'fields' }, rows.map(([k, v]) => [h('dt', {}, k), h('dd', {}, v)]))),
+    historySection('chores', c, CHORE_FIELDS.concat([{ key: 'assignee_id', label: '担当', type: 'member-nick' }, { key: 'assignee_type', label: '担当の種類', type: 'select', options: [['member', '人'], ['all', '全員'], ['tbd', '未定']] }])),
+    h('div', { class: 'actions' }, del));
+}
+
+function scheduleInput(cycle, values) {
+  const set = new Set((values || []).map(Number));
+  const choices = cycle === 'week' ? WEEKDAYS.map((w, i) => [i, w])
+    : cycle === 'month' ? Array.from({ length: 31 }, (_, i) => [i + 1, String(i + 1)])
+      : cycle === 'year' ? Array.from({ length: 12 }, (_, i) => [i + 1, `${i + 1}月`]) : [];
+  const box = h('div', { class: `day-picker day-picker-${cycle}` }, choices.map(([v, label]) => h('label', { class: 'day' },
+    h('input', { type: 'checkbox', value: String(v), checked: set.has(v) }), h('span', {}, label))));
+  return { el: box, get: () => [...box.querySelectorAll('input:checked')].map((i) => Number(i.value)) };
+}
+
+function renderChoreEdit(id) {
+  const isNew = id === 'new';
+  const c = isNew ? { cycle: 'week', adjust: 1, status: 'active', assignee_type: 'member', assignee_id: me() ? me().id : null, schedule: [] } : state.chores.find((x) => x.id === id);
+  if (!c) {
+    renderChore(id);
+    return;
+  }
+  const byKey = Object.fromEntries(CHORE_FIELDS.map((f) => [f.key, f]));
+  const simple = ['name', 'category', 'chore_group', 'cycle', 'times', 'minutes', 'adjust', 'points_override', 'status', 'memo']
+    .map((k) => ({ field: byKey[k], ...fieldInput(byKey[k], c) }));
+  const input = Object.fromEntries(simple.map((i) => [i.field.key, i]));
+  const assignee = h('select', { id: 'f-assignee' },
+    state.members.filter((m) => m.active || m.id === c.assignee_id).sort(byName).map((m) => h('option', { value: `member:${m.id}`, selected: c.assignee_type === 'member' && c.assignee_id === m.id }, nick(m))),
+    h('option', { value: 'all', selected: c.assignee_type === 'all' }, '全員（等分）'),
+    h('option', { value: 'tbd', selected: c.assignee_type === 'tbd' || (c.assignee_type === 'member' && !c.assignee_id) }, '未定'));
+  const scheduleBox = h('div', { class: 'field', 'data-key': 'schedule' }, h('span', { class: 'label' }, 'やる日'));
+  const scheduleHelp = h('p', { class: 'muted small' });
+  let schedule = scheduleInput(c.cycle, c.schedule);
+  const preview = h('p', { class: 'preview num' });
+  const cycleSelect = input.cycle.el.querySelector('select');
+  const draw = () => {
+    const cycle = cycleSelect.value || 'week';
+    const keep = schedule.get();
+    schedule = scheduleInput(cycle, cycle === c.cycle ? keep : []);
+    scheduleBox.replaceChildren(h('span', { class: 'label' }, 'やる日'), schedule.el, scheduleHelp);
+    scheduleHelp.textContent = cycle === 'week' ? '曜日を選ぶと、その数が週の回数になり、その日の朝にお知らせします。'
+      : cycle === 'month' ? '日にちを選ぶと、その数が月の回数になります（31日など無い日は月末）。'
+        : cycle === 'year' ? '月を選ぶと、その数が年の回数になり、その月の1日にお知らせします。' : '';
+    scheduleBox.hidden = !['week', 'month', 'year'].includes(cycle);
+    input.points_override.el.hidden = cycle !== 'adhoc';
+    input.times.el.hidden = cycle === 'adhoc';
+    input.minutes.el.hidden = cycle === 'adhoc';
+    schedule.el.addEventListener('change', updatePreview);
+    updatePreview();
+  };
+  const current = () => {
+    const cycle = cycleSelect.value || 'week';
+    const sched = ['week', 'month', 'year'].includes(cycle) ? schedule.get() : [];
+    return { cycle, schedule: sched, times: sched.length || Number(input.times.get()) || 0, minutes: Number(input.minutes.get()) || 0, adjust: Number(input.adjust.get()) || 1, points_override: Number(input.points_override.get()) || 0 };
+  };
+  function updatePreview() {
+    const v = current();
+    const auto = ['week', 'month', 'year'].includes(v.cycle) && v.schedule.length > 0;
+    const timesInput = input.times.el.querySelector('input');
+    timesInput.disabled = auto;
+    if (auto) timesInput.value = String(v.schedule.length);
+    const hrs = monthlyHours(v);
+    preview.textContent = `→ ${hrs === null ? '随時' : `${hours(hrs)}/月`}・${points(adjustedPoints(v))}/月`;
+  }
+  cycleSelect.addEventListener('change', draw);
+  for (const k of ['times', 'minutes', 'adjust', 'points_override']) input[k].el.querySelector('input').addEventListener('input', updatePreview);
+  const summary = h('div', { class: 'error', role: 'alert' });
+  const submit = h('button', { type: 'submit', class: 'primary' }, '保存');
+  const form = h('form', { class: 'card form', novalidate: true, onsubmit: (ev) => {
+    ev.preventDefault();
+    busy(submit, async () => {
+      for (const p of form.querySelectorAll('.field-error')) p.textContent = '';
+      summary.textContent = '';
+      const errors = [];
+      const values = {};
+      for (const i of simple) {
+        const res = parseField(i.field, i.get());
+        if (res.error) errors.push({ key: i.field.key, message: res.error });
+        else values[i.field.key] = res.value;
+      }
+      values.schedule = ['week', 'month', 'year'].includes(values.cycle) ? schedule.get().sort((a, b) => a - b) : [];
+      if (values.cycle === 'adhoc') {
+        values.times = null;
+        if (values.points_override === null) errors.push({ key: 'points_override', message: '随時の家事は、点数/月を入力してください。' });
+      } else {
+        values.points_override = null;
+        if (values.schedule.length > 0) values.times = values.schedule.length;
+        else if (!values.times) errors.push({ key: 'times', message: 'やる日を選ぶか、回数を入力してください。' });
+        if (values.minutes === null) errors.push({ key: 'minutes', message: '1回の時間（分）を入力してください。' });
+      }
+      if (values.adjust === null) values.adjust = 1;
+      const [type, memberId] = assignee.value.split(':');
+      values.assignee_type = type;
+      values.assignee_id = type === 'member' ? memberId : null;
+      if (errors.length) {
+        for (const e of errors) {
+          const box = form.querySelector(`[data-key="${e.key}"] .field-error`);
+          if (box) box.textContent = e.message;
+        }
+        summary.textContent = `入力内容を確認してください（${errors.length}件）。`;
+        return;
+      }
+      const saved = isNew ? (await db.insertRows('chores', [values]))[0] : await db.updateRow('chores', id, values);
+      state.chores = await db.selectAll('chores');
+      toast('保存しました。');
+      location.hash = `#/chore/${saved.id}`;
+    });
+  } },
+  summary,
+  input.name.el, input.category.el, input.chore_group.el, input.cycle.el, scheduleBox,
+  input.times.el, input.minutes.el, input.points_override.el, input.adjust.el,
+  h('div', { class: 'field', 'data-key': 'assignee' }, h('label', { for: 'f-assignee' }, '担当'), assignee, h('p', { class: 'error small field-error' })),
+  input.status.el, input.memo.el,
+  preview,
+  h('p', { class: 'muted small' }, '調整係数は大変さの重み（標準 1.0。今の表では 0.8〜1.1）。'),
+  h('div', { class: 'actions' }, h('a', { class: 'button', href: isNew ? '#/chores' : `#/chore/${id}` }, 'キャンセル'), submit));
+  draw();
+  setView(isNew ? '家事を追加' : `${c.name}を編集`, h('h1', {}, isNew ? '家事を追加' : `${c.name}を編集`), form);
+}
+
+function choresCSV() {
+  const head = ['ID', 'タスク名', 'カテゴリ', 'グループ', 'サイクル', 'やる日', '回数', '分/回', '調整係数', '点数/月（随時）', '担当', '状態', '時間/月', '調整後点数/月', 'メモ'];
+  const rows = state.chores.map((c) => [c.id, c.name, c.category || '', c.chore_group || '', CYCLES[c.cycle] ? CYCLES[c.cycle].label : c.cycle,
+    (c.schedule || []).join(' '), c.times ?? '', c.minutes ?? '', c.adjust ?? '', c.points_override ?? '', assigneeText(c), c.status === 'closed' ? '停止' : '利用中',
+    monthlyHours(c) === null ? '' : Math.round(monthlyHours(c) * 1000) / 1000, Math.round(adjustedPoints(c) * 100) / 100, c.memo || '']);
+  return toCSV([head, ...rows]);
 }
 
 // ---------------------------------------------------------------- start

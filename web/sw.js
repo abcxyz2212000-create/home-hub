@@ -1,10 +1,10 @@
 // Service worker: offline app shell + Web Push display.
 // Bump CACHE when the list of files changes.
-const CACHE = 'homehub-v2';
+const CACHE = 'homehub-v3';
 const SHELL = [
   './', 'index.html', 'manifest.webmanifest', 'css/app.css',
   'js/app.js', 'js/config.js', 'js/supabase.js', 'js/schema.js', 'js/events.js', 'js/validate.js',
-  'js/csv.js', 'js/zip.js', 'js/image.js', 'js/push.js', 'js/icons.js', 'js/charts.js', 'icons/icon-192.png',
+  'js/csv.js', 'js/zip.js', 'js/image.js', 'js/push.js', 'js/icons.js', 'js/charts.js', 'js/chores.js', 'icons/icon-192.png',
 ];
 
 self.addEventListener('install', (event) => {
