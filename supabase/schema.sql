@@ -473,6 +473,17 @@ begin
 end;
 $$;
 
+-- Created by Supabase when "Enable automatic RLS" is turned on in the project settings. It does not need to be
+-- callable through the API by anyone (Supabase's security advisor flags it), so close it. Does nothing if the
+-- function does not exist.
+do $$
+begin
+  if to_regprocedure('public.rls_auto_enable()') is not null then
+    revoke execute on function public.rls_auto_enable() from public, anon, authenticated;
+  end if;
+end;
+$$;
+
 -- ---------------------------------------------------------------------------
 -- Usage statistics for the settings screen (members only).
 -- ---------------------------------------------------------------------------
