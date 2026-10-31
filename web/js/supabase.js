@@ -87,6 +87,7 @@ async function readError(res) {
 function userMessage(status, code) {
   if (status === 401) return 'ログインの有効期限が切れました。もう一度ログインしてください。';
   if (status === 403 || code === '42501') return 'この操作を行う権限がありません。';
+  if (code === 'HH001') return '管理者が1人もいなくなるため、この変更はできません。';
   if (status === 409 || code === '23505') return '同じデータが既に登録されています。';
   if (code === '23514' || code === '22P02' || code === '22001') return '入力内容が正しくないため保存できませんでした。';
   if (code === '23503') return '関連するデータが見つからないため保存できませんでした。';
@@ -186,6 +187,12 @@ const rest = (path) => `${CONFIG.supabaseUrl}/rest/v1/${path}`;
 
 export async function selectAll(table, order = 'name.asc') {
   const res = await authFetch(rest(`${table}?select=*&order=${order}`));
+  return res.json();
+}
+
+// query: PostgREST filters, e.g. 'table_name=eq.accounts&order=at.desc&limit=50'
+export async function selectWhere(table, query) {
+  const res = await authFetch(rest(`${table}?select=*&${query}`));
   return res.json();
 }
 

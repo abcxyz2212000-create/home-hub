@@ -1,11 +1,10 @@
 // 家の管理ハブ: single page app (vanilla JS, hash routing).
 import * as db from './supabase.js';
 import { AppError } from './supabase.js';
-import { LEDGERS, LEDGER_ORDER, optionPairs, optionLabel } from './schema.js';
+import { LEDGERS, LEDGER_ORDER, MEMBER_DEF, optionPairs, optionLabel } from './schema.js';
 import { EVENT_TYPES, collectEvents, upcomingEvents, monthlyCost, monthlyTotal, todayJST, toDayNumber } from './events.js';
 import {
   parseField, parseTags, validateLinks, parseLinksCell, linksCell, parseNotifyDays, notifyDaysText, findCardNumberLike, safeUrl,
-  parseMembers, MAX_MEMBERS, MAX_MEMBER_LENGTH,
 } from './validate.js';
 import { parseCSV, toCSV, decodeCSVBytes, unescapeFormula } from './csv.js';
 import { createZip } from './zip.js';
@@ -31,6 +30,7 @@ const state = {
   data: { accounts: [], cards: [], contracts: [], items: [], memberships: [] },
   photos: [],
   settings: {},
+  members: [],
 };
 const photoUrls = new Map();
 
@@ -124,10 +124,29 @@ function byName(a, b) {
   return a.name.localeCompare(b.name, 'ja');
 }
 
-// Family names registered on the settings screen (holder drop-down). Empty = free text.
-function registeredMembers() {
-  const m = state.settings.members;
-  return Array.isArray(m) ? m.filter((x) => typeof x === 'string') : [];
+// The logged-in person in the user master (null: not registered or inactive).
+function me() {
+  const email = (db.currentEmail() || '').toLowerCase();
+  return state.members.find((m) => m.active && m.email && m.email === email) || null;
+}
+
+function isAdmin() {
+  const m = me();
+  return Boolean(m && m.role === 'admin');
+}
+
+function memberById(id) {
+  return state.members.find((m) => m.id === id) || null;
+}
+
+function memberName(id) {
+  const m = memberById(id);
+  if (!m) return '（削除済み）';
+  return m.active ? m.name : `${m.name}（無効）`;
+}
+
+function activeAdminsWithLogin(exceptId) {
+  return state.members.filter((m) => m.role === 'admin' && m.active && m.email && m.id !== exceptId);
 }
 
 function find(ledger, id) {
@@ -142,7 +161,7 @@ function recordLink(ledger, record) {
 // ---------------------------------------------------------------- data loading
 
 async function loadAll() {
-  const [accounts, cards, contracts, items, memberships, photos, settings] = await Promise.all([
+  const [accounts, cards, contracts, items, memberships, photos, settings, members] = await Promise.all([
     db.selectAll('accounts'),
     db.selectAll('cards'),
     db.selectAll('contracts'),
@@ -150,10 +169,12 @@ async function loadAll() {
     db.selectAll('memberships'),
     db.selectAll('item_photos', 'created_at.asc'),
     db.selectAll('settings', 'key.asc'),
+    db.selectAll('members'),
   ]);
   state.data = { accounts, cards, contracts, items, memberships };
   state.photos = photos;
   state.settings = Object.fromEntries(settings.map((s) => [s.key, s.value]));
+  state.members = members;
   state.loaded = true;
 }
 
@@ -171,6 +192,7 @@ function resetState() {
   state.data = { accounts: [], cards: [], contracts: [], items: [], memberships: [] };
   state.photos = [];
   state.settings = {};
+  state.members = [];
   for (const url of photoUrls.values()) URL.revokeObjectURL(url);
   photoUrls.clear();
 }
@@ -185,7 +207,8 @@ function route() {
 function setNav(page) {
   for (const a of document.querySelectorAll('#nav a')) {
     const target = a.dataset.page;
-    const active = target === page || (target === 'ledgers' && ['list', 'view', 'edit'].includes(page));
+    const active = target === page || (target === 'ledgers' && ['list', 'view', 'edit'].includes(page))
+      || (target === 'settings' && page === 'member');
     a.classList.toggle('active', active);
     if (active) a.setAttribute('aria-current', 'page');
     else a.removeAttribute('aria-current');
@@ -217,6 +240,11 @@ async function render() {
       return;
     }
   }
+  if (!me()) {
+    nav.hidden = true;
+    renderNotMember();
+    return;
+  }
   const { page, a, b } = route();
   setNav(page);
   if (page === 'home') renderHome();
@@ -225,6 +253,7 @@ async function render() {
   else if (page === 'view' && LEDGERS[a]) renderView(a, b);
   else if (page === 'edit' && LEDGERS[a]) renderEdit(a, b);
   else if (page === 'settings') renderSettings();
+  else if (page === 'member') renderMember(a);
   else location.hash = '#/';
 }
 
@@ -235,6 +264,15 @@ function renderSetupNeeded() {
     h('h1', {}, '初期設定が必要です'),
     h('p', {}, 'web/js/config.js に Supabase の URL と公開キーを設定してください。'),
     h('p', { class: 'muted' }, '手順は docs/setup.md を参照してください。')));
+}
+
+// Logged in, but not an active member of the user master: no data is readable (RLS).
+function renderNotMember() {
+  setView('利用できません', h('section', { class: 'card' },
+    h('h1', {}, 'このアカウントは利用者として登録されていません'),
+    h('p', {}, `ログイン中: ${db.currentEmail() || ''}`),
+    h('p', {}, '管理者に、ユーザーマスターへの登録（または有効化）を依頼してください。'),
+    h('button', { type: 'button', onclick: (ev) => busy(ev.currentTarget, async () => { await db.signOut('local'); resetState(); render(); }) }, 'ログアウト')));
 }
 
 function renderLogin() {
@@ -410,6 +448,7 @@ function fieldValueNodes(field, r) {
   switch (field.type) {
     case 'bool': return v ? 'はい' : 'いいえ';
     case 'ref': return v ? recordLink(field.ref, find(field.ref, v)) : null;
+    case 'member': return v ? memberName(v) : null;
     case 'payment': return paymentNodes(r);
     case 'links': return v && v.length ? h('ul', { class: 'links' }, v.map((l) => h('li', {}, extLink(l.url, l.label)))) : null;
     case 'tags': return v && v.length ? h('div', { class: 'tags' }, v.map((t) => h('span', { class: 'tag' }, t))) : null;
@@ -518,7 +557,74 @@ function renderView(ledger, id) {
     h('section', { class: 'card' }, h('dl', { class: 'fields' }, [...rows, ...notifyRows].map(([k, v]) => [h('dt', {}, k), h('dd', {}, v)]))),
     def.photos ? photoSection(r) : null,
     relations(ledger, r),
+    historySection(ledger, r, def.fields),
     h('div', { class: 'actions' }, delBtn));
+}
+
+// ---------------------------------------------------------------- change history
+
+const HISTORY_LIMIT = 50;
+const EXTRA_LABELS = { pay_card_id: '支払カード', pay_account_id: '支払口座', notify_days: '通知のタイミング' };
+
+function formatTime(iso) {
+  return iso ? new Date(iso).toLocaleString('ja-JP', { dateStyle: 'short', timeStyle: 'short' }) : '';
+}
+
+function historyValue(field, key, v) {
+  if (v === null || v === undefined || v === '' || (Array.isArray(v) && v.length === 0)) return '（なし）';
+  if (key === 'pay_card_id') return (find('cards', v) || { name: '（削除済み）' }).name;
+  if (key === 'pay_account_id') return (find('accounts', v) || { name: '（削除済み）' }).name;
+  if (key === 'notify_days') {
+    const parts = Object.entries(v).map(([t, days]) => `${EVENT_TYPES[t] ? EVENT_TYPES[t].label : t}: ${days.length ? `${days.join('・')}日前` : '通知しない'}`);
+    return parts.length ? parts.join('、') : '初期設定';
+  }
+  if (field) {
+    if (field.type === 'bool') return v ? 'はい' : 'いいえ';
+    if (field.type === 'ref') return (find(field.ref, v) || { name: '（削除済み）' }).name;
+    if (field.type === 'member') return memberName(v);
+    if (field.type === 'select' || field.type === 'status') return optionLabel(field, v);
+    if (field.type === 'links') return v.map((l) => l.label).join('、');
+    if (field.type === 'tags') return v.join(' ');
+  }
+  const text = typeof v === 'string' ? v : JSON.stringify(v);
+  return text.length > 60 ? `${text.slice(0, 60)}…` : text;
+}
+
+function historyLine(entry, fields) {
+  const head = h('div', { class: 'muted small' }, `${formatTime(entry.at)}　${entry.actor_name}`);
+  const simple = { insert: '追加しました', delete: '削除しました', photo_insert: '写真を追加しました', photo_delete: '写真を削除しました' };
+  if (simple[entry.action]) return h('li', {}, head, h('div', {}, simple[entry.action]));
+  const changes = Object.entries(entry.changes || {}).map(([key, pair]) => {
+    const [before, after] = Array.isArray(pair) ? pair : [null, null];
+    const field = fields.find((f) => f.key === key);
+    const label = field ? field.label : EXTRA_LABELS[key] || key;
+    return h('div', {}, `${label}: ${historyValue(field, key, before)} → ${historyValue(field, key, after)}`);
+  });
+  return h('li', {}, head, changes.length ? changes : h('div', {}, '変更しました'));
+}
+
+// Who created / last changed the record, and its change history (newest first).
+function historySection(table, record, fields) {
+  const box = h('div', {}, h('p', { class: 'muted' }, '読み込み中…'));
+  const who = (id) => (id ? memberName(id) : '—');
+  const stamps = [
+    record.created_at ? `作成: ${who(record.created_by)}（${formatTime(record.created_at)}）` : null,
+    record.updated_at ? `最終更新: ${who(record.updated_by)}（${formatTime(record.updated_at)}）` : null,
+  ].filter(Boolean);
+  db.selectWhere('audit_log', `table_name=eq.${table}&record_id=eq.${encodeURIComponent(record.id)}&order=at.desc&limit=${HISTORY_LIMIT}`)
+    .then((rows) => {
+      box.replaceChildren(rows.length === 0
+        ? h('p', { class: 'muted' }, '履歴はまだありません。')
+        : h('ul', { class: 'history' }, rows.map((e) => historyLine(e, fields))));
+    })
+    .catch((e) => {
+      console.error(e.detail || e);
+      box.replaceChildren(h('p', { class: 'error' }, '変更履歴を読み込めませんでした。'));
+    });
+  return h('section', { class: 'card' }, h('h2', {}, '変更履歴'),
+    stamps.length ? h('div', { class: 'muted small stamps' }, stamps.map((t) => h('div', {}, t))) : null,
+    box,
+    h('p', { class: 'muted small' }, `新しい順に最大${HISTORY_LIMIT}件。口座番号は伏せ字で記録しています。`));
 }
 
 // ---------------------------------------------------------------- photos
@@ -683,17 +789,12 @@ function fieldInput(field, r, ledger) {
       const help = field.type === 'day' ? '1〜31（31は末日）' : field.type === 'monthnum' ? '1〜12' : null;
       return wrap(el, () => el.value, help);
     }
-    case 'holder': {
-      const names = registeredMembers();
-      if (names.length === 0) {
-        const el = h('input', { type: 'text', id, value: v || '', maxlength: field.max });
-        return wrap(el, () => el.value, '設定画面で「家族の名前」を登録すると、一覧から選べます。');
-      }
-      const outside = v && !names.includes(v);
+    case 'member': {
+      const choices = [...state.members].filter((m) => m.active || m.id === v).sort(byName);
       const el = h('select', { id }, h('option', { value: '' }, '（未設定）'),
-        names.map((n) => h('option', { value: n, selected: n === v }, n)),
-        outside ? h('option', { value: v, selected: true }, `${v}（一覧にない）`) : null);
-      return wrap(el, () => el.value, outside ? '一覧にない名前です。設定画面の「家族の名前」に追加すると選べます。' : null);
+        choices.map((m) => h('option', { value: m.id, selected: m.id === v }, m.active ? m.name : `${m.name}（無効）`)),
+        v && !memberById(v) ? h('option', { value: v, selected: true }, '（削除済み）') : null);
+      return wrap(el, () => el.value || null, '設定画面の「ユーザー」に登録した人から選びます。');
     }
     case 'accountno': {
       const el = h('input', { type: 'text', inputmode: 'numeric', id, value: v || '', maxlength: 20, autocomplete: 'off' });
@@ -743,7 +844,7 @@ function buildValues(def, raw, notifyRaw) {
       const res = parseTags(input);
       if (res.error) errors.push({ key: field.key, message: res.error });
       else values.tags = res.value;
-    } else if (field.type === 'ref') {
+    } else if (field.type === 'ref' || field.type === 'member') {
       values[field.key] = input || null;
     } else if (field.type === 'payment') {
       const [kind, id] = String(input || '').split(':');
@@ -852,6 +953,7 @@ function csvCell(col, r) {
   if (v === null || v === undefined) return '';
   if (f.type === 'bool') return v ? 'はい' : 'いいえ';
   if (f.type === 'ref') return (find(f.ref, v) || {}).name || '';
+  if (f.type === 'member') return (memberById(v) || {}).name || '';
   if (f.type === 'links') return linksCell(v);
   if (f.type === 'tags') return v.join(' ');
   if (f.type === 'select' || f.type === 'status') return optionLabel(f, v);
@@ -931,6 +1033,12 @@ function prepareImport(ledger, text) {
             if (res.error) rowErrors.push(res.error);
             else raw[f.key] = res.value;
           } else raw[f.key] = null;
+        } else if (f.type === 'member') {
+          if (v.trim()) {
+            const hit = state.members.find((m) => m.name === v.trim());
+            if (hit) raw[f.key] = hit.id;
+            else rowErrors.push(`${f.label}「${v.trim()}」がユーザーマスターにありません。設定画面の「ユーザー」に先に登録してください。`);
+          } else raw[f.key] = null;
         } else if (f.type === 'links') {
           const res = parseLinksCell(v);
           if (res.error) rowErrors.push(res.error);
@@ -942,10 +1050,6 @@ function prepareImport(ledger, text) {
     if (ledger === 'contracts' && raw.payment === undefined && (index.has('支払カード') || index.has('支払口座'))) raw.payment = '';
     const { values, errors: fieldErrors } = buildValues(def, raw, hasNotify ? notifyRaw : null);
     rowErrors.push(...fieldErrors.map((e) => e.message));
-    const known = registeredMembers();
-    if (known.length > 0 && values.holder && !known.includes(values.holder)) {
-      rowErrors.push(`名義人「${values.holder}」が家族の名前の一覧にありません。設定画面の「家族の名前」に先に登録してください。`);
-    }
     if (id && usedIds.has(id)) rowErrors.push('同じIDの行が複数あります。');
     if (rowErrors.length) {
       fatal.push(...rowErrors.map((m) => `${rowNo}行目: ${m}`));
@@ -1028,7 +1132,7 @@ function importSection() {
     h('h3', {}, 'テンプレート'),
     h('p', { class: 'muted small' }, '見出し行だけのCSVです。Excel などで2行目から入力して保存し、下の「取り込み」で読み込みます。'),
     h('div', { class: 'button-row' }, LEDGER_ORDER.map((k) => h('button', { type: 'button', class: 'small', onclick: () => download(`テンプレート_${LEDGERS[k].csvName}.csv`, ledgerCSV(k, false), 'text/csv') }, LEDGERS[k].label))),
-    h('h3', {}, '取り込み'),
+    isAdmin() ? [h('h3', {}, '取り込み'),
     h('ul', { class: 'muted small' },
       h('li', {}, '順番: 口座 → クレジットカード → 契約・固定費／ポイントカード・会員情報（引き落とし口座などは名前で結びつけるため）。'),
       h('li', {}, 'ID が空欄の行は追加、書き出したCSVの ID が入った行はその内容で更新します。'),
@@ -1038,7 +1142,7 @@ function importSection() {
     h('label', { for: 'import-ledger' }, '取り込む台帳'), ledgerSel,
     h('label', { for: 'import-file' }, 'CSVファイル（UTF-8 または Excel の CSV）'), file,
     h('div', { class: 'actions' }, run),
-    result,
+    result] : h('p', { class: 'muted small' }, 'CSV の取り込みは管理者だけが行えます。'),
     h('h3', {}, '書き出し'),
     h('div', { class: 'button-row' }, LEDGER_ORDER.map((k) => h('button', { type: 'button', class: 'small', onclick: () => download(`${LEDGERS[k].csvName}_${todayJST()}.csv`, ledgerCSV(k), 'text/csv') }, LEDGERS[k].label))));
 }
@@ -1123,6 +1227,8 @@ function notifySection() {
     const nodes = [];
     if (!push.pushSupported()) {
       nodes.push(h('p', { class: 'error' }, 'この端末・ブラウザは通知に対応していません。Android は Chrome でホーム画面に追加してから開いてください。'));
+    } else if (!key && !isAdmin()) {
+      nodes.push(h('p', {}, '管理者が通知の鍵を作成するまで、通知は設定できません。'));
     } else if (!key) {
       nodes.push(h('p', {}, '通知の鍵がまだありません。最初に1回だけ作成します。'));
       nodes.push(h('button', { type: 'button', class: 'primary', onclick: (ev) => busy(ev.currentTarget, () => createKeys(false)) }, '通知の鍵を作成'));
@@ -1134,7 +1240,7 @@ function notifySection() {
       if (!sub) {
         nodes.push(h('label', { for: 'device-label' }, '端末の名前'), label);
         nodes.push(h('button', { type: 'button', class: 'primary', onclick: (ev) => busy(ev.currentTarget, async () => {
-          const res = await push.subscribe(key, label.value.trim().slice(0, 100));
+          const res = await push.subscribe(key, label.value.trim().slice(0, 100), me().id);
           if (res === 'denied') toast('通知が許可されませんでした。', 'error');
           else toast('この端末で通知を受け取る設定をしました。');
           draw();
@@ -1183,23 +1289,101 @@ function notifySection() {
 }
 
 function membersSection() {
-  const area = h('textarea', { id: 'members-input', rows: 4, maxlength: MAX_MEMBERS * (MAX_MEMBER_LENGTH + 2), value: registeredMembers().join('\n') });
-  const error = h('p', { class: 'error small', role: 'alert' });
-  const save = h('button', { type: 'button', class: 'primary', onclick: (ev) => busy(ev.currentTarget, async () => {
-    const res = parseMembers(area.value);
-    error.textContent = res.error || '';
-    if (res.error) return;
-    await saveSetting('members', res.value);
-    area.value = res.value.join('\n');
-    toast('家族の名前を保存しました。');
-  }) }, '家族の名前を保存');
-  return h('section', { class: 'card' }, h('h2', {}, '家族の名前'),
-    h('p', { class: 'muted small' }, `各台帳の「名義人」を、ここに登録した名前から選べます（最大${MAX_MEMBERS}人・1人${MAX_MEMBER_LENGTH}文字まで）。名前を変えても、入力済みのデータの名義人は自動では変わりません。`),
-    h('label', { for: 'members-input' }, '家族の名前（1行に1人）'), area, error,
-    h('div', { class: 'actions' }, save));
+  const rows = [...state.members].sort(byName);
+  return h('section', { class: 'card' },
+    h('div', { class: 'title-row' }, h('h2', {}, 'ユーザー'),
+      isAdmin() ? h('a', { class: 'button small primary', href: '#/member/new' }, '＋ ユーザーを追加') : null),
+    h('ul', { class: 'member-list' }, rows.map((m) => h('li', {},
+      h('a', { href: `#/member/${m.id}` }, m.name),
+      h('span', { class: 'muted small' }, ` ${optionLabel(MEMBER_DEF.fields[2], m.role)}・${m.email ? 'ログインあり' : 'ログインなし'}${m.active ? '' : '・無効'}`)))),
+    h('p', { class: 'muted small' }, '各台帳の「名義人」は、ここに登録した人から選びます。ログイン用メールアドレスを入れた人は、管理者が Supabase で同じメールアドレスのユーザーを作るとログインできます（新規登録は止めてあります）。'));
+}
+
+// Problems with keeping at least one active administrator who can log in (checked again by the database).
+function lastAdminProblem(member, values) {
+  if (!member || member.role !== 'admin' || !member.active || !member.email) return null;
+  const stays = values && values.role === 'admin' && values.active && values.email;
+  if (stays || activeAdminsWithLogin(member.id).length > 0) return null;
+  return '管理者が1人もいなくなるため、この変更はできません。先に別の人を管理者にしてください。';
+}
+
+function renderMember(id) {
+  const isNew = id === 'new';
+  const m = isNew ? null : memberById(id);
+  if ((!isNew && !m) || (isNew && !isAdmin())) {
+    location.hash = '#/settings';
+    return;
+  }
+  const back = h('p', {}, h('a', { href: '#/settings' }, '← 設定'));
+  if (!isAdmin()) {
+    const rows = MEMBER_DEF.fields.filter((f) => f.key !== 'name').map((f) => [f.label, fieldValueNodes(f, m) ?? '（なし）']);
+    setView(m.name, back, h('h1', {}, m.name),
+      h('section', { class: 'card' }, h('dl', { class: 'fields' }, rows.map(([k, v]) => [h('dt', {}, k), h('dd', {}, v)]))),
+      h('p', { class: 'muted small' }, 'ユーザーの変更は管理者だけが行えます。'),
+      historySection('members', m, MEMBER_DEF.fields));
+    return;
+  }
+  const inputs = MEMBER_DEF.fields.map((f) => ({ field: f, ...fieldInput(f, m || { role: 'member', active: true }) }));
+  const summary = h('div', { class: 'error', role: 'alert' });
+  const submit = h('button', { type: 'submit', class: 'primary' }, '保存');
+  const form = h('form', {
+    class: 'card form',
+    novalidate: true,
+    onsubmit: (ev) => {
+      ev.preventDefault();
+      busy(submit, async () => {
+        for (const p of form.querySelectorAll('.field-error')) p.textContent = '';
+        summary.textContent = '';
+        const raw = Object.fromEntries(inputs.map((i) => [i.field.key, i.get()]));
+        const { values, errors } = buildValues(MEMBER_DEF, raw, null);
+        if (values.email) values.email = values.email.toLowerCase();
+        const problem = errors.length ? null : lastAdminProblem(m, values);
+        if (errors.length || problem) {
+          for (const e of errors) {
+            const box = form.querySelector(`[data-key="${e.key}"] .field-error`);
+            if (box) box.textContent = e.message;
+          }
+          summary.textContent = problem || `入力内容を確認してください（${errors.length}件）。`;
+          return;
+        }
+        if (isNew) await db.insertRows('members', [values]);
+        else await db.updateRow('members', id, values);
+        state.members = await db.selectAll('members');
+        toast('ユーザーを保存しました。');
+        location.hash = '#/settings';
+      });
+    },
+  },
+  summary,
+  inputs.map((i) => i.el),
+  h('p', { class: 'muted small' }, 'メールアドレスは、その人が Supabase でログインに使うものと同じにします。無効にした人はログインしてもデータを見られません。'),
+  h('div', { class: 'actions' }, h('a', { class: 'button', href: '#/settings' }, 'キャンセル'), submit));
+
+  const del = isNew ? null : h('button', { type: 'button', class: 'danger', onclick: (ev) => busy(ev.currentTarget, async () => {
+    const problem = lastAdminProblem(m, null);
+    if (problem) {
+      toast(problem, 'error');
+      return;
+    }
+    const used = LEDGER_ORDER.reduce((n, k) => n + state.data[k].filter((r) => r.holder_id === m.id).length, 0);
+    let msg = `「${m.name}」を削除します。元に戻せません。よろしいですか？`;
+    if (used > 0) msg += `\n\n${used}件のデータの名義人に設定されています。削除すると名義人が空になります。使わなくなった人は、削除せず「有効」を外すのがおすすめです。`;
+    if (!window.confirm(msg)) return;
+    await db.deleteWhere('members', 'id', m.id);
+    state.members = await db.selectAll('members');
+    await Promise.all(LEDGER_ORDER.map((k) => reloadLedger(k)));
+    toast('ユーザーを削除しました。');
+    location.hash = '#/settings';
+  }) }, '削除');
+
+  setView(isNew ? 'ユーザーを追加' : `${m.name}を編集`, back,
+    h('h1', {}, isNew ? 'ユーザーを追加' : `${m.name}を編集`), form,
+    m ? historySection('members', m, MEMBER_DEF.fields) : null,
+    del ? h('div', { class: 'actions' }, del) : null);
 }
 
 function shortcutSection() {
+  if (!isAdmin()) return null;
   const field = { key: 'links', label: 'ホーム画面のショートカット', type: 'links' };
   const input = fieldInput(field, { links: state.settings.shortcuts || DEFAULT_SHORTCUTS });
   const save = h('button', { type: 'button', class: 'primary', onclick: (ev) => busy(ev.currentTarget, async () => {
@@ -1216,16 +1400,17 @@ function shortcutSection() {
 
 function accountSection() {
   return h('section', { class: 'card' }, h('h2', {}, 'アカウント'),
-    h('p', {}, `ログイン中: ${db.currentEmail() || ''}`),
+    h('p', {}, `ログイン中: ${me().name}（${optionLabel(MEMBER_DEF.fields[2], me().role)}）`),
+    h('p', { class: 'muted small' }, db.currentEmail() || ''),
     h('div', { class: 'button-row' },
       h('button', { type: 'button', onclick: (ev) => busy(ev.currentTarget, async () => { await db.signOut('local'); resetState(); render(); }) }, 'ログアウト'),
       h('button', { type: 'button', class: 'danger', onclick: (ev) => busy(ev.currentTarget, async () => {
-        if (!window.confirm('すべての端末（2人のスマホ・PCを含む）からログアウトします。端末をなくしたときに使います。よろしいですか？')) return;
+        if (!window.confirm('このアカウント（自分）がログインしているすべての端末からログアウトします。他の人のログインは切れません。端末をなくしたときに使います。よろしいですか？')) return;
         await db.signOut('global');
         resetState();
         render();
-      }) }, 'すべての端末からログアウト')),
-    h('p', { class: 'muted small' }, '端末をなくしたときは「すべての端末からログアウト」を押してから、パスワードを変更してください。'));
+      }) }, 'このアカウントのすべての端末からログアウト')),
+    h('p', { class: 'muted small' }, '端末をなくしたときは、このボタンを押してから、パスワードを変更してください。'));
 }
 
 function renderSettings() {

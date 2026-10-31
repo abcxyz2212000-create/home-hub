@@ -46,7 +46,7 @@ function sameKey(sub, publicKey) {
 }
 
 // Returns 'subscribed' or 'denied'.
-export async function subscribe(publicKey, deviceLabel) {
+export async function subscribe(publicKey, deviceLabel, memberId) {
   const permission = await Notification.requestPermission();
   if (permission !== 'granted') return 'denied';
   const reg = await registration();
@@ -59,7 +59,7 @@ export async function subscribe(publicKey, deviceLabel) {
   const json = sub.toJSON();
   await upsertRows(
     'push_subscriptions',
-    [{ endpoint: json.endpoint, p256dh: json.keys.p256dh, auth: json.keys.auth, device_label: deviceLabel || null }],
+    [{ endpoint: json.endpoint, p256dh: json.keys.p256dh, auth: json.keys.auth, device_label: deviceLabel || null, member_id: memberId || null }],
     'endpoint',
   );
   return 'subscribed';

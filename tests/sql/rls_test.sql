@@ -1,85 +1,171 @@
--- RLS checks. Every failed check raises an exception.
+-- Access control, stamps and change history on a new project. Every failed check raises an exception.
 \set ON_ERROR_STOP on
--- data created before the upgrade survived it, and the new columns exist
-do $$ begin
-  if (select count(*) from public.accounts where name = 'upgrade-survivor' and last4 = '9999' and bank_code is null and branch_code is null and account_no is null) <> 1 then
-    raise exception 'row lost or new columns missing after upgrade';
-  end if;
-end $$;
-delete from public.accounts where name = 'upgrade-survivor';
 
-insert into auth.users values ('11111111-1111-1111-1111-111111111111', 'owner@example.com'),
-                              ('22222222-2222-2222-2222-222222222222', 'other@example.com');
-insert into public.app_owner (user_id)
-  select id from auth.users where email = 'owner@example.com'
-  on conflict (singleton) do update set user_id = excluded.user_id;
+-- switch the logged-in user (email = null: no login, e.g. the Supabase MCP / SQL editor)
+create function pg_temp.login(p_email text) returns void language sql as $$
+  select set_config('request.jwt.claim.sub', coalesce(md5(p_email)::uuid::text, ''), false),
+         set_config('request.jwt.claims', case when p_email is null then '' else
+           json_build_object('sub', md5(p_email)::uuid, 'email', p_email)::text end, false);
+$$;
+
+insert into public.members (name, email, role, active) values
+  ('共通（管理者）', 'owner@example.com', 'admin', true),
+  ('筒井 春香', 'member@example.com', 'member', true),
+  ('退会者', 'old@example.com', 'member', false),
+  ('子ども', null, 'member', true);
 insert into storage.objects (bucket_id, name, metadata) values ('item-photos', 'x/a.jpg', '{"size": 1234}');
 
--- owner can write and read
+-- a member can read and write household data; who created it is recorded
 set role authenticated;
-select set_config('request.jwt.claim.sub', '11111111-1111-1111-1111-111111111111', false);
-insert into public.accounts (name, last4) values ('生活費口座', '1234');
-insert into public.cards (name, debit_account_id, expiry_ym)
-  select 'メインカード', id, '2027-05' from public.accounts;
+select pg_temp.login('member@example.com');
+insert into public.accounts (name, account_no, last4, holder_id)
+  select '生活費口座', '0001234', '1234', id from public.members where name = '子ども';
 do $$ begin
-  if (select count(*) from public.accounts) <> 1 then raise exception 'owner cannot read accounts'; end if;
-  if (select count(*) from storage.objects) <> 1 then raise exception 'owner cannot read photos'; end if;
+  if (select count(*) from public.accounts) <> 1 then raise exception 'member cannot read accounts'; end if;
+  if (select created_by from public.accounts) is distinct from (select id from public.members where name = '筒井 春香') then
+    raise exception 'created_by not stamped';
+  end if;
+  if (select count(*) from public.members) <> 4 then raise exception 'member cannot read the user master'; end if;
+  if (select count(*) from storage.objects) <> 1 then raise exception 'member cannot read photos'; end if;
   if ((public.usage_stats() ->> 'storage_bytes')::bigint) <> 1234 then raise exception 'usage_stats wrong'; end if;
+  if not public.is_member() or public.is_admin() then raise exception 'member role detection wrong'; end if;
+end $$;
+
+-- a member cannot change the user master or the administrator settings
+do $$ begin
+  begin insert into public.members (name) values ('勝手に追加'); raise exception 'member added a member';
+  exception when insufficient_privilege then null; end;
+  update public.members set role = 'admin' where name = '筒井 春香';
+  if (select role from public.members where name = '筒井 春香') <> 'member' then raise exception 'member promoted self'; end if;
+  begin insert into public.settings (key, value) values ('shortcuts', '[]'); raise exception 'member changed shortcuts';
+  exception when insufficient_privilege then null; end;
+  insert into public.settings (key, value) values ('last_backup_at', '"2026-11-01T00:00:00Z"');
+end $$;
+
+-- history: changes are recorded with the actor; the full account number is masked; no-op updates are skipped
+update public.accounts set bank_code = '0036', account_no = '0005678', last4 = '5678';
+update public.accounts set bank_code = '0036';
+do $$
+declare
+  h public.audit_log;
+begin
+  if (select count(*) from public.audit_log where table_name = 'accounts') <> 2 then raise exception 'history count wrong'; end if;
+  select * into h from public.audit_log where action = 'update';
+  if h.actor_name <> '筒井 春香' or h.record_name <> '生活費口座' then raise exception 'history actor/record wrong'; end if;
+  if h.changes <> '{"bank_code": [null, "0036"], "account_no": ["●●●1234", "●●●5678"]}'::jsonb then
+    raise exception 'history changes wrong: %', h.changes;
+  end if;
+  if h.changes::text like '%0005678%' or h.changes::text like '%0001234%' then raise exception 'full account number leaked into history'; end if;
+  begin insert into public.audit_log (table_name, record_id, action, actor_name) values ('accounts', gen_random_uuid(), 'insert', 'x');
+    raise exception 'member wrote history';
+  exception when insufficient_privilege then null; end;
+  begin update public.audit_log set actor_name = 'x'; raise exception 'member edited history';
+  exception when insufficient_privilege then null; end;
+  begin delete from public.audit_log; raise exception 'member deleted history';
+  exception when insufficient_privilege then null; end;
+end $$;
+
+-- photos are recorded on the item
+insert into public.items (id, name) values ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', '冷蔵庫');
+insert into public.item_photos (item_id, path, thumb_path) values ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', 'p.jpg', 'p_t.jpg');
+do $$ begin
+  if (select count(*) from public.audit_log where table_name = 'items' and record_id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa' and action = 'photo_insert') <> 1 then
+    raise exception 'photo not recorded on the item';
+  end if;
+end $$;
+
+-- an administrator: updated_by changes, created_by stays; settings and user master are writable
+select pg_temp.login('owner@example.com');
+update public.accounts set purpose = '生活費';
+do $$ begin
+  if (select updated_by from public.accounts) is distinct from (select id from public.members where name = '共通（管理者）') then raise exception 'updated_by wrong'; end if;
+  if (select created_by from public.accounts) is distinct from (select id from public.members where name = '筒井 春香') then raise exception 'created_by changed'; end if;
+  if not public.is_admin() then raise exception 'admin not detected'; end if;
+end $$;
+insert into public.settings (key, value) values ('shortcuts', '[]');
+insert into public.members (name) values ('祖母');
+
+-- at least one active administrator with a login must remain
+do $$ begin
+  begin update public.members set role = 'member' where email = 'owner@example.com'; raise exception 'last admin demoted';
+  exception when sqlstate 'HH001' then null; end;
+  begin update public.members set active = false where email = 'owner@example.com'; raise exception 'last admin deactivated';
+  exception when sqlstate 'HH001' then null; end;
+end $$;
+update public.members set role = 'admin' where name = '筒井 春香';
+update public.members set role = 'member' where email = 'owner@example.com';
+do $$ begin
+  if (select role from public.members where email = 'owner@example.com') <> 'member' then raise exception 'demotion with another admin failed'; end if;
+end $$;
+select pg_temp.login('member@example.com');
+update public.members set role = 'admin' where email = 'owner@example.com';
+select pg_temp.login('owner@example.com');
+
+-- deleting a member clears holder links and is recorded
+delete from public.members where name = '子ども';
+do $$ begin
+  if (select holder_id from public.accounts) is not null then raise exception 'holder link not cleared'; end if;
+  if (select count(*) from public.audit_log where table_name = 'members' and action = 'delete' and record_name = '子ども') <> 1 then
+    raise exception 'member deletion not recorded';
+  end if;
 end $$;
 
 -- invalid values are rejected
 do $$ begin
-  begin insert into public.accounts (name, last4) values ('x', '12345'); raise exception 'last4 accepted 5 digits';
+  begin insert into public.cards (name, last4) values ('x', '12345'); raise exception 'last4 accepted 5 digits';
   exception when check_violation then null; end;
   begin insert into public.items (name, manual_url) values ('x', 'javascript:alert(1)'); raise exception 'bad url accepted';
   exception when check_violation then null; end;
+  insert into public.cards (name) values ('支払確認用カード');
   begin insert into public.contracts (name, pay_card_id, pay_account_id)
-    select 'x', c.id, a.id from public.cards c, public.accounts a; raise exception 'two payment methods accepted';
+    select 'x', c.id, a.id from public.cards c, public.accounts a limit 1;
+    raise exception 'two payment methods accepted';
   exception when check_violation then null; end;
-end $$;
-
-do $$ begin
-  insert into public.accounts (name, bank_code, branch_code) values ('コード付き口座', '0036', '225');
   begin insert into public.accounts (name, bank_code) values ('x', '36'); raise exception 'short bank_code accepted';
   exception when check_violation then null; end;
   begin insert into public.accounts (name, branch_code) values ('x', '2250'); raise exception 'long branch_code accepted';
   exception when check_violation then null; end;
-  begin insert into public.accounts (name, bank_code) values ('x', '00a6'); raise exception 'non-digit bank_code accepted';
-  exception when check_violation then null; end;
-  insert into public.accounts (name, account_no) values ('全桁口座', '0001234');
-  begin insert into public.accounts (name, account_no) values ('x', '123'); raise exception 'short account_no accepted';
-  exception when check_violation then null; end;
-  begin insert into public.accounts (name, account_no) values ('x', '123456789012345'); raise exception 'long account_no accepted';
-  exception when check_violation then null; end;
   begin insert into public.accounts (name, account_no) values ('x', '123-4567'); raise exception 'non-digit account_no accepted';
   exception when check_violation then null; end;
-  delete from public.accounts where name = '全桁口座';
-end $$;
-delete from public.accounts where name = 'コード付き口座';
-
--- another logged-in user sees nothing and cannot write
-select set_config('request.jwt.claim.sub', '22222222-2222-2222-2222-222222222222', false);
-do $$ begin
-  if (select count(*) from public.accounts) <> 0 then raise exception 'other user can read accounts'; end if;
-  if (select count(*) from public.cards) <> 0 then raise exception 'other user can read cards'; end if;
-  if (select count(*) from storage.objects) <> 0 then raise exception 'other user can read photos'; end if;
-  begin insert into public.accounts (name) values ('hack'); raise exception 'other user can insert';
-  exception when insufficient_privilege then null; end;
-  begin perform public.usage_stats(); raise exception 'other user can call usage_stats';
-  exception when insufficient_privilege then null; end;
+  begin insert into public.members (name, email) values ('大文字', 'Upper@Example.com'); raise exception 'uppercase email accepted';
+  exception when check_violation then null; end;
 end $$;
 
--- owner cannot read the internal tables through the API role
-select set_config('request.jwt.claim.sub', '11111111-1111-1111-1111-111111111111', false);
+-- inactive members and other logged-in users see nothing and cannot write
+do $$
+declare
+  e text;
+begin
+  foreach e in array array['old@example.com', 'stranger@example.com'] loop
+    perform pg_temp.login(e);
+    if (select count(*) from public.accounts) <> 0 then raise exception '% can read accounts', e; end if;
+    if (select count(*) from public.members) <> 0 then raise exception '% can read the user master', e; end if;
+    if (select count(*) from public.audit_log) <> 0 then raise exception '% can read the history', e; end if;
+    if (select count(*) from storage.objects) <> 0 then raise exception '% can read photos', e; end if;
+    begin insert into public.accounts (name) values ('hack'); raise exception '% can insert', e;
+    exception when insufficient_privilege then null; end;
+    begin perform public.usage_stats(); raise exception '% can call usage_stats', e;
+    exception when insufficient_privilege then null; end;
+  end loop;
+end $$;
+
+-- internal tables are not readable through the API role
+select pg_temp.login('owner@example.com');
 do $$ begin
   begin perform * from public.notification_log; raise exception 'notification_log readable';
   exception when insufficient_privilege then null; end;
-  begin perform * from public.app_owner; raise exception 'app_owner readable';
-  exception when insufficient_privilege then null; end;
+end $$;
+
+-- changes made without a login (Supabase MCP / SQL editor) are recorded as the admin tool
+reset role;
+select pg_temp.login(null);
+update public.accounts set memo = 'メモ';
+do $$ begin
+  if (select actor_name from public.audit_log order by id desc limit 1) <> '管理ツール' then raise exception 'tool actor wrong'; end if;
+  if (select updated_by from public.accounts) is not null then raise exception 'tool change stamped as a member'; end if;
 end $$;
 
 -- the daily notification job (service_role) can do everything scripts/notify.mjs needs
-reset role;
 set role service_role;
 do $$ begin
   perform * from public.settings;
@@ -99,6 +185,11 @@ set role anon;
 do $$ begin
   begin perform * from public.accounts; raise exception 'anon can read accounts';
   exception when insufficient_privilege then null; end;
+  begin perform * from public.members; raise exception 'anon can read members';
+  exception when insufficient_privilege then null; end;
 end $$;
 reset role;
+do $$ begin
+  if to_regclass('public.app_owner') is not null then raise exception 'new project has app_owner'; end if;
+end $$;
 select 'RLS tests passed' as result;

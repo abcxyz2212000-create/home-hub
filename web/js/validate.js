@@ -46,7 +46,6 @@ export function parseField(field, raw) {
   const label = field.label;
   switch (field.type) {
     case 'text':
-    case 'holder':
     case 'textarea':
       if (empty) return field.required ? { error: `${label}を入力してください。` } : { value: null };
       if (s.length > (field.max || 200)) return { error: `${label}は${field.max}文字以内で入力してください。` };
@@ -60,6 +59,7 @@ export function parseField(field, raw) {
       return safeUrl(s) ? { value: safeUrl(s) } : { error: `${label}は http:// または https:// で始まるURLを入力してください。` };
     case 'select':
     case 'status': {
+      if (empty && field.required) return { error: `${label}を選んでください。` };
       if (empty) return field.type === 'status' ? { value: 'active' } : { value: null };
       const hit = optionPairs(field).find(([v, l]) => v === s || l === s);
       return hit ? { value: hit[0] } : { error: `${label}は「${optionPairs(field).map((p) => p[1]).join('」「')}」のいずれかにしてください。` };
@@ -114,17 +114,6 @@ export function parseField(field, raw) {
     default:
       return { error: `${label}: unsupported field type ${field.type}` };
   }
-}
-
-export const MAX_MEMBERS = 10;
-export const MAX_MEMBER_LENGTH = 20;
-
-// Family names (one per line) for the holder drop-down.
-export function parseMembers(text) {
-  const names = [...new Set(String(text || '').split(/\r?\n/).map((n) => n.trim()).filter(Boolean))];
-  if (names.length > MAX_MEMBERS) return { error: `家族の名前は${MAX_MEMBERS}人までです。` };
-  if (names.some((n) => n.length > MAX_MEMBER_LENGTH)) return { error: `名前は1人${MAX_MEMBER_LENGTH}文字以内にしてください。` };
-  return { value: names };
 }
 
 // Tags: split by spaces, 、 or ,

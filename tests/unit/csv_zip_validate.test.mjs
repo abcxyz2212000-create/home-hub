@@ -6,8 +6,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseCSV, toCSV, unescapeFormula, decodeCSVBytes } from '../../web/js/csv.js';
 import { createZip, crc32 } from '../../web/js/zip.js';
-import { parseField, parseNotifyDays, parseLinksCell, findCardNumberLike, safeUrl, parseTags, parseMembers } from '../../web/js/validate.js';
-import { LEDGERS } from '../../web/js/schema.js';
+import { parseField, parseNotifyDays, parseLinksCell, findCardNumberLike, safeUrl, parseTags } from '../../web/js/validate.js';
+import { LEDGERS, LEDGER_ORDER, MEMBER_DEF } from '../../web/js/schema.js';
 
 test('CSV round trip with quotes, newlines and formula guard', () => {
   const rows = [['名前', 'メモ'], ['a,b', '1行目\n2行目 "引用"'], ['=SUM(A1)', ' 空白 ']];
@@ -82,15 +82,17 @@ test('full account number: digits only, 4-14, separators removed', () => {
   assert.deepEqual(LEDGERS.accounts.csvAliases, { 摘要: '名称', 支店名: '支店', 預金科目: '種別', 口座番号: '口座番号（全桁）', 口座名義: '名義人' });
 });
 
-test('holder is a plain text value; family names are cleaned and limited', () => {
-  const holder = LEDGERS.cards.fields.find((x) => x.key === 'holder');
-  assert.equal(holder.type, 'holder');
-  assert.deepEqual(parseField(holder, ' 山田 太郎 '), { value: '山田 太郎' });
-  assert.deepEqual(parseField(holder, ''), { value: null });
-  assert.deepEqual(parseMembers('山田 太郎\r\n\n 山田 花子 \n山田 太郎'), { value: ['山田 太郎', '山田 花子'] });
-  assert.deepEqual(parseMembers(''), { value: [] });
-  assert.ok(parseMembers(Array.from({ length: 11 }, (_, i) => `n${i}`).join('\n')).error);
-  assert.ok(parseMembers('あ'.repeat(21)).error);
+test('holder is chosen from the user master in every ledger', () => {
+  for (const k of LEDGER_ORDER) {
+    const f = LEDGERS[k].fields.find((x) => x.label === '名義人');
+    assert.deepEqual([f.key, f.type], ['holder_id', 'member'], k);
+  }
+  assert.deepEqual(MEMBER_DEF.fields.map((f) => f.key), ['name', 'email', 'role', 'active', 'memo']);
+  const role = MEMBER_DEF.fields.find((f) => f.key === 'role');
+  assert.deepEqual(parseField(role, '管理者'), { value: 'admin' });
+  assert.equal(parseField(role, '').error, '権限を選んでください。');
+  assert.ok(parseField(MEMBER_DEF.fields[1], 'not-an-email').error);
+  assert.equal(parseField(MEMBER_DEF.fields[0], '').error, '名前を入力してください。');
 });
 
 test('notify days, links and tags', () => {

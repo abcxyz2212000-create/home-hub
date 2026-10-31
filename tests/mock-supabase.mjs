@@ -7,6 +7,9 @@ import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const OWNER = { email: 'owner@example.com', password: 'correct-horse-battery', id: '11111111-1111-1111-1111-111111111111' };
+export const MEMBER = { email: 'hanako@example.com', password: 'member-pass-phrase', id: '22222222-2222-2222-2222-222222222222' };
+export const STRANGER = { email: 'stranger@example.com', password: 'stranger-pass-phrase', id: '33333333-3333-3333-3333-333333333333' };
+const USERS = [OWNER, MEMBER, STRANGER];
 export const ANON_KEY = 'test-publishable-key-0123456789';
 export const SERVICE_KEY = 'test-service-key-0123456789';
 
@@ -15,10 +18,12 @@ const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '
 const DEFAULTS = {
   status: 'active', links: [], tags: [], notify_days: {}, mf_linked: false, family_card: false, etc_card: false, auto_renew: false,
 };
-const TABLES = ['accounts', 'cards', 'contracts', 'items', 'memberships', 'item_photos', 'settings', 'push_subscriptions', 'notification_log'];
+const TABLES = ['accounts', 'cards', 'contracts', 'items', 'memberships', 'item_photos', 'settings', 'push_subscriptions', 'notification_log', 'members', 'audit_log'];
+const TABLE_DEFAULTS = { members: { role: 'member', active: true, email: null }, settings: {}, notification_log: {}, push_subscriptions: {}, audit_log: {} };
 const SET_NULL = {
   accounts: [['cards', 'debit_account_id'], ['contracts', 'pay_account_id']],
   cards: [['contracts', 'pay_card_id'], ['memberships', 'card_id']],
+  members: ['accounts', 'cards', 'contracts', 'items', 'memberships'].map((t) => [t, 'holder_id']),
 };
 
 export function createMock() {
@@ -28,12 +33,12 @@ export function createMock() {
   const refresh = new Map();
   const pushes = [];
 
-  const issue = () => {
+  const issue = (user) => {
     const access = crypto.randomUUID();
     const r = crypto.randomUUID();
-    tokens.set(access, OWNER);
-    refresh.set(r, OWNER);
-    return { access_token: access, refresh_token: r, expires_in: 3600, token_type: 'bearer', user: { id: OWNER.id, email: OWNER.email } };
+    tokens.set(access, user);
+    refresh.set(r, user);
+    return { access_token: access, refresh_token: r, expires_in: 3600, token_type: 'bearer', user: { id: user.id, email: user.email } };
   };
 
   const send = (res, status, body, headers = {}) => {
@@ -49,7 +54,7 @@ export function createMock() {
 
   const matches = (row, params) => {
     for (const [k, v] of params) {
-      if (['select', 'order', 'on_conflict'].includes(k)) continue;
+      if (['select', 'order', 'on_conflict', 'limit'].includes(k)) continue;
       if (v.startsWith('eq.') && String(row[k]) !== v.slice(3)) return false;
       if (v === 'not.is.null' && (row[k] === null || row[k] === undefined)) return false;
       if (v.startsWith('lt.') && !(String(row[k]) < v.slice(3))) return false;
@@ -65,12 +70,14 @@ export function createMock() {
     if (url.pathname === '/auth/v1/token') {
       const data = JSON.parse(body.toString() || '{}');
       if (url.searchParams.get('grant_type') === 'password') {
-        if (data.email === OWNER.email && data.password === OWNER.password) return send(res, 200, issue());
+        const user = USERS.find((u) => u.email === data.email && u.password === data.password);
+        if (user) return send(res, 200, issue(user));
         return send(res, 400, { error: 'invalid_grant', error_description: 'Invalid login credentials' });
       }
       if (refresh.has(data.refresh_token)) {
+        const user = refresh.get(data.refresh_token);
         refresh.delete(data.refresh_token);
-        return send(res, 200, issue());
+        return send(res, 200, issue(user));
       }
       return send(res, 400, { error: 'invalid_grant' });
     }
@@ -124,6 +131,8 @@ export function createMock() {
         const [col, dir] = order.split('.');
         out = [...out].sort((a, b) => String(a[col] ?? '').localeCompare(String(b[col] ?? ''), 'ja') * (dir === 'desc' ? -1 : 1));
       }
+      const limit = Number(url.searchParams.get('limit'));
+      if (limit > 0) out = out.slice(0, limit);
       return send(res, 200, out);
     }
     if (req.method === 'POST') {
@@ -140,7 +149,7 @@ export function createMock() {
           Object.assign(existing, item, { updated_at: new Date().toISOString() });
           result.push(existing);
         } else {
-          const row = { id: crypto.randomUUID(), ...(table === 'settings' || table === 'notification_log' ? {} : DEFAULTS), ...item, created_at: new Date().toISOString(), updated_at: new Date().toISOString() };
+          const row = { id: crypto.randomUUID(), ...(TABLE_DEFAULTS[table] ?? DEFAULTS), ...item, created_at: new Date().toISOString(), updated_at: new Date().toISOString() };
           if (table === 'notification_log') row.sent_at = row.created_at;
           rows.push(row);
           result.push(row);
