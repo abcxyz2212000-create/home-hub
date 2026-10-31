@@ -68,6 +68,7 @@ grant execute on function public.is_admin() to authenticated;
 create or replace function public.touch_updated_at()
 returns trigger
 language plpgsql
+set search_path = public
 as $$
 begin
   new.updated_at := now();
