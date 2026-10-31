@@ -2,7 +2,7 @@
 \set ON_ERROR_STOP on
 -- data created before the upgrade survived it, and the new columns exist
 do $$ begin
-  if (select count(*) from public.accounts where name = 'upgrade-survivor' and last4 = '9999' and bank_code is null and branch_code is null) <> 1 then
+  if (select count(*) from public.accounts where name = 'upgrade-survivor' and last4 = '9999' and bank_code is null and branch_code is null and account_no is null) <> 1 then
     raise exception 'row lost or new columns missing after upgrade';
   end if;
 end $$;
@@ -46,6 +46,14 @@ do $$ begin
   exception when check_violation then null; end;
   begin insert into public.accounts (name, bank_code) values ('x', '00a6'); raise exception 'non-digit bank_code accepted';
   exception when check_violation then null; end;
+  insert into public.accounts (name, account_no) values ('全桁口座', '0001234');
+  begin insert into public.accounts (name, account_no) values ('x', '123'); raise exception 'short account_no accepted';
+  exception when check_violation then null; end;
+  begin insert into public.accounts (name, account_no) values ('x', '123456789012345'); raise exception 'long account_no accepted';
+  exception when check_violation then null; end;
+  begin insert into public.accounts (name, account_no) values ('x', '123-4567'); raise exception 'non-digit account_no accepted';
+  exception when check_violation then null; end;
+  delete from public.accounts where name = '全桁口座';
 end $$;
 delete from public.accounts where name = 'コード付き口座';
 

@@ -64,8 +64,22 @@ test('bank code / branch number are zero-padded and length-checked', () => {
   assert.equal(parseField(bank, '00369').error, '金融機関コードは数字4桁で入力してください。');
   assert.equal(parseField(branch, 'abc').error, '支店番号は数字3桁で入力してください。');
   assert.deepEqual(LEDGERS.accounts.fields.map((f) => f.key).slice(1, 6), ['institution', 'bank_code', 'branch', 'branch_code', 'kind']);
-  // the account number stays last-4 only
-  assert.ok(parseField(LEDGERS.accounts.fields.find((x) => x.key === 'last4'), '4041311').error);
+});
+
+test('full account number: digits only, 4-14, separators removed', () => {
+  const f = LEDGERS.accounts.fields.find((x) => x.key === 'account_no');
+  assert.equal(f.label, '口座番号（全桁）');
+  assert.ok(!LEDGERS.accounts.fields.some((x) => x.key === 'last4'), 'single input for the account number');
+  assert.deepEqual(parseField(f, '0001234'), { value: '0001234' });
+  assert.deepEqual(parseField(f, '１２３ ４５６７'), { value: '1234567' });
+  assert.deepEqual(parseField(f, '123-4567'), { value: '1234567' });
+  assert.deepEqual(parseField(f, ''), { value: null });
+  assert.equal(parseField(f, '123').error, '口座番号（全桁）は数字4〜14桁で入力してください。');
+  assert.ok(parseField(f, '123456789012345').error);
+  assert.ok(parseField(f, '12a4567').error);
+  // cards keep last 4 digits only
+  assert.ok(parseField(LEDGERS.cards.fields.find((x) => x.key === 'last4'), '12345').error);
+  assert.deepEqual(LEDGERS.accounts.csvAliases, { 摘要: '名称', 支店名: '支店', 預金科目: '種別', 口座番号: '口座番号（全桁）', 口座名義: '名義人' });
 });
 
 test('holder is a plain text value; family names are cleaned and limited', () => {

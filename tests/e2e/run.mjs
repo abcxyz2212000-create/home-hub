@@ -63,15 +63,26 @@ try {
   await page.goto(`${appUrl}#/edit/accounts/new`);
   await fill('名称 *', '生活費口座');
   await fill('金融機関名', 'みどり銀行');
-  await fill('口座番号下4桁', '12a4');
+  await fill('口座番号（全桁）', '12a4567');
   await page.getByLabel('リンクの名前', { exact: true }).first().fill('ログイン');
   await page.getByLabel('URL', { exact: true }).first().fill('https://bank.example/login');
   await save();
-  await page.getByText('口座番号下4桁は数字4桁で入力してください（全桁は保存しません）。').waitFor();
-  await fill('口座番号下4桁', '1234');
+  await page.getByText('口座番号（全桁）は数字4〜14桁で入力してください。').waitFor();
+  await fill('口座番号（全桁）', '000 1234');
   await save();
   await page.getByRole('heading', { name: '生活費口座' }).waitFor();
-  assert.equal(mock.db.accounts[0].last4, '1234');
+  assert.equal(mock.db.accounts[0].account_no, '0001234');
+  assert.equal(mock.db.accounts[0].last4, '1234', 'last 4 digits derived from the full number');
+
+  step('full account number is masked until revealed');
+  const accountView = await page.locator('#view').innerText();
+  assert.match(accountView, /●●●1234/);
+  assert.doesNotMatch(accountView, /0001234/);
+  await page.getByRole('button', { name: '表示' }).click();
+  await page.getByText('0001234', { exact: true }).waitFor();
+  await page.getByRole('button', { name: '隠す' }).click();
+  await page.getByText('●●●1234', { exact: true }).waitFor();
+  assert.doesNotMatch(await page.locator('#view').innerText(), /0001234/);
   assert.deepEqual(mock.db.accounts[0].links, [{ label: 'ログイン', url: 'https://bank.example/login' }]);
 
   step('card linked to the account');
@@ -150,7 +161,8 @@ try {
   assert.equal(salary.branch_code, '025');
   assert.equal(salary.holder, '山田 花子');
   assert.match(await page.locator('#view').innerText(), /金融機関コード\n0036/);
-  assert.equal(salary.last4 ?? null, null, 'no full account number stored');
+  assert.equal(salary.account_no ?? null, null);
+  assert.equal(salary.last4 ?? null, null);
 
   step('holder outside the list stays visible and editable');
   mock.db.accounts.find((a) => a.name === '生活費口座').holder = '旧姓 太郎';
@@ -218,7 +230,21 @@ try {
   assert.equal(saving.bank_code, '0036');
   assert.equal(saving.holder, '山田 太郎');
   const [tpl] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: '口座', exact: true }).first().click()]);
-  assert.match(readFileSync(await tpl.path(), 'utf8'), /^\ufeffID,名称,金融機関名,金融機関コード,支店,支店番号,種別,口座番号下4桁/);
+  assert.match(readFileSync(await tpl.path(), 'utf8'), /^\ufeffID,名称,金融機関名,金融機関コード,支店,支店番号,種別,口座番号（全桁）,用途/);
+
+  step('CSV: the existing 口座マスタ sheet (title row + its own headers) imports as-is');
+  await page.getByLabel('取り込む台帳').selectOption({ label: '口座' });
+  await page.getByLabel(/CSVファイル/).setInputFiles(csv('口座マスタ,,,,,,\r\n摘要,金融機関コード,支店番号,支店名,預金科目,口座番号,口座名義\r\nテスト銀行,0036,225,テスト支店,普通,7654321,山田 太郎\r\n'));
+  await page.getByRole('button', { name: '取り込む' }).click();
+  await page.getByText('取り込みました（追加 1件、更新 0件）。').waitFor();
+  const sheet = mock.db.accounts.find((a) => a.name === 'テスト銀行');
+  assert.deepEqual(
+    [sheet.bank_code, sheet.branch_code, sheet.branch, sheet.kind, sheet.account_no, sheet.last4, sheet.holder],
+    ['0036', '225', 'テスト支店', '普通', '7654321', '4321', '山田 太郎'],
+  );
+  await page.getByLabel(/CSVファイル/).setInputFiles(csv('名称,摘要\r\nA,B\r\n'));
+  await page.getByRole('button', { name: '取り込む' }).click();
+  await page.getByText(/見出し「名称」が重複しています/).waitFor();
 
   step('full backup ZIP');
   const [zipDl] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: '全データを書き出す（ZIP）' }).click()]);
@@ -227,6 +253,8 @@ try {
   const listing = execFileSync('python3', ['-I', '-c', 'import sys,zipfile; z=zipfile.ZipFile(sys.argv[1]); assert z.testzip() is None; print("\\n".join(z.namelist()))', zipPath]).toString();
   for (const name of ['口座.csv', 'クレジットカード.csv', '契約・固定費.csv', '書類・家電.csv', 'ポイントカード・会員情報.csv', '写真一覧.csv']) assert.ok(listing.includes(name), name);
   assert.match(listing, /photos\/.+\.jpg/);
+  const accountsCsv = execFileSync('python3', ['-I', '-c', 'import sys,zipfile; print(zipfile.ZipFile(sys.argv[1]).read("口座.csv").decode("utf-8-sig"))', zipPath]).toString();
+  assert.match(accountsCsv, /7654321/, 'backup keeps the full account number');
   assert.ok(mock.db.settings.some((s) => s.key === 'last_backup_at'));
 
   step('delete account (references are cleared)');

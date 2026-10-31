@@ -78,6 +78,11 @@ export function parseField(field, raw) {
         ? { value: t.padStart(field.digits, '0') }
         : { error: `${label}は数字${field.digits}桁で入力してください。` };
     }
+    case 'accountno': {
+      if (empty) return { value: null };
+      const t = toHalfWidth(String(s)).replace(/[\s\-ー－‐]/g, '');
+      return /^\d{4,14}$/.test(t) ? { value: t } : { error: `${label}は数字4〜14桁で入力してください。` };
+    }
     case 'last4': {
       if (empty) return { value: null };
       const t = toHalfWidth(String(s));

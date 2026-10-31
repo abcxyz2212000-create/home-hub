@@ -204,6 +204,7 @@ legend { font-weight: 700; padding: 0 0.25rem; }
 .events .badge { margin-top: 0.2rem; min-width: 5.5rem; text-align: center; }
 
 .links { margin: 0; padding-left: 1.2rem; }
+.masked { font-variant-numeric: tabular-nums; letter-spacing: 0.05em; }
 
 dl.fields { display: grid; grid-template-columns: minmax(8rem, 35%) 1fr; gap: 0.4rem 1rem; margin: 0; }
 dl.fields dt { color: var(--muted); font-size: 0.9rem; }
