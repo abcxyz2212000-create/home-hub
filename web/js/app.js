@@ -414,6 +414,7 @@ function fieldValueNodes(field, r) {
     case 'links': return v && v.length ? h('ul', { class: 'links' }, v.map((l) => h('li', {}, extLink(l.url, l.label)))) : null;
     case 'tags': return v && v.length ? h('div', { class: 'tags' }, v.map((t) => h('span', { class: 'tag' }, t))) : null;
     case 'url': return v ? extLink(v) : null;
+    case 'accountno': return v ? maskedNumber(v) : r.last4 ? `下4桁 ${r.last4}` : null;
     case 'int': return v === null || v === undefined ? null : field.key.includes('fee') || field.key === 'amount' ? yen(v) : String(v);
     case 'select':
     case 'status': return v ? optionLabel(field, v) : null;
@@ -421,6 +422,29 @@ function fieldValueNodes(field, r) {
     case 'monthnum': return v ? `${v}月` : null;
     default: return v === null || v === undefined || v === '' ? null : String(v);
   }
+}
+
+const REVEAL_MS = 30000;
+
+// "●●●1234" with a button that shows the full number for 30 seconds.
+function maskedNumber(value) {
+  const masked = `●●●${value.slice(-4)}`;
+  const text = h('span', { class: 'masked' }, masked);
+  let timer = null;
+  const hide = () => {
+    clearTimeout(timer);
+    text.textContent = masked;
+    button.textContent = '表示';
+    button.setAttribute('aria-pressed', 'false');
+  };
+  const button = h('button', { type: 'button', class: 'small', 'aria-pressed': 'false', onclick: () => {
+    if (button.getAttribute('aria-pressed') === 'true') return hide();
+    text.textContent = value;
+    button.textContent = '隠す';
+    button.setAttribute('aria-pressed', 'true');
+    timer = setTimeout(hide, REVEAL_MS);
+  } }, '表示');
+  return h('span', { class: 'masked-wrap' }, text, ' ', button);
 }
 
 function relationSection(title, ledger, rows) {
@@ -671,6 +695,10 @@ function fieldInput(field, r, ledger) {
         outside ? h('option', { value: v, selected: true }, `${v}（一覧にない）`) : null);
       return wrap(el, () => el.value, outside ? '一覧にない名前です。設定画面の「家族の名前」に追加すると選べます。' : null);
     }
+    case 'accountno': {
+      const el = h('input', { type: 'text', inputmode: 'numeric', id, value: v || '', maxlength: 20, autocomplete: 'off' });
+      return wrap(el, () => el.value, '数字のみ（4〜14桁）。詳細画面では伏せ字で表示します。');
+    }
     case 'code': {
       const el = h('input', { type: 'text', inputmode: 'numeric', id, value: v || '', maxlength: field.digits, autocomplete: 'off' });
       return wrap(el, () => el.value, `数字${field.digits}桁（先頭の0も入力します。足りない桁は0で補います）`);
@@ -736,6 +764,8 @@ function buildValues(def, raw, notifyRaw) {
     }
     values.notify_days = notify;
   }
+  // Accounts keep last4 in sync with the full number (used in lists and summaries).
+  if (def.key === 'accounts' && 'account_no' in values) values.last4 = values.account_no ? values.account_no.slice(-4) : null;
   return { values, errors };
 }
 
@@ -847,12 +877,19 @@ function resolveByName(ledger, name, label) {
 function prepareImport(ledger, text) {
   const def = LEDGERS[ledger];
   const table = parseCSV(text);
-  if (table.length < 2) return { errors: ['データの行がありません（1行目は見出し、2行目からデータです）。'] };
-  if (table.length - 1 > MAX_IMPORT_ROWS) return { errors: [`一度に取り込めるのは${MAX_IMPORT_ROWS}行までです。`] };
   const cols = csvColumns(ledger);
-  const header = table[0].map((x) => x.trim());
+  const aliases = def.csvAliases || {};
+  const normalize = (row) => row.map((x) => aliases[x.trim()] || x.trim());
+  // The header may follow a title row (e.g. "口座マスタ"): use the first of the top 5 rows that has the name column.
+  const headerAt = table.slice(0, 5).findIndex((row) => normalize(row).includes(def.fields[0].label));
+  if (headerAt < 0) return { errors: [`見出しに「${def.fields[0].label}」がありません。${def.label}のテンプレートを使ってください。`] };
+  const body = table.slice(headerAt + 1);
+  if (body.length === 0) return { errors: ['データの行がありません（見出しの次の行からデータです）。'] };
+  if (body.length > MAX_IMPORT_ROWS) return { errors: [`一度に取り込めるのは${MAX_IMPORT_ROWS}行までです。`] };
+  const header = normalize(table[headerAt]);
+  const dup = header.filter((x, i) => x && header.indexOf(x) !== i);
+  if (dup.length) return { errors: [`見出し「${[...new Set(dup)].join('」「')}」が重複しています（別名を含む）。どちらか一方にしてください。`] };
   const index = new Map(header.map((x, i) => [x, i]));
-  if (!index.has(def.fields[0].label)) return { errors: [`見出しに「${def.fields[0].label}」がありません。${def.label}のテンプレートを使ってください。`] };
   const unknown = header.filter((x) => x && !cols.some((c) => c.header === x));
   const errors = unknown.length ? [`認識できない見出しは無視します: ${unknown.join('、')}`] : [];
   const fatal = [];
@@ -863,8 +900,8 @@ function prepareImport(ledger, text) {
   const existing = new Set(state.data[ledger].map((r) => r.id));
   const usedIds = new Set();
 
-  table.slice(1).forEach((line, i) => {
-    const rowNo = i + 2;
+  body.forEach((line, i) => {
+    const rowNo = headerAt + i + 2;
     const cell = (h2) => (index.has(h2) ? unescapeFormula(line[index.get(h2)] ?? '') : undefined);
     const raw = {};
     const notifyRaw = {};
@@ -996,7 +1033,8 @@ function importSection() {
       h('li', {}, '順番: 口座 → クレジットカード → 契約・固定費／ポイントカード・会員情報（引き落とし口座などは名前で結びつけるため）。'),
       h('li', {}, 'ID が空欄の行は追加、書き出したCSVの ID が入った行はその内容で更新します。'),
       h('li', {}, 'はい/いいえ、日付は 2026-01-31、年月は 2027-05、リンクは1行に「名前|URL」、タグは空白区切り。'),
-      h('li', {}, 'エラーが1件でもあると何も取り込みません。')),
+      h('li', {}, 'エラーが1件でもあると何も取り込みません。'),
+      h('li', {}, '口座は、口座マスタの見出し（摘要・支店名・預金科目・口座番号・口座名義）のままでも取り込めます。表題の行が上にあっても構いません。')),
     h('label', { for: 'import-ledger' }, '取り込む台帳'), ledgerSel,
     h('label', { for: 'import-file' }, 'CSVファイル（UTF-8 または Excel の CSV）'), file,
     h('div', { class: 'actions' }, run),

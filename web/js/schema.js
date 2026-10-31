@@ -1,7 +1,7 @@
 // Ledger definitions. Forms, lists, detail pages and CSV columns are generated from these.
 //
 // Field types:
-//   text, textarea, email, url, select(options), int, last4, code(digits), holder, date, month(YYYY-MM),
+//   text, textarea, email, url, select(options), int, last4, code(digits), accountno, holder, date, month(YYYY-MM),
 //   day(1-31), monthnum(1-12), bool, ref(ledger), payment(card or account),
 //   links, tags, status
 
@@ -43,11 +43,13 @@ export const LEDGERS = {
       { key: 'branch', label: '支店', type: 'text', max: 100 },
       { key: 'branch_code', label: '支店番号', type: 'code', digits: 3 },
       { key: 'kind', label: '種別', type: 'select', options: ['普通', '定期', '当座', '貯蓄', '証券', 'NISA', 'iDeCo', 'その他'] },
-      { key: 'last4', label: '口座番号下4桁', type: 'last4' },
+      { key: 'account_no', label: '口座番号（全桁）', type: 'accountno' },
       { key: 'purpose', label: '用途', type: 'text', max: 200 },
       { key: 'mf_linked', label: 'マネーフォワード連携', type: 'bool' },
     ],
     summary: (r) => [r.institution, r.branch, r.kind, r.last4 && `下4桁 ${r.last4}`],
+    // Headers of the existing "口座マスタ" spreadsheet, accepted by the CSV import as-is.
+    csvAliases: { 摘要: '名称', 支店名: '支店', 預金科目: '種別', 口座番号: '口座番号（全桁）', 口座名義: '名義人' },
   }),
   cards: ledger({
     key: 'cards',
