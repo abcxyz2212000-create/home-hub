@@ -46,6 +46,7 @@ export function parseField(field, raw) {
   const label = field.label;
   switch (field.type) {
     case 'text':
+    case 'holder':
     case 'textarea':
       if (empty) return field.required ? { error: `${label}を入力してください。` } : { value: null };
       if (s.length > (field.max || 200)) return { error: `${label}は${field.max}文字以内で入力してください。` };
@@ -68,6 +69,14 @@ export function parseField(field, raw) {
       const t = toHalfWidth(String(s)).replace(/円$/, '');
       if (!/^\d+$/.test(t) || Number(t) > (field.max || 100000000)) return { error: `${label}は0以上の整数で入力してください。` };
       return { value: Number(t) };
+    }
+    case 'code': {
+      // Fixed-length numeric code (bank code 4 digits, branch number 3 digits). Excel drops leading zeros, so pad.
+      if (empty) return { value: null };
+      const t = toHalfWidth(String(s));
+      return new RegExp(`^\\d{1,${field.digits}}$`).test(t)
+        ? { value: t.padStart(field.digits, '0') }
+        : { error: `${label}は数字${field.digits}桁で入力してください。` };
     }
     case 'last4': {
       if (empty) return { value: null };
@@ -100,6 +109,17 @@ export function parseField(field, raw) {
     default:
       return { error: `${label}: unsupported field type ${field.type}` };
   }
+}
+
+export const MAX_MEMBERS = 10;
+export const MAX_MEMBER_LENGTH = 20;
+
+// Family names (one per line) for the holder drop-down.
+export function parseMembers(text) {
+  const names = [...new Set(String(text || '').split(/\r?\n/).map((n) => n.trim()).filter(Boolean))];
+  if (names.length > MAX_MEMBERS) return { error: `家族の名前は${MAX_MEMBERS}人までです。` };
+  if (names.some((n) => n.length > MAX_MEMBER_LENGTH)) return { error: `名前は1人${MAX_MEMBER_LENGTH}文字以内にしてください。` };
+  return { value: names };
 }
 
 // Tags: split by spaces, 、 or ,

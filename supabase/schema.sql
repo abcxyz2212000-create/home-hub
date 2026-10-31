@@ -58,7 +58,9 @@ create table if not exists public.accounts (
   tags text[] not null default '{}',
   notify_days jsonb not null default '{}'::jsonb check (jsonb_typeof(notify_days) = 'object'),
   institution text check (char_length(institution) <= 100),
+  bank_code text check (bank_code ~ '^[0-9]{4}$'),
   branch text check (char_length(branch) <= 100),
+  branch_code text check (branch_code ~ '^[0-9]{3}$'),
   kind text check (char_length(kind) <= 50),
   last4 text check (last4 ~ '^[0-9]{4}$'),
   purpose text check (char_length(purpose) <= 200),
@@ -191,6 +193,11 @@ create table if not exists public.notification_log (
   key text primary key check (char_length(key) <= 200),
   sent_at timestamptz not null default now()
 );
+
+-- Upgrades for projects created from an older version of this file ("create table if not exists"
+-- above does not add columns to an existing table). Safe to run any number of times.
+alter table public.accounts add column if not exists bank_code text check (bank_code ~ '^[0-9]{4}$');
+alter table public.accounts add column if not exists branch_code text check (branch_code ~ '^[0-9]{3}$');
 
 create index if not exists cards_debit_account_id_idx on public.cards (debit_account_id);
 create index if not exists contracts_pay_card_id_idx on public.contracts (pay_card_id);

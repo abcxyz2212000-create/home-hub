@@ -1,7 +1,7 @@
 // Ledger definitions. Forms, lists, detail pages and CSV columns are generated from these.
 //
 // Field types:
-//   text, textarea, email, url, select(options), int, last4, date, month(YYYY-MM),
+//   text, textarea, email, url, select(options), int, last4, code(digits), holder, date, month(YYYY-MM),
 //   day(1-31), monthnum(1-12), bool, ref(ledger), payment(card or account),
 //   links, tags, status
 
@@ -16,7 +16,7 @@ function common(nameLabel) {
   return {
     head: [{ key: 'name', label: nameLabel, type: 'text', required: true, max: 200 }],
     tail: [
-      { key: 'holder', label: '名義人', type: 'text', max: 100 },
+      { key: 'holder', label: '名義人', type: 'holder', max: 100 },
       { key: 'status', label: '状態', type: 'status', options: STATUS_OPTIONS },
       { key: 'links', label: '関連リンク', type: 'links' },
       { key: 'password_location', label: 'パスワードの保管先', type: 'text', max: 200, placeholder: '例: Google パスワードマネージャーの「○○銀行」' },
@@ -39,7 +39,9 @@ export const LEDGERS = {
     csvName: '口座',
     fields: [
       { key: 'institution', label: '金融機関名', type: 'text', max: 100 },
+      { key: 'bank_code', label: '金融機関コード', type: 'code', digits: 4 },
       { key: 'branch', label: '支店', type: 'text', max: 100 },
+      { key: 'branch_code', label: '支店番号', type: 'code', digits: 3 },
       { key: 'kind', label: '種別', type: 'select', options: ['普通', '定期', '当座', '貯蓄', '証券', 'NISA', 'iDeCo', 'その他'] },
       { key: 'last4', label: '口座番号下4桁', type: 'last4' },
       { key: 'purpose', label: '用途', type: 'text', max: 200 },

@@ -5,6 +5,7 @@ import { LEDGERS, LEDGER_ORDER, optionPairs, optionLabel } from './schema.js';
 import { EVENT_TYPES, collectEvents, upcomingEvents, monthlyCost, monthlyTotal, todayJST, toDayNumber } from './events.js';
 import {
   parseField, parseTags, validateLinks, parseLinksCell, linksCell, parseNotifyDays, notifyDaysText, findCardNumberLike, safeUrl,
+  parseMembers, MAX_MEMBERS, MAX_MEMBER_LENGTH,
 } from './validate.js';
 import { parseCSV, toCSV, decodeCSVBytes, unescapeFormula } from './csv.js';
 import { createZip } from './zip.js';
@@ -121,6 +122,12 @@ function download(name, data, type) {
 
 function byName(a, b) {
   return a.name.localeCompare(b.name, 'ja');
+}
+
+// Family names registered on the settings screen (holder drop-down). Empty = free text.
+function registeredMembers() {
+  const m = state.settings.members;
+  return Array.isArray(m) ? m.filter((x) => typeof x === 'string') : [];
 }
 
 function find(ledger, id) {
@@ -652,6 +659,22 @@ function fieldInput(field, r, ledger) {
       const help = field.type === 'day' ? '1〜31（31は末日）' : field.type === 'monthnum' ? '1〜12' : null;
       return wrap(el, () => el.value, help);
     }
+    case 'holder': {
+      const names = registeredMembers();
+      if (names.length === 0) {
+        const el = h('input', { type: 'text', id, value: v || '', maxlength: field.max });
+        return wrap(el, () => el.value, '設定画面で「家族の名前」を登録すると、一覧から選べます。');
+      }
+      const outside = v && !names.includes(v);
+      const el = h('select', { id }, h('option', { value: '' }, '（未設定）'),
+        names.map((n) => h('option', { value: n, selected: n === v }, n)),
+        outside ? h('option', { value: v, selected: true }, `${v}（一覧にない）`) : null);
+      return wrap(el, () => el.value, outside ? '一覧にない名前です。設定画面の「家族の名前」に追加すると選べます。' : null);
+    }
+    case 'code': {
+      const el = h('input', { type: 'text', inputmode: 'numeric', id, value: v || '', maxlength: field.digits, autocomplete: 'off' });
+      return wrap(el, () => el.value, `数字${field.digits}桁（先頭の0も入力します。足りない桁は0で補います）`);
+    }
     case 'last4': {
       const el = h('input', { type: 'text', inputmode: 'numeric', id, value: v || '', maxlength: 4, pattern: '[0-9]{4}', autocomplete: 'off' });
       return wrap(el, () => el.value, '下4桁だけを入力します（全桁は保存しません）。');
@@ -882,6 +905,10 @@ function prepareImport(ledger, text) {
     if (ledger === 'contracts' && raw.payment === undefined && (index.has('支払カード') || index.has('支払口座'))) raw.payment = '';
     const { values, errors: fieldErrors } = buildValues(def, raw, hasNotify ? notifyRaw : null);
     rowErrors.push(...fieldErrors.map((e) => e.message));
+    const known = registeredMembers();
+    if (known.length > 0 && values.holder && !known.includes(values.holder)) {
+      rowErrors.push(`名義人「${values.holder}」が家族の名前の一覧にありません。設定画面の「家族の名前」に先に登録してください。`);
+    }
     if (id && usedIds.has(id)) rowErrors.push('同じIDの行が複数あります。');
     if (rowErrors.length) {
       fatal.push(...rowErrors.map((m) => `${rowNo}行目: ${m}`));
@@ -1117,6 +1144,23 @@ function notifySection() {
   return h('section', { class: 'card' }, h('h2', {}, '通知（この端末）'), body);
 }
 
+function membersSection() {
+  const area = h('textarea', { id: 'members-input', rows: 4, maxlength: MAX_MEMBERS * (MAX_MEMBER_LENGTH + 2), value: registeredMembers().join('\n') });
+  const error = h('p', { class: 'error small', role: 'alert' });
+  const save = h('button', { type: 'button', class: 'primary', onclick: (ev) => busy(ev.currentTarget, async () => {
+    const res = parseMembers(area.value);
+    error.textContent = res.error || '';
+    if (res.error) return;
+    await saveSetting('members', res.value);
+    area.value = res.value.join('\n');
+    toast('家族の名前を保存しました。');
+  }) }, '家族の名前を保存');
+  return h('section', { class: 'card' }, h('h2', {}, '家族の名前'),
+    h('p', { class: 'muted small' }, `各台帳の「名義人」を、ここに登録した名前から選べます（最大${MAX_MEMBERS}人・1人${MAX_MEMBER_LENGTH}文字まで）。名前を変えても、入力済みのデータの名義人は自動では変わりません。`),
+    h('label', { for: 'members-input' }, '家族の名前（1行に1人）'), area, error,
+    h('div', { class: 'actions' }, save));
+}
+
 function shortcutSection() {
   const field = { key: 'links', label: 'ホーム画面のショートカット', type: 'links' };
   const input = fieldInput(field, { links: state.settings.shortcuts || DEFAULT_SHORTCUTS });
@@ -1147,7 +1191,7 @@ function accountSection() {
 }
 
 function renderSettings() {
-  setView('設定', h('h1', {}, '設定'), notifySection(), backupSection(), importSection(), shortcutSection(), usageSection(), accountSection());
+  setView('設定', h('h1', {}, '設定'), notifySection(), membersSection(), backupSection(), importSection(), shortcutSection(), usageSection(), accountSection());
 }
 
 // ---------------------------------------------------------------- start
