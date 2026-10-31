@@ -3,7 +3,7 @@
 // and the data is protected by row level security. Never put the secret/service_role key here.
 export const CONFIG = {
   // e.g. 'https://abcdefghijklmnop.supabase.co' (no trailing slash)
-  supabaseUrl: '',
+  supabaseUrl: 'https://fhlskaiixzwfjuuoetuf.supabase.co',
   // "Publishable key" (sb_publishable_...) or legacy "anon public" key (eyJ...)
-  supabaseKey: '',
+  supabaseKey: 'sb_publishable_NBnRPEtGTfJ0v5E4Qy1llQ_vRblaLUk',
 };
