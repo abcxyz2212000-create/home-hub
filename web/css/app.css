@@ -205,6 +205,10 @@ legend { font-weight: 700; padding: 0 0.25rem; }
 
 .links { margin: 0; padding-left: 1.2rem; }
 .masked { font-variant-numeric: tabular-nums; letter-spacing: 0.05em; }
+.history, .member-list { list-style: none; margin: 0; padding: 0; }
+.stamps { margin-bottom: 0.5rem; }
+.history li, .member-list li { padding: 0.5rem 0; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+.history li:last-child, .member-list li:last-child { border-bottom: 0; }
 
 dl.fields { display: grid; grid-template-columns: minmax(8rem, 35%) 1fr; gap: 0.4rem 1rem; margin: 0; }
 dl.fields dt { color: var(--muted); font-size: 0.9rem; }

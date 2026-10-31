@@ -1,38 +1,74 @@
--- 家の管理ハブ: Supabase database schema (first release)
--- Run this whole file once in the Supabase dashboard: SQL Editor -> New query -> Run.
--- It is idempotent: running it again does not delete data.
+-- 家の管理ハブ: Supabase database schema
+-- Run this whole file in the Supabase dashboard: SQL Editor -> New query -> Run.
+-- It is idempotent: running it again does not delete data. It works both for a new project and
+-- for upgrading a project created from an older version of this file.
 --
--- After running it, register the shared account as the only owner (replace the email):
---   insert into public.app_owner (user_id)
---   select id from auth.users where email = 'shared-account@example.com'
---   on conflict (singleton) do update set user_id = excluded.user_id;
+-- New project only: register the first administrator (replace the name and the email):
+--   insert into public.members (name, email, role)
+--   values ('共通（管理者）', 'shared-account@example.com', 'admin');
 
 -- ---------------------------------------------------------------------------
--- Owner: only this one user may read or write any data (checked by RLS).
+-- Members (user master). A member with an email can log in with the Supabase Auth user that has
+-- the same email; a member without an email is a family member who does not log in (e.g. an
+-- account holder). Only active members can read or write data (checked by RLS).
 -- ---------------------------------------------------------------------------
-create table if not exists public.app_owner (
-  singleton boolean primary key default true check (singleton),
-  user_id uuid not null unique
+create table if not exists public.members (
+  id uuid primary key default gen_random_uuid(),
+  name text not null unique check (char_length(name) between 1 and 50),
+  email text unique check (
+    email is null
+    or (char_length(email) <= 254 and email = lower(email) and email ~ '^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$')
+  ),
+  role text not null default 'member' check (role in ('admin', 'member')),
+  active boolean not null default true,
+  memo text check (char_length(memo) <= 1000),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
 );
-alter table public.app_owner enable row level security;
--- No policies on purpose: the table is not readable through the API.
 
-create or replace function public.is_app_owner()
+create or replace function public.current_member_id()
+returns uuid
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select id from public.members
+  where active and email is not null and email = lower(coalesce(auth.jwt() ->> 'email', ''))
+  limit 1;
+$$;
+
+create or replace function public.is_member()
 returns boolean
 language sql
 stable
 security definer
 set search_path = public
 as $$
-  select exists (select 1 from public.app_owner where user_id = auth.uid());
+  select public.current_member_id() is not null;
 $$;
 
-revoke all on function public.is_app_owner() from public, anon;
-grant execute on function public.is_app_owner() to authenticated;
+create or replace function public.is_admin()
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select exists (select 1 from public.members where id = public.current_member_id() and role = 'admin');
+$$;
+
+revoke all on function public.current_member_id() from public, anon;
+revoke all on function public.is_member() from public, anon;
+revoke all on function public.is_admin() from public, anon;
+grant execute on function public.current_member_id() to authenticated;
+grant execute on function public.is_member() to authenticated;
+grant execute on function public.is_admin() to authenticated;
 
 create or replace function public.touch_updated_at()
 returns trigger
 language plpgsql
+set search_path = public
 as $$
 begin
   new.updated_at := now();
@@ -42,7 +78,8 @@ $$;
 
 -- ---------------------------------------------------------------------------
 -- Ledgers. Columns shared by every ledger:
---   name, holder, status, links, password_location, memo, tags, notify_days
+--   name, holder_id, status, links, password_location, memo, tags, notify_days,
+--   created_by, updated_by (holder_id/created_by/updated_by are added in the upgrade section below)
 -- notify_days: per-item notification override, e.g. {"card_expiry": [30, 7]}.
 --   A missing key means "use the default timing", [] means "do not notify".
 -- ---------------------------------------------------------------------------
@@ -50,7 +87,6 @@ $$;
 create table if not exists public.accounts (
   id uuid primary key default gen_random_uuid(),
   name text not null check (char_length(name) between 1 and 200),
-  holder text check (char_length(holder) <= 100),
   status text not null default 'active' check (status in ('active', 'closed')),
   links jsonb not null default '[]'::jsonb check (jsonb_typeof(links) = 'array'),
   password_location text check (char_length(password_location) <= 200),
@@ -73,7 +109,6 @@ create table if not exists public.accounts (
 create table if not exists public.cards (
   id uuid primary key default gen_random_uuid(),
   name text not null check (char_length(name) between 1 and 200),
-  holder text check (char_length(holder) <= 100),
   status text not null default 'active' check (status in ('active', 'closed')),
   links jsonb not null default '[]'::jsonb check (jsonb_typeof(links) = 'array'),
   password_location text check (char_length(password_location) <= 200),
@@ -97,7 +132,6 @@ create table if not exists public.cards (
 create table if not exists public.contracts (
   id uuid primary key default gen_random_uuid(),
   name text not null check (char_length(name) between 1 and 200),
-  holder text check (char_length(holder) <= 100),
   status text not null default 'active' check (status in ('active', 'closed')),
   links jsonb not null default '[]'::jsonb check (jsonb_typeof(links) = 'array'),
   password_location text check (char_length(password_location) <= 200),
@@ -123,7 +157,6 @@ create table if not exists public.contracts (
 create table if not exists public.items (
   id uuid primary key default gen_random_uuid(),
   name text not null check (char_length(name) between 1 and 200),
-  holder text check (char_length(holder) <= 100),
   status text not null default 'active' check (status in ('active', 'closed')),
   links jsonb not null default '[]'::jsonb check (jsonb_typeof(links) = 'array'),
   password_location text check (char_length(password_location) <= 200),
@@ -144,7 +177,6 @@ create table if not exists public.items (
 create table if not exists public.memberships (
   id uuid primary key default gen_random_uuid(),
   name text not null check (char_length(name) between 1 and 200),
-  holder text check (char_length(holder) <= 100),
   status text not null default 'active' check (status in ('active', 'closed')),
   links jsonb not null default '[]'::jsonb check (jsonb_typeof(links) = 'array'),
   password_location text check (char_length(password_location) <= 200),
@@ -195,17 +227,183 @@ create table if not exists public.notification_log (
   sent_at timestamptz not null default now()
 );
 
+-- Change history (append-only; written only by the audit trigger below).
+create table if not exists public.audit_log (
+  id bigint generated always as identity primary key,
+  at timestamptz not null default now(),
+  table_name text not null,
+  record_id uuid not null,
+  record_name text,
+  action text not null check (action in ('insert', 'update', 'delete', 'photo_insert', 'photo_delete')),
+  actor_member_id uuid references public.members (id) on delete set null,
+  actor_name text not null,
+  changes jsonb not null default '{}'::jsonb
+);
+create index if not exists audit_log_record_idx on public.audit_log (table_name, record_id, at desc);
+
+-- ---------------------------------------------------------------------------
 -- Upgrades for projects created from an older version of this file ("create table if not exists"
 -- above does not add columns to an existing table). Safe to run any number of times.
+-- ---------------------------------------------------------------------------
 alter table public.accounts add column if not exists bank_code text check (bank_code ~ '^[0-9]{4}$');
 alter table public.accounts add column if not exists branch_code text check (branch_code ~ '^[0-9]{3}$');
 -- Full account number (decided 2026-11-01 when migrating from Google Drive). last4 is derived from it by the app.
 alter table public.accounts add column if not exists account_no text check (account_no ~ '^[0-9]{4,14}$');
+alter table public.push_subscriptions add column if not exists member_id uuid references public.members (id) on delete set null;
+
+do $$
+declare
+  t text;
+begin
+  foreach t in array array['accounts', 'cards', 'contracts', 'items', 'memberships'] loop
+    execute format('alter table public.%I add column if not exists holder_id uuid references public.members (id) on delete set null', t);
+    execute format('create index if not exists %I on public.%I (holder_id)', t || '_holder_id_idx', t);
+  end loop;
+  foreach t in array array['accounts', 'cards', 'contracts', 'items', 'memberships', 'item_photos'] loop
+    execute format('alter table public.%I add column if not exists created_by uuid references public.members (id) on delete set null', t);
+    execute format('alter table public.%I add column if not exists updated_by uuid references public.members (id) on delete set null', t);
+  end loop;
+end;
+$$;
+
+-- Migration from the single-owner version (app_owner table, free-text holder, settings "members").
+do $$
+declare
+  t text;
+begin
+  -- the former owner becomes the first administrator
+  if to_regclass('public.app_owner') is not null and not exists (select 1 from public.members where role = 'admin') then
+    execute $q$
+      insert into public.members (name, email, role)
+      select '共通（管理者）', lower(u.email), 'admin'
+      from public.app_owner o join auth.users u on u.id = o.user_id
+      where u.email is not null
+      on conflict do nothing
+    $q$;
+  end if;
+  -- family names registered on the old settings screen become members without login
+  insert into public.members (name)
+  select distinct trim(x) from public.settings s, jsonb_array_elements_text(s.value) x
+  where s.key = 'members' and jsonb_typeof(s.value) = 'array' and trim(x) <> ''
+  on conflict do nothing;
+  -- free-text holders become members without login and are linked by holder_id
+  foreach t in array array['accounts', 'cards', 'contracts', 'items', 'memberships'] loop
+    if exists (select 1 from information_schema.columns
+               where table_schema = 'public' and table_name = t and column_name = 'holder') then
+      execute format($q$
+        insert into public.members (name)
+        select distinct left(trim(holder), 50) from public.%I where holder is not null and trim(holder) <> ''
+        on conflict do nothing
+      $q$, t);
+      execute format($q$
+        update public.%I x set holder_id = m.id from public.members m
+        where x.holder_id is null and x.holder is not null and m.name = left(trim(x.holder), 50)
+      $q$, t);
+    end if;
+  end loop;
+end;
+$$;
 
 create index if not exists cards_debit_account_id_idx on public.cards (debit_account_id);
 create index if not exists contracts_pay_card_id_idx on public.contracts (pay_card_id);
 create index if not exists contracts_pay_account_id_idx on public.contracts (pay_account_id);
 create index if not exists memberships_card_id_idx on public.memberships (card_id);
+
+-- ---------------------------------------------------------------------------
+-- Who created / last changed each row, the change history, and the last-admin guard
+-- ---------------------------------------------------------------------------
+create or replace function public.stamp_row()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if tg_op = 'INSERT' then
+    new.created_by := public.current_member_id();
+    new.updated_by := new.created_by;
+  else
+    new.created_by := old.created_by;
+    new.updated_by := public.current_member_id();
+    new.updated_at := now();
+  end if;
+  return new;
+end;
+$$;
+
+create or replace function public.audit_row()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  o jsonb := case when tg_op <> 'INSERT' then to_jsonb(old) end;
+  n jsonb := case when tg_op <> 'DELETE' then to_jsonb(new) end;
+  r jsonb := coalesce(to_jsonb(new), to_jsonb(old));
+  diff jsonb := '{}'::jsonb;
+  k text;
+  ov jsonb;
+  nv jsonb;
+  actor uuid := public.current_member_id();
+  tbl text := tg_table_name;
+  rid uuid := (r ->> 'id')::uuid;
+  act text := lower(tg_op);
+  rname text := r ->> 'name';
+begin
+  if tg_table_name = 'item_photos' then
+    if tg_op = 'UPDATE' then
+      return null;
+    end if;
+    tbl := 'items';
+    rid := (r ->> 'item_id')::uuid;
+    act := 'photo_' || lower(tg_op);
+    rname := (select name from public.items where id = rid);
+  elsif tg_op = 'UPDATE' then
+    for k in select jsonb_object_keys(n) loop
+      continue when k = any (array['id', 'created_at', 'updated_at', 'created_by', 'updated_by', 'last4']);
+      ov := o -> k;
+      nv := n -> k;
+      continue when ov is not distinct from nv;
+      if k = 'account_no' then
+        -- the full account number is never copied into the history
+        ov := case when jsonb_typeof(ov) = 'string' then to_jsonb('●●●' || right(ov #>> '{}', 4)) else ov end;
+        nv := case when jsonb_typeof(nv) = 'string' then to_jsonb('●●●' || right(nv #>> '{}', 4)) else nv end;
+      end if;
+      diff := diff || jsonb_build_object(k, jsonb_build_array(ov, nv));
+    end loop;
+    if diff = '{}'::jsonb then
+      return null;
+    end if;
+  end if;
+  insert into public.audit_log (table_name, record_id, record_name, action, actor_member_id, actor_name, changes)
+  values (
+    tbl, rid, rname, act, actor,
+    coalesce((select name from public.members where id = actor),
+             case when auth.uid() is null then '管理ツール' else '登録されていないユーザー' end),
+    diff
+  );
+  return null;
+end;
+$$;
+
+create or replace function public.guard_last_admin()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if not exists (select 1 from public.members where role = 'admin' and active and email is not null) then
+    raise exception 'at least one active administrator with a login is required' using errcode = 'HH001';
+  end if;
+  return null;
+end;
+$$;
+
+revoke all on function public.stamp_row() from public, anon, authenticated;
+revoke all on function public.audit_row() from public, anon, authenticated;
+revoke all on function public.guard_last_admin() from public, anon, authenticated;
 
 -- ---------------------------------------------------------------------------
 -- Triggers, privileges and row level security
@@ -214,31 +412,69 @@ do $$
 declare
   t text;
 begin
-  foreach t in array array['accounts', 'cards', 'contracts', 'items', 'memberships', 'settings'] loop
+  foreach t in array array['accounts', 'cards', 'contracts', 'items', 'memberships'] loop
+    execute format('drop trigger if exists %I_touch on public.%I', t, t);
+    execute format('drop trigger if exists %I_stamp on public.%I', t, t);
+    execute format('create trigger %I_stamp before insert or update on public.%I for each row execute function public.stamp_row()', t, t);
+  end loop;
+  execute 'drop trigger if exists item_photos_stamp on public.item_photos';
+  execute 'create trigger item_photos_stamp before insert or update on public.item_photos for each row execute function public.stamp_row()';
+  foreach t in array array['settings', 'members'] loop
     execute format('drop trigger if exists %I_touch on public.%I', t, t);
     execute format('create trigger %I_touch before update on public.%I for each row execute function public.touch_updated_at()', t, t);
   end loop;
+  foreach t in array array['accounts', 'cards', 'contracts', 'items', 'memberships', 'item_photos', 'members'] loop
+    execute format('drop trigger if exists %I_audit on public.%I', t, t);
+    execute format('create trigger %I_audit after insert or update or delete on public.%I for each row execute function public.audit_row()', t, t);
+  end loop;
+  execute 'drop trigger if exists members_guard_last_admin on public.members';
+  execute 'create trigger members_guard_last_admin after update or delete on public.members for each statement execute function public.guard_last_admin()';
 
-  foreach t in array array['app_owner', 'accounts', 'cards', 'contracts', 'items', 'memberships',
-                           'item_photos', 'settings', 'push_subscriptions', 'notification_log'] loop
+  foreach t in array array['members', 'accounts', 'cards', 'contracts', 'items', 'memberships',
+                           'item_photos', 'settings', 'push_subscriptions', 'notification_log', 'audit_log'] loop
     execute format('alter table public.%I enable row level security', t);
     execute format('revoke all on public.%I from anon, authenticated', t);
     -- service_role (used only by the daily GitHub Actions job) bypasses RLS but still needs table
     -- privileges when "Automatically expose new tables" is off for the project.
     execute format('grant select, insert, update, delete on public.%I to service_role', t);
+    execute format('drop policy if exists owner_all on public.%I', t);
   end loop;
 
-  foreach t in array array['accounts', 'cards', 'contracts', 'items', 'memberships',
-                           'item_photos', 'settings', 'push_subscriptions'] loop
+  -- household data: every active member can read and write
+  foreach t in array array['accounts', 'cards', 'contracts', 'items', 'memberships', 'item_photos', 'push_subscriptions'] loop
     execute format('grant select, insert, update, delete on public.%I to authenticated', t);
-    execute format('drop policy if exists owner_all on public.%I', t);
-    execute format('create policy owner_all on public.%I for all to authenticated using (public.is_app_owner()) with check (public.is_app_owner())', t);
+    execute format('drop policy if exists member_all on public.%I', t);
+    execute format('create policy member_all on public.%I for all to authenticated using (public.is_member()) with check (public.is_member())', t);
   end loop;
+
+  -- user master and settings: members read, administrators write
+  -- (exception: everyone may record the last backup time)
+  foreach t in array array['members', 'settings'] loop
+    execute format('grant select, insert, update, delete on public.%I to authenticated', t);
+    execute format('drop policy if exists member_read on public.%I', t);
+    execute format('drop policy if exists admin_insert on public.%I', t);
+    execute format('drop policy if exists admin_update on public.%I', t);
+    execute format('drop policy if exists admin_delete on public.%I', t);
+    execute format('create policy member_read on public.%I for select to authenticated using (public.is_member())', t);
+    execute format('create policy admin_delete on public.%I for delete to authenticated using (public.is_admin())', t);
+  end loop;
+  create policy admin_insert on public.members for insert to authenticated with check (public.is_admin());
+  create policy admin_update on public.members for update to authenticated using (public.is_admin()) with check (public.is_admin());
+  create policy admin_insert on public.settings for insert to authenticated
+    with check (public.is_admin() or (public.is_member() and key = 'last_backup_at'));
+  create policy admin_update on public.settings for update to authenticated
+    using (public.is_admin() or (public.is_member() and key = 'last_backup_at'))
+    with check (public.is_admin() or (public.is_member() and key = 'last_backup_at'));
+
+  -- history: read-only for members (rows are added by the audit trigger only)
+  grant select on public.audit_log to authenticated;
+  drop policy if exists member_read on public.audit_log;
+  create policy member_read on public.audit_log for select to authenticated using (public.is_member());
 end;
 $$;
 
 -- ---------------------------------------------------------------------------
--- Usage statistics for the settings screen (owner only).
+-- Usage statistics for the settings screen (members only).
 -- ---------------------------------------------------------------------------
 create or replace function public.usage_stats()
 returns json
@@ -248,7 +484,7 @@ security definer
 set search_path = public
 as $$
 begin
-  if not public.is_app_owner() then
+  if not public.is_member() then
     raise exception 'not allowed' using errcode = '42501';
   end if;
   return json_build_object(
@@ -278,11 +514,28 @@ drop policy if exists item_photos_owner_update on storage.objects;
 drop policy if exists item_photos_owner_delete on storage.objects;
 
 create policy item_photos_owner_select on storage.objects for select to authenticated
-  using (bucket_id = 'item-photos' and public.is_app_owner());
+  using (bucket_id = 'item-photos' and public.is_member());
 create policy item_photos_owner_insert on storage.objects for insert to authenticated
-  with check (bucket_id = 'item-photos' and public.is_app_owner());
+  with check (bucket_id = 'item-photos' and public.is_member());
 create policy item_photos_owner_update on storage.objects for update to authenticated
-  using (bucket_id = 'item-photos' and public.is_app_owner())
-  with check (bucket_id = 'item-photos' and public.is_app_owner());
+  using (bucket_id = 'item-photos' and public.is_member())
+  with check (bucket_id = 'item-photos' and public.is_member());
 create policy item_photos_owner_delete on storage.objects for delete to authenticated
-  using (bucket_id = 'item-photos' and public.is_app_owner());
+  using (bucket_id = 'item-photos' and public.is_member());
+
+-- ---------------------------------------------------------------------------
+-- Removal of the single-owner version. Run this section only after logging in with the new
+-- version has been confirmed (on a new project it does nothing).
+-- ---------------------------------------------------------------------------
+do $$
+declare
+  t text;
+begin
+  foreach t in array array['accounts', 'cards', 'contracts', 'items', 'memberships'] loop
+    execute format('alter table public.%I drop column if exists holder', t);
+  end loop;
+end;
+$$;
+delete from public.settings where key = 'members';
+drop function if exists public.is_app_owner();
+drop table if exists public.app_owner;

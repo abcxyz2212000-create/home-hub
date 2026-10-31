@@ -1,7 +1,7 @@
 // Ledger definitions. Forms, lists, detail pages and CSV columns are generated from these.
 //
 // Field types:
-//   text, textarea, email, url, select(options), int, last4, code(digits), accountno, holder, date, month(YYYY-MM),
+//   text, textarea, email, url, select(options), int, last4, code(digits), accountno, member, date, month(YYYY-MM),
 //   day(1-31), monthnum(1-12), bool, ref(ledger), payment(card or account),
 //   links, tags, status
 
@@ -16,7 +16,7 @@ function common(nameLabel) {
   return {
     head: [{ key: 'name', label: nameLabel, type: 'text', required: true, max: 200 }],
     tail: [
-      { key: 'holder', label: '名義人', type: 'holder', max: 100 },
+      { key: 'holder_id', label: '名義人', type: 'member' },
       { key: 'status', label: '状態', type: 'status', options: STATUS_OPTIONS },
       { key: 'links', label: '関連リンク', type: 'links' },
       { key: 'password_location', label: 'パスワードの保管先', type: 'text', max: 200, placeholder: '例: Google パスワードマネージャーの「○○銀行」' },
@@ -124,6 +124,19 @@ export const LEDGERS = {
     ],
     summary: (r) => [r.kind, r.issuer, r.member_last4 && `下4桁 ${r.member_last4}`],
   }),
+};
+
+// User master (not a ledger: edited on the settings screen by administrators).
+export const MEMBER_DEF = {
+  key: 'members',
+  label: 'ユーザー',
+  fields: [
+    { key: 'name', label: '名前', type: 'text', required: true, max: 50 },
+    { key: 'email', label: 'ログイン用メールアドレス', type: 'email', placeholder: '空欄ならログインしない家族（名義人などに使う）' },
+    { key: 'role', label: '権限', type: 'select', options: [['member', '一般'], ['admin', '管理者']], required: true },
+    { key: 'active', label: '有効', type: 'bool' },
+    { key: 'memo', label: 'メモ', type: 'textarea', max: 1000 },
+  ],
 };
 
 export function optionPairs(field) {
