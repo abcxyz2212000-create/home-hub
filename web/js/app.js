@@ -1114,8 +1114,8 @@ function flowBreakdown(f) {
       people(f.inMember, 'から'),
       row('その他', f.inOther),
       h('tr', { class: 'group' }, h('th', {}, '出金'), h('th', { class: 'num' }, yen(f.outTotal))),
-      row('契約（固定費）', f.outContract),
-      row('契約にない支出', f.outUnlinked),
+      row('固定費', f.outContract),
+      row('変動費', f.outUnlinked),
       people(f.outMember, 'へ'),
       people(f.outPersonal, '負担（精算待ち・済み）'))));
 }
@@ -1144,7 +1144,7 @@ function actualCard(ym) {
         kpi('出金', yen(flows.outTotal).replace('円', ''), '円'),
         kpi('固定費（予定）', yen(planTotal).replace('円', ''), '円')),
       flowBreakdown(flows),
-      rows.length ? [h('h3', {}, '契約ごとの予定と実績'),
+      rows.length ? [h('h3', {}, '固定費の予定と実績'),
         h('div', { class: 'table-wrap' }, h('table', { class: 'table' },
           h('thead', {}, h('tr', {}, h('th', {}, '契約'), h('th', { class: 'num' }, '予定'), h('th', { class: 'num' }, '実績'), h('th', {}, '状態'))),
           h('tbody', {}, rows.map((r) => h('tr', {},
@@ -1152,10 +1152,10 @@ function actualCard(ym) {
             h('td', { class: 'num' }, r.plan ? yen(r.plan) : '—'),
             h('td', { class: 'num' }, r.actual ? yen(r.actual) : '—'),
             h('td', { class: r.actual === 0 && r.plan > 0 ? 'warn-text' : '' }, state1(r)))))))] : null,
-      sum.byCategory.size ? [h('h3', {}, '契約にない支出（大項目別）'), barChart([...sum.byCategory.entries()], '契約にない支出の大項目別の金額')] : null,
-      sum.unlinked.length ? [h('h3', { class: 'with-icon' }, `契約にない明細（${sum.unlinked.length}件）`, helpButton('契約にない明細', '固定費なら、明細を開いて契約にひも付けると、次から自動で照合します。')),
+      sum.byCategory.size ? [h('h3', {}, '変動費（大項目別）'), barChart([...sum.byCategory.entries()], '変動費の大項目別の金額')] : null,
+      sum.unlinked.length ? [h('h3', { class: 'with-icon' }, `変動費の明細（${sum.unlinked.length}件）`, helpButton('固定費と変動費', '契約にひも付いた明細が固定費、ひも付いていない明細が変動費です。', '固定費なのに変動費に入っている明細は、開いて契約にひも付けると、次から自動で照合します。')),
         h('div', { class: 'list' }, sum.unlinked.map(txRow))] : null,
-      txs.filter((t) => t.contract_id && t.counted && !t.transfer).length ? h('details', {}, h('summary', {}, '契約にひも付いた明細'),
+      txs.filter((t) => t.contract_id && t.counted && !t.transfer).length ? h('details', {}, h('summary', {}, '固定費の明細'),
         h('div', { class: 'list' }, txs.filter((t) => t.contract_id && t.counted && !t.transfer).map(txRow))) : null,
       sum.memberFlows.length ? [h('h3', {}, `個人との入出金（${sum.memberFlows.length}件）`), h('div', { class: 'list' }, sum.memberFlows.map(txRow))] : null,
       sum.personal.length ? [h('h3', {}, `個人負担（${sum.personal.length}件）`), h('div', { class: 'list' }, sum.personal.map(txRow))] : null,
@@ -1565,7 +1565,7 @@ function extYearView(year) {
           h('tr', { class: 'total' }, h('th', { scope: 'row' }, '合計'), numCell(total('inflow'), true), numCell(total('outflow'), true), numCell(total('planned'), true))))),
 ),
     contractRows.length ? h('section', { class: 'card' },
-      h('h2', {}, '契約ごとの予定と実績（年間）'),
+      h('h2', {}, '固定費の予定と実績（年間）'),
       h('div', { class: 'table-wrap' }, h('table', { class: 'table' },
         h('thead', {}, h('tr', {}, h('th', {}, '契約'), h('th', { class: 'num' }, '予定'), h('th', { class: 'num' }, '実績'), h('th', { class: 'num' }, '差'))),
         h('tbody', {}, contractRows.map((r) => h('tr', {},
@@ -1574,8 +1574,8 @@ function extYearView(year) {
           h('td', { class: 'num' }, r.actual ? yen(r.actual) : '—'),
           h('td', { class: 'num' }, r.plan && r.actual ? signedYen(r.actual - r.plan) : '—'))))))) : null,
     year1.byCategory.size ? h('section', { class: 'card' },
-      h('h2', {}, '契約にない支出（大項目別・年間）'),
-      barChart([...year1.byCategory.entries()].sort((a, b) => b[1] - a[1]), '契約にない支出の大項目別の年間の金額')) : null,
+      h('h2', {}, '変動費（大項目別・年間）'),
+      barChart([...year1.byCategory.entries()].sort((a, b) => b[1] - a[1]), '変動費の大項目別の年間の金額')) : null,
   ];
 }
 
