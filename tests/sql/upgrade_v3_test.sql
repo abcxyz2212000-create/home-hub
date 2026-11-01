@@ -16,7 +16,8 @@ do $$ begin
     raise exception 'cards.kind missing after the upgrade';
   end if;
   if (select count(*) from information_schema.columns where (table_name, column_name) in
-      (('accounts', 'mf_name'), ('cards', 'mf_name'), ('contracts', 'match_keywords'), ('transactions', 'mf_id'))) <> 4 then
+      (('accounts', 'mf_name'), ('cards', 'mf_name'), ('contracts', 'match_keywords'), ('transactions', 'mf_id'),
+       ('transactions', 'personal_member_id'), ('transactions', 'needs_review'), ('transactions', 'settled_entry_id'))) <> 7 then
     raise exception 'MoneyForward import columns missing after the upgrade';
   end if;
   if (select count(*) from information_schema.columns where (table_name, column_name) in

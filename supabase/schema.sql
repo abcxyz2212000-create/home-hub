@@ -357,6 +357,12 @@ create index if not exists shared_rules_contract_id_idx on public.shared_rules (
 alter table public.accounts add column if not exists mf_name text check (char_length(mf_name) <= 100);
 alter table public.cards add column if not exists mf_name text check (char_length(mf_name) <= 100);
 alter table public.contracts add column if not exists match_keywords text check (char_length(match_keywords) <= 500);
+-- Statement lines paid by the shared account but owed by one person (個人負担, 2026-11-01): who owes
+-- it, whether it is still being checked, and the one-off charge (臨時の費目) that settled it.
+alter table public.transactions add column if not exists personal_member_id uuid references public.members (id) on delete set null;
+alter table public.transactions add column if not exists needs_review boolean not null default false;
+alter table public.transactions add column if not exists settled_entry_id uuid references public.shared_entries (id) on delete set null;
+create index if not exists transactions_personal_idx on public.transactions (personal_member_id) where personal_member_id is not null;
 
 do $$
 declare
