@@ -306,6 +306,32 @@ create table if not exists public.shared_entries (
 );
 create index if not exists shared_entries_member_ym_idx on public.shared_entries (member_id, ym);
 
+-- Statement lines of the shared account and the cards paid from it, imported from MoneyForward ME CSV
+-- (one row per MoneyForward ID, so importing the same period again updates instead of duplicating).
+-- Not copied into the history (audit_log): many rows per month, and they come from the bank anyway.
+create table if not exists public.transactions (
+  id uuid primary key default gen_random_uuid(),
+  mf_id text not null unique check (char_length(mf_id) between 1 and 100),
+  date date not null,
+  description text not null check (char_length(description) <= 500),
+  amount integer not null check (amount between -1000000000 and 1000000000),
+  institution text check (char_length(institution) <= 100),
+  account_id uuid references public.accounts (id) on delete set null,
+  card_id uuid references public.cards (id) on delete set null,
+  category text check (char_length(category) <= 50),
+  subcategory text check (char_length(subcategory) <= 50),
+  memo text check (char_length(memo) <= 1000),
+  counted boolean not null default true,
+  transfer boolean not null default false,
+  contract_id uuid references public.contracts (id) on delete set null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  created_by uuid references public.members (id) on delete set null,
+  updated_by uuid references public.members (id) on delete set null
+);
+create index if not exists transactions_date_idx on public.transactions (date);
+create index if not exists transactions_contract_id_idx on public.transactions (contract_id);
+
 -- ---------------------------------------------------------------------------
 -- Upgrades for projects created from an older version of this file ("create table if not exists"
 -- above does not add columns to an existing table). Safe to run any number of times.
@@ -326,6 +352,11 @@ alter table public.contracts add column if not exists shared_cost boolean not nu
 alter table public.shared_rules add column if not exists month_of_year smallint check (month_of_year between 1 and 12);
 alter table public.shared_rules add column if not exists contract_id uuid references public.contracts (id) on delete set null;
 create index if not exists shared_rules_contract_id_idx on public.shared_rules (contract_id);
+-- MoneyForward ME import (2026-11-01): the name of the account/card in MoneyForward ("保有金融機関"),
+-- and words that identify a contract in the statement ("内容").
+alter table public.accounts add column if not exists mf_name text check (char_length(mf_name) <= 100);
+alter table public.cards add column if not exists mf_name text check (char_length(mf_name) <= 100);
+alter table public.contracts add column if not exists match_keywords text check (char_length(match_keywords) <= 500);
 
 do $$
 declare
@@ -488,7 +519,7 @@ do $$
 declare
   t text;
 begin
-  foreach t in array array['accounts', 'cards', 'contracts', 'items', 'memberships', 'chores', 'shared_rules', 'shared_entries'] loop
+  foreach t in array array['accounts', 'cards', 'contracts', 'items', 'memberships', 'chores', 'shared_rules', 'shared_entries', 'transactions'] loop
     execute format('drop trigger if exists %I_touch on public.%I', t, t);
     execute format('drop trigger if exists %I_stamp on public.%I', t, t);
     execute format('create trigger %I_stamp before insert or update on public.%I for each row execute function public.stamp_row()', t, t);
@@ -507,7 +538,7 @@ begin
   execute 'create trigger members_guard_last_admin after update or delete on public.members for each statement execute function public.guard_last_admin()';
 
   foreach t in array array['members', 'accounts', 'cards', 'contracts', 'items', 'memberships',
-                           'item_photos', 'settings', 'push_subscriptions', 'notification_log', 'audit_log', 'chores', 'shared_rules', 'shared_entries'] loop
+                           'item_photos', 'settings', 'push_subscriptions', 'notification_log', 'audit_log', 'chores', 'shared_rules', 'shared_entries', 'transactions'] loop
     execute format('alter table public.%I enable row level security', t);
     execute format('revoke all on public.%I from anon, authenticated', t);
     -- service_role (used only by the daily GitHub Actions job) bypasses RLS but still needs table
@@ -517,7 +548,7 @@ begin
   end loop;
 
   -- household data: every active member can read and write
-  foreach t in array array['accounts', 'cards', 'contracts', 'items', 'memberships', 'item_photos', 'push_subscriptions', 'chores', 'shared_rules', 'shared_entries'] loop
+  foreach t in array array['accounts', 'cards', 'contracts', 'items', 'memberships', 'item_photos', 'push_subscriptions', 'chores', 'shared_rules', 'shared_entries', 'transactions'] loop
     execute format('grant select, insert, update, delete on public.%I to authenticated', t);
     execute format('drop policy if exists member_all on public.%I', t);
     execute format('create policy member_all on public.%I for all to authenticated using (public.is_member()) with check (public.is_member())', t);

@@ -7,6 +7,7 @@ import {
   parseField, parseTags, validateLinks, parseLinksCell, linksCell, parseNotifyDays, notifyDaysText, findCardNumberLike, safeUrl,
 } from './validate.js';
 import { parseCSV, toCSV, decodeCSVBytes, unescapeFormula } from './csv.js';
+import { parseMfRows, classifyMf, matchContract, normalizeText, summarizeMonth, plannedInMonth } from './mf.js';
 import { createZip } from './zip.js';
 import { compressImage } from './image.js';
 import * as push from './push.js';
@@ -42,6 +43,7 @@ const state = {
   chores: [],
   sharedRules: [],
   sharedEntries: [],
+  tx: new Map(), // ym -> statement lines (null while loading)
 };
 const photoUrls = new Map();
 
@@ -226,6 +228,7 @@ function resetState() {
   state.chores = [];
   state.sharedRules = [];
   state.sharedEntries = [];
+  state.tx.clear();
   for (const url of photoUrls.values()) URL.revokeObjectURL(url);
   photoUrls.clear();
 }
@@ -243,7 +246,7 @@ function setNav(page) {
     const active = target === page || (target === 'ledgers' && ['list', 'view', 'edit'].includes(page))
       || (target === 'settings' && page === 'member')
       || (target === 'chores' && ['chore', 'chore-edit'].includes(page))
-      || (target === 'flow' && ['shared', 'shared-entry', 'shared-rule'].includes(page));
+      || (target === 'flow' && ['shared', 'shared-entry', 'shared-rule', 'tx'].includes(page));
     a.classList.toggle('active', active);
     if (active) a.setAttribute('aria-current', 'page');
     else a.removeAttribute('aria-current');
@@ -292,6 +295,7 @@ async function render() {
   else if (page === 'shared') renderMoney(a);
   else if (page === 'shared-entry') renderSharedEntry(a, b);
   else if (page === 'shared-rule') renderSharedRule(a);
+  else if (page === 'tx') renderTx(a);
   else if (page === 'chores') renderChores();
   else if (page === 'chore') renderChore(a);
   else if (page === 'chore-edit') renderChoreEdit(a);
@@ -670,6 +674,225 @@ function flowLegend(flow) {
   }));
 }
 
+// ---------------------------------------------------------------- shared account statement (MoneyForward ME)
+
+// The account a contract is paid from (card -> its debit account). null if not set.
+function contractSourceAccountId(c) {
+  const card = c.pay_card_id ? find('cards', c.pay_card_id) : null;
+  const id = card ? card.debit_account_id : c.pay_account_id;
+  return id && find('accounts', id) ? id : null;
+}
+
+function txMonthRange(ym) {
+  return `date=gte.${ym}-01&date=lt.${ymAdd(ym, 1)}-01`;
+}
+
+// Statement lines of one month, loaded on demand (cached until something is imported or changed).
+function monthTransactions(ym) {
+  if (state.tx.has(ym)) return state.tx.get(ym);
+  state.tx.set(ym, null);
+  db.selectWhere('transactions', `${txMonthRange(ym)}&order=date.desc`)
+    .then((rows) => {
+      state.tx.set(ym, rows);
+      const { page, a } = route();
+      if (page === 'flow' || (page === 'shared' && (a || thisYM()) === ym)) render();
+    })
+    .catch((e) => {
+      state.tx.delete(ym);
+      handleError(e);
+    });
+  return null;
+}
+
+async function fetchAllPaged(table, query) {
+  const out = [];
+  for (let offset = 0; ; offset += 1000) {
+    const rows = await db.selectWhere(table, `${query}&limit=1000&offset=${offset}`);
+    out.push(...rows);
+    if (rows.length < 1000) return out;
+  }
+}
+
+function mfImportBox() {
+  const status = h('div', { class: 'import-status', role: 'status' });
+  const input = h('input', { type: 'file', accept: '.csv,text/csv', 'aria-label': 'マネーフォワードの CSV ファイル' });
+  input.addEventListener('change', () => busy(input, async () => {
+    status.replaceChildren();
+    const file = input.files[0];
+    if (!file) return;
+    if (file.size > MAX_IMPORT_BYTES) {
+      status.replaceChildren(h('p', { class: 'error' }, 'ファイルが大きすぎます（5MBまで）。期間を分けて書き出してください。'));
+      return;
+    }
+    const { items, errors } = parseMfRows(parseCSV(decodeCSVBytes(new Uint8Array(await file.arrayBuffer()))));
+    if (errors.length) {
+      status.replaceChildren(h('p', { class: 'error' }, 'エラーがあるため取り込みませんでした。'),
+        h('ul', { class: 'error small' }, errors.slice(0, 10).map((m) => h('li', {}, m))));
+      return;
+    }
+    const sharedId = sharedAccountId();
+    if (!sharedId) {
+      status.replaceChildren(h('p', { class: 'error' }, '先に共通口座を設定してください（このページの「共通口座の収支」または設定画面）。'));
+      return;
+    }
+    const { inScope, skipped, unknown } = classifyMf(items, { accounts: state.data.accounts, cards: state.data.cards, sharedAccountId: sharedId });
+    const hint = unknown.length
+      ? h('p', { class: 'muted small' }, `対象外の金融機関: ${unknown.join('、')}。共通口座や、共通口座から引き落とされるカードなら、口座・カードの台帳で「マネーフォワードでの名前」にこの名前を入れてください。`)
+      : null;
+    if (inScope.length === 0) {
+      status.replaceChildren(h('p', { class: 'error' }, '共通口座の明細が見つかりませんでした。'), hint);
+      return;
+    }
+    const dates = inScope.map((t) => t.date).sort();
+    const existing = await fetchAllPaged('transactions', `date=gte.${dates[0]}&date=lte.${dates[dates.length - 1]}&select=mf_id,contract_id`);
+    const known = new Map(existing.map((t) => [t.mf_id, t.contract_id]));
+    const contracts = state.data.contracts;
+    const rows = inScope.map((t) => ({ ...t, contract_id: known.has(t.mf_id) ? known.get(t.mf_id) : matchContract(t.description, contracts) }));
+    const added = rows.filter((t) => !known.has(t.mf_id)).length;
+    const linked = rows.filter((t) => !known.has(t.mf_id) && t.contract_id).length;
+    const save = h('button', { type: 'button', class: 'primary', onclick: (ev) => busy(ev.currentTarget, async () => {
+      for (let i = 0; i < rows.length; i += 500) await db.upsertRows('transactions', rows.slice(i, i + 500), 'mf_id');
+      state.tx.clear();
+      toast(`取り込みました（追加 ${added}件、更新 ${rows.length - added}件）。`);
+      input.value = '';
+      render();
+    }) }, '取り込む');
+    status.replaceChildren(
+      h('p', {}, `${dates[0]}〜${dates[dates.length - 1]}：追加 ${added}件（うち契約に自動でひも付け ${linked}件）、更新 ${rows.length - added}件、対象外 ${skipped}件`),
+      hint,
+      h('div', { class: 'actions' }, save));
+  }));
+  return h('div', { class: 'mf-import' },
+    h('label', { class: 'button' }, 'マネーフォワードの CSV を選ぶ', input),
+    h('p', { class: 'muted small' }, 'マネーフォワード ME の入出金（家計簿データ）の CSV。共通口座と、共通口座から引き落とされるカードの明細だけを保存します。同じ期間を取り込み直しても重複しません。'),
+    status);
+}
+
+function txRow(t) {
+  return h('a', { class: 'list-item', href: `#/tx/${t.id}` },
+    h('div', { class: 'list-body' },
+      h('div', { class: 'list-title' }, t.description || '（内容なし）'),
+      h('div', { class: 'muted small' }, [t.date.slice(5).replace('-', '/'), t.institution, t.category && `${t.category}${t.subcategory ? `・${t.subcategory}` : ''}`].filter(Boolean).join('　'))),
+    h('span', { class: 'num' }, signedYen(t.amount)),
+    icon('chevron', 'ic ic-sm list-chevron'));
+}
+
+// Plan (contracts) vs actual (imported statement) for the shared account in one month.
+function actualCard(ym) {
+  const sharedId = sharedAccountId();
+  const head = h('h2', { class: 'with-icon' }, icon('database'), `共通口座の明細（実績）`);
+  if (!sharedId) return h('section', { class: 'card' }, head, h('p', { class: 'muted' }, '共通口座を設定すると、マネーフォワードの明細を取り込めます。'));
+  const txs = monthTransactions(ym);
+  if (txs === null) return h('section', { class: 'card' }, head, h('p', { class: 'muted' }, '読み込み中…'), mfImportBox());
+  const sum = summarizeMonth(txs);
+  const planned = state.data.contracts.filter((c) => contractSourceAccountId(c) === sharedId && plannedInMonth(c, ym) > 0);
+  const ids = new Set([...planned.map((c) => c.id), ...sum.byContract.keys()]);
+  const rows = [...ids].map((id) => find('contracts', id)).filter(Boolean)
+    .map((c) => ({ c, plan: plannedInMonth(c, ym), actual: sum.byContract.get(c.id) || 0 }))
+    .sort((a, b) => b.plan - a.plan || b.actual - a.actual);
+  const planTotal = planned.reduce((n, c) => n + plannedInMonth(c, ym), 0);
+  const state1 = (r) => (r.actual === 0 ? (txs.length ? '未確認' : '—') : r.plan === 0 ? '予定外' : r.actual === r.plan ? '一致' : `差 ${signedYen(r.actual - r.plan)}`);
+  return h('section', { class: 'card' }, head,
+    txs.length === 0 ? h('p', { class: 'muted' }, 'この月の明細はまだ取り込まれていません。') : [
+      h('div', { class: 'kpis kpis-3' },
+        kpi('入金（実績）', yen(sum.inflow).replace('円', ''), '円'),
+        kpi('出金（実績）', yen(sum.outflow).replace('円', ''), '円'),
+        kpi('固定費（予定）', yen(planTotal).replace('円', ''), '円')),
+      rows.length ? [h('h3', {}, '契約ごとの予定と実績'),
+        h('div', { class: 'table-wrap' }, h('table', { class: 'table' },
+          h('thead', {}, h('tr', {}, h('th', {}, '契約'), h('th', { class: 'num' }, '予定'), h('th', { class: 'num' }, '実績'), h('th', {}, '状態'))),
+          h('tbody', {}, rows.map((r) => h('tr', {},
+            h('td', {}, h('a', { href: `#/view/contracts/${r.c.id}` }, r.c.name)),
+            h('td', { class: 'num' }, r.plan ? yen(r.plan) : '—'),
+            h('td', { class: 'num' }, r.actual ? yen(r.actual) : '—'),
+            h('td', { class: r.actual === 0 && r.plan > 0 ? 'warn-text' : '' }, state1(r)))))))] : null,
+      sum.byCategory.size ? [h('h3', {}, '契約にない支出（大項目別）'), barChart([...sum.byCategory.entries()], '契約にない支出の大項目別の金額')] : null,
+      sum.unlinked.length ? [h('h3', {}, `契約にない明細（${sum.unlinked.length}件）`),
+        h('p', { class: 'muted small' }, '固定費なら、明細を開いて契約にひも付けると、次から自動で照合します。'),
+        h('div', { class: 'list' }, sum.unlinked.map(txRow))] : null,
+      txs.filter((t) => t.contract_id && t.counted && !t.transfer).length ? h('details', {}, h('summary', {}, '契約にひも付いた明細'),
+        h('div', { class: 'list' }, txs.filter((t) => t.contract_id && t.counted && !t.transfer).map(txRow))) : null,
+      sum.excluded.length ? h('details', {}, h('summary', {}, `振替・集計対象外（${sum.excluded.length}件。カードの引き落としなど、二重に数えないもの）`),
+        h('div', { class: 'list' }, sum.excluded.map(txRow))) : null,
+    ],
+    mfImportBox());
+}
+
+async function relinkUnlinked() {
+  const rows = await fetchAllPaged('transactions', 'contract_id=is.null&select=id,description&order=date.asc');
+  let n = 0;
+  for (const t of rows) {
+    const id = matchContract(t.description, state.data.contracts);
+    if (id) {
+      await db.updateRow('transactions', t.id, { contract_id: id });
+      n += 1;
+    }
+  }
+  state.tx.clear();
+  return n;
+}
+
+function renderTx(id) {
+  const back = h('a', { class: 'back', href: '#/flow' }, '← お金の流れ');
+  setView('明細', back, h('p', { class: 'muted' }, '読み込み中…'));
+  db.selectWhere('transactions', `id=eq.${encodeURIComponent(id)}`).then((rows) => {
+    const t = rows[0];
+    if (!t) {
+      setView('見つかりません', back, h('p', {}, 'この明細は見つかりませんでした。'));
+      return;
+    }
+    const contracts = [...state.data.contracts].sort(byName);
+    const select = h('select', { id: 'f-contract' }, h('option', { value: '' }, '（ひも付けない）'),
+      contracts.map((c) => h('option', { value: c.id, selected: c.id === t.contract_id }, c.name + (c.status === 'closed' ? '（解約済み）' : ''))));
+    const remember = h('input', { type: 'checkbox', id: 'f-remember', checked: !t.contract_id });
+    const keyword = h('input', { type: 'text', id: 'f-keyword', maxlength: 50, value: t.description.replace(/[\s　]+/g, ' ').trim().slice(0, 20) });
+    const counted = h('input', { type: 'checkbox', id: 'f-counted', checked: t.counted && !t.transfer, disabled: t.transfer });
+    const save = h('button', { type: 'button', class: 'primary', onclick: (ev) => busy(ev.currentTarget, async () => {
+      const contractId = select.value || null;
+      await db.updateRow('transactions', t.id, { contract_id: contractId, counted: t.transfer ? t.counted : counted.checked });
+      let relinked = 0;
+      if (contractId && remember.checked) {
+        const word = keyword.value.trim();
+        if (normalizeText(word).length < 2) {
+          toast('キーワードは2文字以上にしてください。', 'error');
+          return;
+        }
+        const c = find('contracts', contractId);
+        const list = String(c.match_keywords || '').split(/[,、，\n]+/).map((k) => k.trim()).filter(Boolean);
+        if (!list.some((k) => normalizeText(k) === normalizeText(word))) {
+          const joined = [...list, word].join('、');
+          if (joined.length > 500) {
+            toast('キーワードが多すぎます。契約の画面で整理してください。', 'error');
+            return;
+          }
+          await db.updateRow('contracts', c.id, { match_keywords: joined });
+          await reloadLedger('contracts');
+        }
+        relinked = await relinkUnlinked();
+      }
+      state.tx.clear();
+      toast(relinked ? `保存しました（ほかに ${relinked}件をひも付けました）。` : '保存しました。');
+      location.hash = `#/shared/${t.date.slice(0, 7)}`;
+    }) }, '保存');
+    setView('明細', back, h('h1', {}, t.description || '明細'),
+      h('section', { class: 'card' },
+        h('dl', { class: 'shared-figures' },
+          h('dt', {}, '日付'), h('dd', {}, t.date),
+          h('dt', {}, '金額'), h('dd', { class: 'num' }, signedYen(t.amount)),
+          h('dt', {}, '金融機関'), h('dd', {}, t.institution || ''),
+          h('dt', {}, '分類'), h('dd', {}, [t.category, t.subcategory].filter(Boolean).join('・')),
+          t.memo ? [h('dt', {}, 'メモ'), h('dd', {}, t.memo)] : null),
+        t.transfer ? h('p', { class: 'muted small' }, 'マネーフォワードで「振替」の明細です（カードの引き落としなど）。二重に数えないよう集計に含めません。') : null),
+      h('section', { class: 'card form' },
+        h('div', { class: 'field' }, h('label', { for: 'f-contract' }, '契約にひも付ける'), select),
+        h('div', { class: 'field checkbox' }, remember, h('label', { for: 'f-remember' }, 'キーワードとして覚え、ほかの明細も照合する')),
+        h('div', { class: 'field' }, h('label', { for: 'f-keyword' }, 'キーワード（明細の内容に含まれる語）'), keyword,
+          h('p', { class: 'muted small' }, '月や番号など毎回変わる部分は消してください（例: 「中部電力」）。')),
+        h('div', { class: 'field checkbox' }, counted, h('label', { for: 'f-counted' }, '集計に含める')),
+        h('div', { class: 'actions' }, h('a', { class: 'button', href: `#/shared/${t.date.slice(0, 7)}` }, 'キャンセル'), save)));
+  }).catch(handleError);
+}
+
 // ---------------------------------------------------------------- shared account (共通口座)
 
 function thisYM() {
@@ -757,7 +980,7 @@ function renderMoney(ymParam) {
       : [h('p', {}, '共通口座にする口座を選ぶと、入る額と出る額を比べられます。'), sharedAccountPicker()]);
 
   if (members.length === 0) {
-    setView('お金の流れ', h('h1', { class: 'with-icon' }, icon('flow'), 'お金の流れ'), monthNav, flowCard, balanceCard,
+    setView('お金の流れ', h('h1', { class: 'with-icon' }, icon('flow'), 'お金の流れ'), monthNav, flowCard, balanceCard, actualCard(ym),
       h('section', { class: 'card' },
         h('h2', {}, '共通口座への入金'),
         h('p', {}, '共通口座への入金を、人ごとに管理します。まず「定例項目」（毎月の基本の額や、個人で払っている共通の費用）を登録してください。'),
@@ -843,7 +1066,7 @@ function renderMoney(ymParam) {
       icon('chevron', 'ic ic-sm list-chevron')))));
   });
 
-  setView('お金の流れ', h('h1', { class: 'with-icon' }, icon('flow'), 'お金の流れ'), monthNav, flowCard, balanceCard,
+  setView('お金の流れ', h('h1', { class: 'with-icon' }, icon('flow'), 'お金の流れ'), monthNav, flowCard, balanceCard, actualCard(ym),
     h('section', { class: 'month-panel', 'aria-label': `${ymLabel(ym)}の入金状況` },
       h('h2', {}, '共通口座への入金状況'),
       cards),
@@ -1053,6 +1276,12 @@ function renderSharedRule(id) {
       location.hash = '#/shared';
     },
   });
+}
+
+function transactionsCSV(rows) {
+  const head = ['ID', 'マネーフォワードID', '日付', '内容', '金額（円）', '保有金融機関', '大項目', '中項目', 'メモ', '集計対象', '振替', '契約'];
+  return toCSV([head, ...rows.map((t) => [t.id, t.mf_id, t.date, t.description, t.amount, t.institution || '', t.category || '', t.subcategory || '', t.memo || '',
+    t.counted ? '1' : '0', t.transfer ? '1' : '0', t.contract_id ? (find('contracts', t.contract_id) || { name: '（削除済み）' }).name : ''])]);
 }
 
 function sharedRulesCSV() {
@@ -1666,6 +1895,8 @@ function renderEdit(ledger, id) {
         const saved = isNew ? (await db.insertRows(ledger, [values]))[0] : await db.updateRow(ledger, id, values);
         await reloadLedger(ledger);
         if (ledger === 'contracts') await syncContractRules(saved, adopt && !adopt.closest('[hidden]') ? adopt.value || null : null);
+        if (ledger === 'contracts' && (values.match_keywords || null) !== ((r && r.match_keywords) || null)) await relinkUnlinked();
+        if (ledger === 'contracts') state.tx.clear();
         if (ledger === 'accounts' || ledger === 'cards') await syncAllContractRules();
         toast('保存しました。');
         location.hash = `#/view/${ledger}/${saved.id}`;
@@ -1909,6 +2140,7 @@ async function fullBackup(status) {
   await loadAll();
   const files = LEDGER_ORDER.map((k) => ({ name: `${LEDGERS[k].csvName}.csv`, data: ledgerCSV(k) }));
   files.push({ name: '家事.csv', data: choresCSV() });
+  files.push({ name: '共通口座_明細（マネーフォワード）.csv', data: transactionsCSV(await fetchAllPaged('transactions', 'order=date.asc')) });
   files.push({ name: '共通口座_定例項目.csv', data: sharedRulesCSV() }, { name: '共通口座_臨時の費目と入金.csv', data: sharedEntriesCSV() });
   const photoRows = [['写真ID', '品名', '品ID', 'ファイル', '登録日時']];
   let i = 0;

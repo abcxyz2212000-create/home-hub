@@ -532,3 +532,11 @@ details summary { cursor: pointer; margin-top: 1rem; }
 .shared-cost-box { margin-bottom: 0.9rem; }
 .shared-cost-box .field.checkbox { margin-bottom: 0.2rem; }
 .deduction { margin: 0 0 0.6rem; color: var(--accent); }
+.warn-text { color: var(--warning-ink); font-weight: 600; }
+.mf-import { margin-top: 1rem; padding-top: 0.75rem; border-top: 1px dashed var(--line); }
+.mf-import label.button { display: inline-block; cursor: pointer; }
+.mf-import label.button input[type=file] { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.import-status { margin-top: 0.5rem; }
+details { margin-top: 0.75rem; }
+details > summary { cursor: pointer; color: var(--muted); font-size: 0.9rem; }
+.table th + th, .table td + td { padding-left: 0.9rem; }

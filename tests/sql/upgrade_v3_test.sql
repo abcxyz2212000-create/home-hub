@@ -16,6 +16,10 @@ do $$ begin
     raise exception 'cards.kind missing after the upgrade';
   end if;
   if (select count(*) from information_schema.columns where (table_name, column_name) in
+      (('accounts', 'mf_name'), ('cards', 'mf_name'), ('contracts', 'match_keywords'), ('transactions', 'mf_id'))) <> 4 then
+    raise exception 'MoneyForward import columns missing after the upgrade';
+  end if;
+  if (select count(*) from information_schema.columns where (table_name, column_name) in
       (('contracts', 'shared_cost'), ('shared_rules', 'month_of_year'), ('shared_rules', 'contract_id'))) <> 3 then
     raise exception 'shared cost columns missing after the upgrade';
   end if;

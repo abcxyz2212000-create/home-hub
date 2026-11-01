@@ -18,18 +18,19 @@ const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '
 const DEFAULTS = {
   status: 'active', links: [], tags: [], notify_days: {}, mf_linked: false, family_card: false, etc_card: false, auto_renew: false, shared_cost: false,
 };
-const TABLES = ['accounts', 'cards', 'contracts', 'items', 'memberships', 'item_photos', 'settings', 'push_subscriptions', 'notification_log', 'members', 'audit_log', 'chores', 'shared_rules', 'shared_entries'];
+const TABLES = ['accounts', 'cards', 'contracts', 'items', 'memberships', 'item_photos', 'settings', 'push_subscriptions', 'notification_log', 'members', 'audit_log', 'chores', 'shared_rules', 'shared_entries', 'transactions'];
 const TABLE_DEFAULTS = {
   members: { role: 'member', active: true, email: null, nickname: null },
   settings: {}, notification_log: {}, push_subscriptions: {}, audit_log: {},
   chores: { status: 'active', schedule: [], adjust: 1, assignee_type: 'member', assignee_id: null },
   shared_rules: { end_ym: null, memo: null, month_of_year: null, contract_id: null },
   shared_entries: { memo: null },
+  transactions: { contract_id: null, account_id: null, card_id: null, memo: null, counted: true, transfer: false },
 };
 const SET_NULL = {
   accounts: [['cards', 'debit_account_id'], ['contracts', 'pay_account_id']],
   cards: [['contracts', 'pay_card_id'], ['memberships', 'card_id']],
-  contracts: [['shared_rules', 'contract_id']],
+  contracts: [['shared_rules', 'contract_id'], ['transactions', 'contract_id']],
   members: [...['accounts', 'cards', 'contracts', 'items', 'memberships'].map((t) => [t, 'holder_id']), ['chores', 'assignee_id']],
 };
 
@@ -61,10 +62,12 @@ export function createMock() {
 
   const matches = (row, params) => {
     for (const [k, v] of params) {
-      if (['select', 'order', 'on_conflict', 'limit'].includes(k)) continue;
+      if (['select', 'order', 'on_conflict', 'limit', 'offset'].includes(k)) continue;
       if (v.startsWith('eq.') && String(row[k]) !== v.slice(3)) return false;
       if (v === 'not.is.null' && (row[k] === null || row[k] === undefined)) return false;
       if (v.startsWith('lt.') && !(String(row[k]) < v.slice(3))) return false;
+      if (v.startsWith('gte.') && !(String(row[k]) >= v.slice(4))) return false;
+      if (v === 'is.null' && !(row[k] === null || row[k] === undefined)) return false;
     }
     return true;
   };
@@ -138,7 +141,9 @@ export function createMock() {
         const [col, dir] = order.split('.');
         out = [...out].sort((a, b) => String(a[col] ?? '').localeCompare(String(b[col] ?? ''), 'ja') * (dir === 'desc' ? -1 : 1));
       }
+      const offset = Number(url.searchParams.get('offset')) || 0;
       const limit = Number(url.searchParams.get('limit'));
+      if (offset > 0) out = out.slice(offset);
       if (limit > 0) out = out.slice(0, limit);
       return send(res, 200, out);
     }

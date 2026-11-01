@@ -206,6 +206,24 @@ end $$;
 delete from public.shared_entries;
 delete from public.shared_rules;
 
+-- MoneyForward statement lines: members read/write, one row per MoneyForward ID, strangers see nothing
+select pg_temp.login('member@example.com');
+insert into public.transactions (mf_id, date, description, amount, institution) values ('mf-1', '2026-10-02', 'サンプル電力', -8000, '共用口座');
+do $$ begin
+  begin insert into public.transactions (mf_id, date, description, amount) values ('mf-1', '2026-10-03', 'x', -1);
+    raise exception 'duplicate MoneyForward ID accepted'; exception when unique_violation then null; end;
+  if (select created_by from public.transactions where mf_id = 'mf-1') is null then raise exception 'transaction not stamped'; end if;
+  if exists (select 1 from public.audit_log where table_name = 'transactions') then raise exception 'statement lines must not fill the history'; end if;
+end $$;
+update public.accounts set mf_name = '共用口座' where false;
+update public.contracts set match_keywords = 'サンプル電力' where false;
+select pg_temp.login('stranger@example.com');
+do $$ begin
+  if (select count(*) from public.transactions) <> 0 then raise exception 'stranger can read the statement'; end if;
+end $$;
+select pg_temp.login('member@example.com');
+delete from public.transactions;
+
 -- card type: only the listed values
 select pg_temp.login('member@example.com');
 insert into public.cards (name, kind, brand, last4) values ('テストデビット', 'デビット', 'VISA', '0001');

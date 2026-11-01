@@ -46,6 +46,7 @@ export const LEDGERS = {
       { key: 'account_no', label: '口座番号（全桁）', type: 'accountno' },
       { key: 'purpose', label: '用途', type: 'text', max: 200 },
       { key: 'mf_linked', label: 'マネーフォワード連携', type: 'bool' },
+      { key: 'mf_name', label: 'マネーフォワードでの名前', type: 'text', max: 100, placeholder: '例: 共用口座（CSV の「保有金融機関」）' },
     ],
     summary: (r) => [r.institution, r.branch, r.kind, r.last4 && `下4桁 ${r.last4}`],
     // Headers of the existing "口座マスタ" spreadsheet, accepted by the CSV import as-is.
@@ -69,6 +70,7 @@ export const LEDGERS = {
       { key: 'annual_fee_month', label: '年会費の発生月', type: 'monthnum' },
       { key: 'family_card', label: '家族カードあり', type: 'bool' },
       { key: 'etc_card', label: 'ETCカードあり', type: 'bool' },
+      { key: 'mf_name', label: 'マネーフォワードでの名前', type: 'text', max: 100, placeholder: '例: JCBカード（CSV の「保有金融機関」）' },
     ],
     summary: (r) => [r.kind, r.brand, r.last4 && `下4桁 ${r.last4}`, r.expiry_ym && `有効期限 ${r.expiry_ym}`],
   }),
@@ -84,6 +86,7 @@ export const LEDGERS = {
       { key: 'cycle', label: '周期', type: 'select', options: [['monthly', '月払い'], ['yearly', '年払い']] },
       { key: 'payment', label: '支払方法', type: 'payment' },
       { key: 'shared_cost', label: '共通の費用', type: 'bool' },
+      { key: 'match_keywords', label: '明細の照合キーワード', type: 'text', max: 500, placeholder: '例: 中部電力、ソフトバンク（明細の内容に含まれる語。「、」区切り）' },
       { key: 'contract_date', label: '契約日', type: 'date' },
       { key: 'renewal_date', label: '更新日', type: 'date' },
       { key: 'auto_renew', label: '自動更新', type: 'bool' },
