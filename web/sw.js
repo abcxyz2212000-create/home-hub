@@ -1,6 +1,6 @@
 // Service worker: offline app shell + Web Push display.
 // Bump CACHE when the list of files changes.
-const CACHE = 'homehub-v7';
+const CACHE = 'homehub-v8';
 const SHELL = [
   './', 'index.html', 'manifest.webmanifest', 'css/app.css',
   'js/app.js', 'js/config.js', 'js/supabase.js', 'js/schema.js', 'js/events.js', 'js/validate.js',
