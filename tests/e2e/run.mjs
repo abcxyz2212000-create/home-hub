@@ -525,7 +525,7 @@ try {
   ].join('\n') + '\n';
   const sjis = execFileSync('python3', ['-I', '-c', 'import sys; sys.stdout.buffer.write(sys.stdin.read().encode("cp932"))'], { input: mfCsv });
   const mfFile = { name: 'mf.csv', mimeType: 'text/csv', buffer: sjis };
-  await page.goto(`${appUrl}#/shared/${ymNow}`);
+  await page.goto(`${appUrl}#/flow/ext/${ymNow}`);
   await page.getByRole('heading', { name: '共通口座の明細（実績）' }).waitFor();
   await page.getByLabel('マネーフォワードの CSV ファイル').setInputFiles(mfFile);
   await page.getByText('追加 5件（うち契約に自動でひも付け 1件）、更新 0件、対象外 2件').waitFor();
@@ -535,7 +535,7 @@ try {
   assert.match(importStatus, /手入力の立替の記録（保有金融機関が「なし」）1件は取り込みません/);
   assert.doesNotMatch(importStatus, /対象外の金融機関:[^。]*なし/, '"なし" is not offered as a name to register');
   await page.getByRole('button', { name: '取り込む' }).click();
-  await page.getByText('取り込みました（追加 5件、更新 0件、入金の記録 1件）。').waitFor();
+  await page.getByText('取り込みました（追加 5件、更新 0件、個人との入出金の記録 1件）。').waitFor();
   assert.equal(mock.db.transactions.length, 5);
   const autoDeposit = mock.db.shared_entries.find((e) => e.kind === 'deposit' && e.amount === 50000);
   assert.deepEqual([autoDeposit.member_id, autoDeposit.ym, autoDeposit.label], [hanako.id, ymNow, '入金']);
@@ -544,8 +544,9 @@ try {
   assert.equal(mock.db.transactions.find((t) => t.mf_id === 'mf-b').card_id, mainCard.id);
   await page.getByText('契約ごとの予定と実績').waitFor();
   const actual = await page.locator('#view').innerText();
-  assert.match(actual, /出金（実績）\s*16,000円/, 'card lines counted, the card payment (transfer) is not');
-  assert.match(actual, /入金（実績）\s*50,000円/);
+  assert.match(actual, /出金（外部へ）\s*16,000円/, 'card lines counted, the card payment (transfer) is not');
+  assert.match(actual, /入金（外部から）\s*0円/, 'money from a member is not outside income');
+  assert.match(actual, /個人との入出金（1件/);
   assert.match(actual, /インターネット\s+5,000円\s+5,000円\s+一致/);
   assert.match(actual, /電気代\s+8,000円\s+—\s+未確認/);
   assert.match(actual, /契約にない明細（2件）/);
@@ -572,13 +573,16 @@ try {
   await page.getByRole('link', { name: /スーパーマーケット/ }).click();
   await page.getByLabel('負担', { exact: true }).selectOption({ label: 'はなこの個人負担' });
   await page.getByRole('button', { name: '保存' }).click();
-  await page.getByRole('heading', { name: '個人負担の精算' }).waitFor();
+  await page.getByText('契約ごとの予定と実績').waitFor();
   assert.equal(mock.db.transactions.find((t) => t.mf_id === 'mf-c').personal_member_id, hanako.id);
+  assert.match(await page.locator('#view').innerText(), /出金（外部へ）\s*13,000円/, 'the personal line is no longer a shared cost');
+  await page.goto(`${appUrl}#/flow/member/${ymNow}`);
   await page.getByText('はなこ：精算待ち 1件・3,000円').waitFor();
-  assert.match(await page.locator('#view').innerText(), /出金（実績）\s*13,000円/, 'the personal line is no longer a shared cost');
   await page.goto(`${appUrl}#/tx/${mock.db.transactions.find((t) => t.mf_id === 'mf-a').id}`); // linked lines are folded away
   await page.getByLabel('負担', { exact: true }).selectOption({ label: '確認中（誰の負担か確かめる）' });
   await page.getByRole('button', { name: '保存' }).click();
+  await page.getByText('契約ごとの予定と実績').waitFor();
+  await page.goto(`${appUrl}#/flow/member/${ymNow}`);
   await page.getByText('確認中（1件）').waitFor();
   assert.equal(mock.db.transactions.find((t) => t.mf_id === 'mf-a').needs_review, true);
   const entriesBefore = mock.db.shared_entries.length;
@@ -599,6 +603,37 @@ try {
   await page.goto(`${appUrl}#/shared/${ymNow}`);
   await page.getByText('はなこ：精算待ち 1件・3,000円').waitFor();
 
+  step('money tabs: year views, a payout to a member becomes their one-off charge');
+  const payCsv = [
+    '"計算対象","日付","内容","金額（円）","保有金融機関","大項目","中項目","メモ","振替","ID"',
+    `"1","${d}","ﾂﾂｲ ﾊﾅｺ","-20000","共用口座","未分類","未分類","","0","mf-h"`,
+    `"1","${d}","サンプル駐車場(依頼人名:ツツイ ハナコ)","-9000","共用口座","住宅","駐車場","","0","mf-i"`,
+  ].join('\n') + '\n';
+  await page.goto(`${appUrl}#/flow/ext/${ymNow}`);
+  await page.getByRole('heading', { name: '共通口座の明細（実績）' }).waitFor();
+  await page.getByLabel('マネーフォワードの CSV ファイル').setInputFiles({ name: 'pay.csv', mimeType: 'text/csv', buffer: Buffer.from(payCsv) });
+  await page.getByText(/共通口座からの受け取りとして記録: 1件（はなこ 1件）/).waitFor();
+  await page.getByRole('button', { name: '取り込む' }).click();
+  await page.getByText('取り込みました（追加 2件、更新 0件、個人との入出金の記録 1件）。').waitFor();
+  const payout = mock.db.shared_entries.find((e) => e.label === '共通口座からの受け取り');
+  assert.deepEqual([payout.member_id, payout.ym, payout.kind, payout.amount], [hanako.id, ymNow, 'charge', 20000]);
+  assert.equal(mock.db.transactions.find((t) => t.mf_id === 'mf-i').deposit_entry_id ?? null, null, 'the sender name (依頼人名) is not a payee');
+  await page.getByRole('link', { name: '年間' }).click();
+  await page.getByRole('heading', { name: `共通口座の明細（${Number(ymNow.slice(0, 4))}年）` }).waitFor();
+  const extYear = await page.locator('#view').innerText();
+  assert.match(extYear, /出金（外部へ）\s*22,000円/, '5,000 + 8,000 + 9,000 (the member payout and the personal line are not outside payments)');
+  await page.getByRole('link', { name: '個人 ⇔ 共通口座' }).click();
+  await page.locator('.shared-card').first().waitFor();
+  assert.match(await page.locator('.shared-table').innerText(), /共通口座からの受け取り\s+20,000円/);
+  await page.getByText('個人の口座から払っている共通の費用').waitFor();
+  assert.match(await page.locator('#view').innerText(), /dアニ\s+はなこ\s+毎月\s+550円/);
+  await page.getByRole('link', { name: '年間' }).click();
+  await page.getByRole('heading', { name: `はなこ（${Number(ymNow.slice(0, 4))}年）` }).waitFor();
+  assert.match(await page.locator('.member-year').innerText(), /当月分の合計/);
+  await page.screenshot({ path: join(OUT, 'money-year.png'), fullPage: true });
+  await page.getByRole('link', { name: '共通口座 ⇔ 外部' }).click();
+  await page.getByRole('heading', { name: `共通口座の明細（${Number(ymNow.slice(0, 4))}年）` }).waitFor(); // each tab keeps its own period
+
   step('contract amount by period: a new amount from this month, the old one kept for past months');
   await page.goto(`${appUrl}#/edit/contracts/${net.id}`);
   assert.equal(await page.getByLabel('新しい金額の適用開始月').isVisible(), false, 'asked only when the amount changes');
@@ -609,7 +644,7 @@ try {
   const netNow = mock.db.contracts.find((c) => c.id === net.id);
   assert.deepEqual(netNow.price_history, [{ amount: 5000, from: null, to: ymPrev }, { amount: 5500, from: ymNow, to: null }]);
   assert.match(await page.locator('#view').innerText(), new RegExp(`${ymLabel(ymNow)}〜（今）\\s+5,500円`));
-  await page.goto(`${appUrl}#/shared/${ymNow}`);
+  await page.goto(`${appUrl}#/flow/ext/${ymNow}`);
   await page.getByText('契約ごとの予定と実績').waitFor();
   assert.match(await page.locator('#view').innerText(), /インターネット\s+5,500円\s+5,000円\s+差 −500円/);
   await page.goto(`${appUrl}#/settings`);

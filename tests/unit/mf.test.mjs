@@ -1,7 +1,7 @@
 // MoneyForward ME CSV import. All rows are fictional.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseMfRows, classifyMf, matchContract, normalizeText, summarizeMonth, plannedInMonth, personalTotal, settlementMemo, MF_HEADERS, depositMember, depositCandidates, depositEntryFor } from '../../web/js/mf.js';
+import { parseMfRows, classifyMf, matchContract, normalizeText, summarizeMonth, plannedInMonth, personalTotal, settlementMemo, MF_HEADERS, depositMember, depositCandidates, depositEntryFor, transferMember, payeeText } from '../../web/js/mf.js';
 import { parseCSV, decodeCSVBytes } from '../../web/js/csv.js';
 
 const row = (o) => [o.c ?? '1', o.d ?? '2026/10/05', o.t ?? '', String(o.a ?? -1000), o.i ?? '共用口座', o.l ?? '食費', o.m ?? '食費', '', o.f ?? '0', o.id];
@@ -133,4 +133,24 @@ test('deposits: recognised by the payer names, from the start month, never twice
   const e = depositEntryFor({ tx: txs[0], member_id: 'm-a' });
   assert.deepEqual([e.member_id, e.ym, e.kind, e.label, e.amount], ['m-a', '2026-02', 'deposit', '入金', 50000]);
   assert.match(e.memo, /2026\/02\/10 サトウ ハナコ/);
+});
+
+test('money paid out to a member: recognised by the payee only, recorded as a one-off charge they received', () => {
+  const members = [{ id: 'm-a', transfer_names: 'サトウ ハナコ' }, { id: 'm-b', transfer_names: 'サトウ タロウ' }];
+  const line = (o) => ({ id: o.id, date: '2026-03-04', description: o.d, amount: o.a, account_id: 'acc-s', card_id: null, transfer: false, counted: true });
+  assert.equal(payeeText('サンプル駐車場(依頼人名:サトウ ハナコ)'), 'サンプル駐車場');
+  assert.equal(payeeText('サンプル駐車場（依頼人名：サトウ ハナコ）'), 'サンプル駐車場');
+  assert.equal(transferMember(line({ d: 'サトウ タロウ', a: -20000 }), members), 'm-b');
+  assert.equal(transferMember(line({ d: 'サンプル駐車場(依頼人名:サトウ ハナコ)', a: -9000 }), members), null, 'the sender name is not the payee');
+  assert.equal(depositMember(line({ d: 'サトウ タロウ', a: -20000 }), members), null);
+  const txs = [line({ id: 'o1', d: 'サトウ タロウ', a: -20000 }), line({ id: 'o2', d: 'サンプル駐車場(依頼人名:サトウ ハナコ)', a: -9000 }), line({ id: 'i1', d: 'サトウ ハナコ', a: 50000 })];
+  assert.deepEqual(depositCandidates(txs, members).map((c) => [c.tx.id, c.member_id]), [['o1', 'm-b'], ['i1', 'm-a']]);
+  const e = depositEntryFor({ tx: txs[0], member_id: 'm-b' });
+  assert.deepEqual([e.member_id, e.ym, e.kind, e.label, e.amount], ['m-b', '2026-03', 'charge', '共通口座からの受け取り', 20000]);
+  // member flows are not outside income or payments
+  const s = summarizeMonth(txs, members);
+  assert.deepEqual(s.memberFlows.map((t) => t.id), ['o1', 'i1']);
+  assert.equal(s.outflow, 9000);
+  assert.equal(s.inflow, 0);
+  assert.deepEqual(summarizeMonth([{ ...txs[2], deposit_entry_id: 'e1' }]).memberFlows.length, 1, 'linked lines count as member flows even without names');
 });
