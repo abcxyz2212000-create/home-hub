@@ -7,7 +7,7 @@ import {
   parseField, parseTags, validateLinks, parseLinksCell, linksCell, parseNotifyDays, notifyDaysText, findCardNumberLike, safeUrl,
 } from './validate.js';
 import { parseCSV, toCSV, decodeCSVBytes, unescapeFormula } from './csv.js';
-import { sortedHistory, applyPriceChange, periodText } from './prices.js';
+import { sortedHistory, applyPriceChange, periodText, priceAt } from './prices.js';
 import {
   parseMfRows, classifyMf, matchContract, normalizeText, summarizeMonth, plannedInMonth, personalTotal, settlementMemo, depositCandidates, depositEntryFor, DEPOSIT_AUTO_FROM,
 } from './mf.js';
@@ -48,7 +48,7 @@ const state = {
   sharedEntries: [],
   tx: new Map(), // ym -> statement lines (null while loading)
   txYear: new Map(), // 'YYYY' -> statement lines of the year (null while loading)
-  money: { tab: 'ext', ext: null, member: null }, // お金の流れ: the open tab and each tab's month or year
+  money: { tab: 'member', member: null, ext: null, flow: null }, // お金の流れ: the open tab and each tab's month or year
   personal: null, // { pending, review } statement lines owed by one person / being checked (null until loaded)
 };
 const photoUrls = new Map();
@@ -599,7 +599,7 @@ function renderHome() {
           : barChart([...byCategory.entries()], '固定費の種類別の月額'),
         h('p', { class: 'muted small' }, '年払いの契約は12で割った月額で計算しています。解約済みは含みません。')),
       h('section', { class: 'card' },
-        sectionHead('flow', 'お金の流れ', { href: '#/flow', text: '拡大' }),
+        sectionHead('flow', 'お金の流れ', { href: '#/flow/flow', text: '拡大' }),
         flow.columns[flow.columns.length - 1].length === 0 && flow.columns.length === 3
           ? h('p', { class: 'muted' }, '支払方法と金額が入った契約を登録すると、口座からの流れを表示します。')
           : [flowChart(flow.columns, flow.links, { compact: true, ariaLabel: 'お金の流れ（月額）' }), flowLegend(flow)]),
@@ -694,10 +694,25 @@ function adoptableRules() {
   return state.sharedRules.filter((r) => !r.contract_id && r.amount < 0 && (!r.end_ym || r.end_ym >= current));
 }
 
-// [(people ->) accounts -> cards -> contracts] for one month. Contracts are monthly amounts of active
-// contracts; people are the "当月分" each member puts into the shared account that month.
-function flowModel(ym = thisYM()) {
-  const contracts = state.data.contracts.filter((c) => c.status !== 'closed' && monthlyCost(c) > 0);
+// [(people ->) accounts -> cards -> contracts] for one month ('YYYY-MM') or one year ('YYYY').
+// Month: the contract amount of that month (price history; yearly contracts / 12) and each member's
+// 当月分. Year: the amounts paid in that year (monthly: each month, yearly: the payment month) and the
+// sum of 当月分. Closed contracts are left out (the closing date is not kept).
+function flowModel(period = thisYM()) {
+  const isYear = period.length === 4;
+  const months = isYear ? Array.from({ length: 12 }, (_, i) => `${period}-${String(i + 1).padStart(2, '0')}`) : [period];
+  const amountOf = (c) => {
+    if (c.status === 'closed') return 0;
+    if (!isYear) {
+      const v = Number(priceAt(c, period));
+      return Number.isFinite(v) && v > 0 ? (c.cycle === 'yearly' ? v / 12 : v) : 0;
+    }
+    if (c.cycle === 'yearly' && !c.renewal_date) return Math.max(0, Number(priceAt(c, months[11])) || 0);
+    return months.reduce((n, m) => n + plannedInMonth(c, m), 0);
+  };
+  const monthlyCost = amountOf; // the amount used throughout this model
+  const ym = period;
+  const contracts = state.data.contracts.filter((c) => amountOf(c) > 0);
   const cardOf = (id) => (id ? find('cards', id) : null);
   const source = (c) => {
     const card = cardOf(c.pay_card_id);
@@ -706,7 +721,12 @@ function flowModel(ym = thisYM()) {
   };
   const sharedId = sharedAccountId();
   const inflows = sharedId
-    ? sharedMembers().map((m) => ({ m, value: statement(state.sharedRules, state.sharedEntries, m.id, ym).charges })).filter((x) => x.value > 0)
+    ? sharedMembers().map((m) => ({
+      m,
+      value: isYear
+        ? history(state.sharedRules, state.sharedEntries, m.id, months[11]).filter((r) => r.ym.startsWith(`${period}-`)).reduce((n, r) => n + r.charges, 0)
+        : statement(state.sharedRules, state.sharedEntries, m.id, ym).charges,
+    })).filter((x) => x.value > 0)
     : [];
   const totals = new Map();
   for (const c of contracts) totals.set(source(c), (totals.get(source(c)) || 0) + monthlyCost(c));
@@ -748,7 +768,7 @@ function flowModel(ym = thisYM()) {
     const acc = accNode(g);
     acc.out += v;
     const card = cardOf(c.pay_card_id);
-    leaves.push({ id: `k:${c.id}`, label: c.name, value: v, color: color.get(g), href: `#/view/contracts/${c.id}`, sub: c.cycle === 'yearly' ? '※' : '', group: g, via: card ? card.id : '' });
+    leaves.push({ id: `k:${c.id}`, label: c.name, value: v, color: color.get(g), href: `#/view/contracts/${c.id}`, sub: c.cycle === 'yearly' && !isYear ? '※' : '', group: g, via: card ? card.id : '' });
     if (card) {
       const cn = cardNodes.get(card.id) || { id: `c:${card.id}`, label: card.name, value: 0, color: color.get(g), href: `#/view/cards/${card.id}`, group: g };
       cn.value += v;
@@ -763,12 +783,12 @@ function flowModel(ym = thisYM()) {
     const acc = accNode(sharedId);
     acc.in += value;
     addLink(`p:${m.id}`, acc.id, value, color.get(sharedId));
-    return { id: `p:${m.id}`, label: nick(m), value, color: color.get(sharedId), href: `#/shared/${ym}` };
+    return { id: `p:${m.id}`, label: nick(m), value, color: color.get(sharedId), href: `#/flow/member/${period}` };
   });
   for (const n of accNodes.values()) {
     n.value = Math.max(n.in, n.out);
     if (n.in > 0) n.sub = `入 ${yen(n.in)} / 出 ${yen(n.out)}`;
-    else n.sub = `月 ${yen(n.out)}`;
+    else n.sub = `${isYear ? '年' : '月'} ${yen(n.out)}`;
   }
   const order = ['none', 'other'];
   const groupRank = (g) => (order.includes(g) ? 100 + order.indexOf(g) : [...kept].indexOf(g));
@@ -1022,7 +1042,9 @@ function personalCard() {
     [...byMember].map(([memberId, lines]) => h('div', { class: 'personal-group' },
       h('div', { class: 'title-row' },
         h('h3', {}, `${memberNick(memberId)}：精算待ち ${lines.length}件・${yen(personalTotal(lines))}`),
-        h('button', { type: 'button', class: 'primary', onclick: (ev) => busy(ev.currentTarget, () => settlePersonal(memberId, lines)) }, '精算する')),
+        isAdmin() || (me() && me().id === memberId)
+          ? h('button', { type: 'button', class: 'primary', onclick: (ev) => busy(ev.currentTarget, () => settlePersonal(memberId, lines)) }, '精算する')
+          : null),
       h('div', { class: 'list' }, lines.map(txRow)))),
     data.review.length ? [h('h3', {}, `確認中（${data.review.length}件）`),
       h('p', { class: 'muted small' }, '誰の負担か確認中の明細です。決まるまでは共通の支出として数えます。明細を開いて「負担」を選んでください。'),
@@ -1045,7 +1067,7 @@ async function relinkUnlinked() {
 }
 
 function renderTx(id) {
-  const back = h('a', { class: 'back', href: '#/flow' }, '← お金の流れ');
+  const back = h('a', { class: 'back', href: '#/flow' }, '← お金');
   setView('明細', back, h('p', { class: 'muted' }, '読み込み中…'));
   db.selectWhere('transactions', `id=eq.${encodeURIComponent(id)}`).then((rows) => {
     const t = rows[0];
@@ -1144,10 +1166,11 @@ function sharedHomeCard() {
   if (!mine || !participantIds(state.sharedRules, state.sharedEntries).includes(mine.id)) return null;
   const st = statement(state.sharedRules, state.sharedEntries, mine.id, thisYM());
   return h('section', { class: 'card' },
-    sectionHead('bank', `共通口座への入金（${Number(thisYM().slice(5))}月）`, { href: '#/shared', text: '詳しく' }),
+    sectionHead('bank', `共通口座への入金（${Number(thisYM().slice(5))}月）`, { href: `#/flow/member/${thisYM()}`, text: '詳しく' }),
     h('div', { class: 'kpis kpis-2' },
       kpi('当月分', signedYen(st.charges).replace('円', ''), '円'),
-      kpi('未入金の残高', signedYen(st.balance).replace('円', ''), '円', st.balance > 0 ? 'kpi-alert' : '')));
+      kpi('未入金の残高', signedYen(st.balance).replace('円', ''), '円', st.balance > 0 ? 'kpi-alert' : '')),
+    h('div', { class: 'button-row' }, h('a', { class: 'button primary', href: `#/shared-entry/new/advance:${mine.id}:${thisYM()}` }, '立替を記録')));
 }
 
 function sharedAccountPicker() {
@@ -1171,7 +1194,7 @@ function sharedAccountPicker() {
 // balance of the shared account, then two tabs, each with its own month or year:
 //   ext    共通口座 ⇔ 外部       statement of the shared account (plan vs actual)
 //   member 個人 ⇔ 共通口座       what each member puts in (当月分, deposits, balance)
-const MONEY_TABS = { ext: '共通口座 ⇔ 外部', member: '個人 ⇔ 共通口座' };
+const MONEY_TABS = { member: '個人 ⇔ 共通口座', ext: '共通口座 ⇔ 外部', flow: '流れ図' };
 
 // 'YYYY-MM' (a month) or 'YYYY' (a year); anything else -> null.
 function moneyPeriod(v) {
@@ -1186,44 +1209,47 @@ function renderMoney(tabParam, periodParam) {
   const period = moneyPeriod(periodParam) || state.money[tab] || current;
   state.money.tab = tab;
   state.money[tab] = period;
-  const flow = flowModel(current);
+  const tabs = h('nav', { class: 'tabs', 'aria-label': 'お金の表示' }, Object.entries(MONEY_TABS).map(([key, label]) => h('a', {
+    class: `tab${key === tab ? ' active' : ''}`,
+    href: `#/flow/${key}/${state.money[key] || current}`,
+    'aria-current': key === tab ? 'page' : null,
+  }, label)));
+  const isYear = period.length === 4;
+  const content = tab === 'ext' ? (isYear ? extYearView(period) : extMonthView(period))
+    : tab === 'flow' ? flowView(period)
+      : (isYear ? memberYearView(period) : memberMonthView(period));
+  setView('お金', h('h1', { class: 'with-icon' }, icon('flow'), 'お金'), tabs, periodNav(tab, period), ...[content].flat().filter(Boolean));
+}
+
+// ---- tab 3: 流れ図 (people -> shared account -> cards -> payees), the balance of the shared account
+
+function flowView(period) {
+  const isYear = period.length === 4;
+  const unit = isYear ? '年額' : '月額';
+  const flow = flowModel(period);
   const lastCol = flow.columns[flow.columns.length - 1];
   const hasFlow = lastCol.length > 0 || flow.columns.length === 4;
   const sharedAcc = flow.sharedId ? find('accounts', flow.sharedId) : null;
-
   const flowCard = h('section', { class: 'card' },
-    h('h2', {}, flow.columns.length === 4 ? `${flow.columns[0].map((p) => p.label).join('・')} → 口座 → カード → 支払先（月額）` : '口座 → カード → 支払先（月額）'),
+    h('h2', {}, flow.columns.length === 4 ? `${flow.columns[0].map((p) => p.label).join('・')} → 口座 → カード → 支払先（${unit}）` : `口座 → カード → 支払先（${unit}）`),
     hasFlow
-      ? [flowChart(flow.columns, flow.links, { ariaLabel: 'お金の流れ（月額）' }), flowLegend(flow)]
+      ? [flowChart(flow.columns, flow.links, { ariaLabel: `お金の流れ（${unit}）` }), flowLegend(flow)]
       : h('p', { class: 'muted' }, '支払方法と金額が入った契約を登録すると、口座からの流れを表示します。'),
-    h('p', { class: 'muted small' }, flow.columns.length === 4
-      ? `${ymLabel(current)}の全体像です。左端は共通口座へ入れる当月分、右側は契約の月額（※ 年払いは12で割った額）。帯の太さは金額。カードの利用額（変動分）は含みません。名前を押すと詳細を開きます。`
-      : '帯の太さは月額です。※ 年払いは12で割った月額。カードの利用額（変動分）と年会費は含みません。名前を押すと詳細を開きます。'));
-
+    h('p', { class: 'muted small' }, isYear
+      ? '左端はその年に共通口座へ入れる当月分の合計、右側は契約のその年の額（月払いは各月の額の合計、年払いは支払月の額）。帯の太さは金額。カードの利用額（変動分）は含みません。名前を押すと詳細を開きます。'
+      : '左端は共通口座へ入れる当月分、右側はその月の契約の額（※ 年払いは12で割った額）。帯の太さは金額。カードの利用額（変動分）は含みません。名前を押すと詳細を開きます。'));
   const diff = flow.sharedIn - flow.sharedOut;
   const balanceCard = h('section', { class: 'card' },
-    h('h2', { class: 'with-icon' }, icon('bank'), sharedAcc ? `共通口座の収支（${sharedAcc.name}・月額）` : '共通口座の収支'),
+    h('h2', { class: 'with-icon' }, icon('bank'), sharedAcc ? `共通口座の収支（${sharedAcc.name}・${unit}）` : '共通口座の収支'),
     sharedAcc
       ? [h('div', { class: 'kpis kpis-3' },
         kpi('入る額', yen(flow.sharedIn).replace('円', ''), '円'),
         kpi('出る額', yen(flow.sharedOut).replace('円', ''), '円'),
         kpi(diff < 0 ? '差（不足）' : '差（余裕）', signedYen(diff).replace('円', ''), '円', diff < 0 ? 'kpi-alert' : '')),
       diff < 0 ? h('p', { class: 'error with-icon' }, icon('alert'), '共通口座から出る固定費が、入る額より多くなっています。') : null,
-      h('p', { class: 'muted small' }, '入る額は全員の当月分の合計。出る額は、共通口座から直接、またはこの口座から引き落とされるカードで払う契約の月額です（契約の登録が少ないと実際より小さくなります）。')]
+      h('p', { class: 'muted small' }, '入る額は全員の当月分の合計。出る額は、共通口座から直接、またはこの口座から引き落とされるカードで払う契約の額です（契約の登録が少ないと実際より小さくなります）。')]
       : [h('p', {}, '共通口座にする口座を選ぶと、入る額と出る額を比べられます。'), sharedAccountPicker()]);
-
-  const tabs = h('nav', { class: 'tabs', 'aria-label': 'お金の流れの表示' }, Object.entries(MONEY_TABS).map(([key, label]) => h('a', {
-    class: `tab${key === tab ? ' active' : ''}`,
-    href: `#/flow/${key}/${state.money[key] || current}`,
-    'aria-current': key === tab ? 'page' : null,
-  }, label)));
-
-  const isYear = period.length === 4;
-  const content = tab === 'ext'
-    ? (isYear ? extYearView(period) : extMonthView(period, flow))
-    : (isYear ? memberYearView(period) : memberMonthView(period));
-  setView('お金の流れ', h('h1', { class: 'with-icon' }, icon('flow'), 'お金の流れ'), flowCard, balanceCard,
-    tabs, periodNav(tab, period), ...[content].flat().filter(Boolean));
+  return [flowCard, balanceCard, accountTotalsCard(flow, unit)];
 }
 
 // ◀ period ▶ and the month / year switch of one tab.
@@ -1247,8 +1273,8 @@ function periodNav(tab, period) {
 
 // ---- tab 1: 共通口座 ⇔ 外部
 
-function extMonthView(ym, flow) {
-  return [actualCard(ym), accountTotalsCard(flow)];
+function extMonthView(ym) {
+  return actualCard(ym);
 }
 
 // Statement lines of one year (loaded on demand, cached like the months).
@@ -1349,7 +1375,14 @@ function memberIntroCard() {
   return h('section', { class: 'card' },
     h('h2', {}, '共通口座への入金'),
     h('p', {}, '共通口座への入金を、人ごとに管理します。まず「定例項目」（毎月の基本の額や、個人で払っている共通の費用）を登録してください。'),
-    h('a', { class: 'button primary', href: '#/shared-rule/new' }, '＋ 定例項目を追加'));
+    isAdmin() ? h('a', { class: 'button primary', href: '#/shared-rule/new' }, '＋ 定例項目を追加') : h('p', { class: 'muted small' }, '定例項目は管理者が設定します。'));
+}
+
+// 「立替を記録」: on one's own card (administrators: on every card).
+function advanceButton(memberId, ym) {
+  const mine = me();
+  if (!isAdmin() && !(mine && mine.id === memberId)) return null;
+  return h('a', { class: 'button primary', href: `#/shared-entry/new/advance:${memberId}:${ym}` }, '立替を記録');
 }
 
 function memberMonthView(ym) {
@@ -1366,7 +1399,7 @@ function memberMonthView(ym) {
       h('dt', {}, '当月分'), h('dd', { class: 'num' }, signedYen(st.charges)),
       h('dt', {}, '入金済み'), h('dd', { class: 'num' }, yen(st.deposit)),
       h('dt', {}, '未入金の残高'), h('dd', { class: `num big${st.balance > 0 ? ' due' : ''}` }, signedYen(st.balance))),
-    h('a', { class: 'button primary', href: `#/shared-entry/new/deposit:${m.id}:${ym}` }, '入金を記録'))));
+    advanceButton(m.id, ym))));
 
   // the month as in the former spreadsheet
   // recurring items (定例) and one-off items (臨時) are shown as separate groups
@@ -1437,17 +1470,18 @@ function memberMonthView(ym) {
   return [
     h('section', { class: 'month-panel', 'aria-label': `${ymLabel(ym)}の入金状況` },
       h('h2', {}, '共通口座への入金状況'),
-      cards),
+      cards,
+      h('p', { class: 'muted small' }, '入金はマネーフォワードの明細から自動で記録します（取り込みは管理者）。')),
     h('section', { class: 'card' },
       h('h2', {}, `${ymLabel(ym)}の内訳`),
       table,
       h('p', { class: 'muted small' }, 'プラスは共通口座へ入れる額、マイナスは個人で払った共通の費用（入れる額から差し引き）です。合計 = 前月繰越 + 当月分。共通口座から個人へ出たお金は「共通口座からの受け取り」（プラス）として自動で入ります。'),
-      h('h3', {}, 'この月の臨時の費目・入金'),
-      h('p', { class: 'muted small' }, '臨時の費目は、管理費・家賃更新料・立替・精算など、定例以外でその月だけ発生するものです。'),
+      h('h3', {}, 'この月の立替・入金など'),
+      h('p', { class: 'muted small' }, '立替は、上の自分のカードの「立替を記録」から入れます。入金はマネーフォワードの明細から自動で記録します。'),
       entryList,
-      h('div', { class: 'button-row' },
-        h('a', { class: 'button', href: `#/shared-entry/new/charge::${ym}` }, '＋ 臨時の費目を追加'),
-        h('a', { class: 'button', href: `#/shared-entry/new/deposit::${ym}` }, '＋ 入金を追加'))),
+      isAdmin() ? h('div', { class: 'button-row' },
+        h('a', { class: 'button', href: `#/shared-entry/new/deposit::${ym}` }, '＋ 入金（管理者）'),
+        h('a', { class: 'button', href: `#/shared-entry/new/charge::${ym}` }, '＋ 臨時の費目（管理者）')) : null),
     personalCostsCard(),
     personalCard(),
     h('section', { class: 'card' },
@@ -1455,8 +1489,10 @@ function memberMonthView(ym) {
       lineChart(series, '人ごとの未入金の残高の推移'),
       legend),
     h('section', { class: 'card' },
-      h('div', { class: 'title-row' }, h('h2', {}, '定例項目'), h('a', { class: 'button', href: '#/shared-rule/new' }, '＋ 追加')),
-      h('p', { class: 'muted small' }, '毎月自動で計上されます。金額が変わるときは、今の項目に終了月を入れ、新しい金額で追加します。'),
+      h('div', { class: 'title-row' }, h('h2', {}, '定例項目'), isAdmin() ? h('a', { class: 'button', href: '#/shared-rule/new' }, '＋ 追加') : null),
+      h('p', { class: 'muted small' }, isAdmin()
+        ? '毎月自動で計上されます。金額が変わるときは、今の項目に終了月を入れ、新しい金額で追加します。'
+        : '毎月自動で計上されます。定例項目は管理者が設定します。'),
       rulesByMember),
   ];
 }
@@ -1492,13 +1528,13 @@ function memberYearView(year) {
   return [...cards, personalCostsCard()];
 }
 
-function accountTotalsCard(flow) {
+function accountTotalsCard(flow, unit = '月額') {
   const rows = flow.accounts.filter((n) => n.out > 0);
   if (rows.length === 0) return null;
   return h('section', { class: 'card' },
-    h('h2', { class: 'with-icon' }, icon('bank'), '口座ごとの引き落とし（月額）'),
+    h('h2', { class: 'with-icon' }, icon('bank'), `口座ごとの引き落とし（${unit}）`),
     h('table', { class: 'table' },
-      h('thead', {}, h('tr', {}, h('th', {}, '口座'), h('th', { class: 'num' }, '月額'))),
+      h('thead', {}, h('tr', {}, h('th', {}, '口座'), h('th', { class: 'num' }, unit))),
       h('tbody', {}, rows.map((n) => {
         const sw = h('span', { class: 'swatch' });
         sw.style.background = n.color;
@@ -1564,48 +1600,83 @@ function sharedForm({ title, back, fields, extra, onSave, onDelete }) {
   setView(title, h('h1', {}, title), form, del ? h('div', { class: 'actions' }, del) : null);
 }
 
+// Who may change a record of the shared account ledger (the database enforces the same rule):
+// administrators everything; a member only their own one-off items (立替 etc.). Deposits come from the
+// statement import.
+function canWriteEntry(e) {
+  const mine = me();
+  return isAdmin() || Boolean(mine && e.kind === 'charge' && e.member_id === mine.id);
+}
+
+const ADVANCE_FIELD = { key: 'amount', label: '立て替えた額（円）', type: 'yen', required: true, min: 1, max: 100000000, help: 'プラスで入力します。その月の当月分から差し引きます。' };
+
+// preset: "kind:memberId:ym" (kind = advance | charge | deposit).
 function renderSharedEntry(id, preset) {
   const isNew = id === 'new';
+  const mine = me();
   let e = isNew ? null : state.sharedEntries.find((x) => x.id === id);
   if (!isNew && !e) {
-    setView('見つかりません', h('p', {}, 'この記録は見つかりませんでした。'), h('a', { href: '#/shared' }, '共通口座へ戻る'));
+    setView('見つかりません', h('p', {}, 'この記録は見つかりませんでした。'), h('a', { href: '#/flow/member' }, 'お金へ戻る'));
     return;
   }
+  let advance;
   if (isNew) {
     const [kind, memberId, ym] = String(preset || '').split(':');
-    const mine = me();
+    // members record only their own 立替
+    const k = isAdmin() && ['deposit', 'charge'].includes(kind) ? kind : 'advance';
+    advance = k === 'advance';
     e = {
-      kind: kind === 'deposit' ? 'deposit' : 'charge',
-      member_id: memberId || (mine && participantIds(state.sharedRules, state.sharedEntries).includes(mine.id) ? mine.id : (sharedMembers()[0] || mine || {}).id),
+      kind: k === 'deposit' ? 'deposit' : 'charge',
+      member_id: isAdmin() && memberId ? memberId : mine.id,
       ym: ym && YM_RE.test(ym) ? ym : thisYM(),
-      label: kind === 'deposit' ? '入金' : '',
+      label: k === 'deposit' ? '入金' : advance ? '立替' : '',
     };
+  } else {
+    advance = e.kind === 'charge' && e.amount < 0 && !isAdmin();
   }
+  const back = `#/flow/member/${e.ym}`;
   const deposit = e.kind === 'deposit';
-  const member = sharedMemberSelect('f-member', e.member_id);
-  const memberField = h('div', { class: 'field', 'data-key': 'member_id' }, h('label', { for: 'f-member' }, '人'), member, h('p', { class: 'error small field-error' }));
+  const name = deposit ? '入金' : advance ? '立替' : '臨時の費目';
+  if (!isNew && !canWriteEntry(e)) {
+    setView(name, h('a', { class: 'back', href: back }, '← お金'), h('h1', {}, `${memberNick(e.member_id)}の${name}`),
+      h('section', { class: 'card' },
+        h('dl', { class: 'shared-figures' },
+          h('dt', {}, '人'), h('dd', {}, memberNick(e.member_id)),
+          h('dt', {}, '月'), h('dd', {}, ymLabel(e.ym)),
+          h('dt', {}, '費目'), h('dd', {}, e.label),
+          h('dt', {}, '金額'), h('dd', { class: 'num' }, deposit ? yen(e.amount) : signedYen(e.amount)),
+          e.memo ? [h('dt', {}, 'メモ'), h('dd', {}, e.memo)] : null),
+        h('p', { class: 'muted small' }, deposit
+          ? '入金はマネーフォワードの明細から自動で記録しています。直すときは管理者に連絡してください。'
+          : '自分の記録だけ変更できます。直すときは本人か管理者に連絡してください。')));
+    return;
+  }
+  const fixedMember = !isAdmin();
+  const member = fixedMember ? null : sharedMemberSelect('f-member', e.member_id);
+  const memberField = fixedMember
+    ? h('p', { class: 'muted' }, `人: ${memberNick(e.member_id)}`)
+    : h('div', { class: 'field', 'data-key': 'member_id' }, h('label', { for: 'f-member' }, '人'), member, h('p', { class: 'error small field-error' }));
   const f = SHARED_ENTRY_FIELDS;
-  const fields = deposit
-    ? [fieldInput(f.ym, e), fieldInput(f.deposit, e), fieldInput(f.memo, e)].map((x, i) => ({ ...x, field: [f.ym, f.deposit, f.memo][i] }))
-    : [fieldInput(f.ym, e), fieldInput(f.label, e), fieldInput(f.amount, e), fieldInput(f.memo, e)].map((x, i) => ({ ...x, field: [f.ym, f.label, f.amount, f.memo][i] }));
+  const shown = advance ? { ...e, amount: isNew ? null : -e.amount } : e;
+  const defs = deposit ? [f.ym, f.deposit, f.memo] : [f.ym, f.label, advance ? ADVANCE_FIELD : f.amount, f.memo];
+  const fields = defs.map((field) => ({ ...fieldInput(field, shown), field }));
   if (!deposit) fields[1].el.querySelector('input').setAttribute('list', 'shared-labels');
-  const back = `#/shared/${e.ym}`;
-  const name = deposit ? '入金' : '臨時の費目';
   sharedForm({
-    title: isNew ? `${name}を追加` : `${name}を編集`,
+    title: isNew ? `${name}を記録` : `${name}を編集`,
     back,
     fields,
     extra: {
       before: memberField,
       after: deposit ? null : labelSuggestions('shared-labels'),
-      values: () => ({ member_id: member.value, kind: e.kind, ...(deposit ? { label: '入金' } : {}) }),
+      values: () => ({ member_id: fixedMember ? e.member_id : member.value, kind: e.kind, ...(deposit ? { label: '入金' } : {}) }),
     },
     onSave: async (values) => {
-      if (isNew) await db.insertRows('shared_entries', [values]);
-      else await db.updateRow('shared_entries', id, values);
+      const row = advance ? { ...values, amount: -values.amount } : values;
+      if (isNew) await db.insertRows('shared_entries', [row]);
+      else await db.updateRow('shared_entries', id, row);
       await reloadShared();
       toast('保存しました。');
-      location.hash = `#/shared/${values.ym}`;
+      location.hash = `#/flow/member/${row.ym}`;
     },
     onDelete: isNew ? null : async () => {
       if (!window.confirm(`この${name}を削除します。元に戻せません。よろしいですか？`)) return;
@@ -1634,7 +1705,7 @@ function renderSharedRule(id) {
   const mine = me();
   const r = isNew ? { member_id: (sharedMembers()[0] || mine || {}).id, start_ym: thisYM() } : state.sharedRules.find((x) => x.id === id);
   if (!r) {
-    setView('見つかりません', h('p', {}, 'この定例項目は見つかりませんでした。'), h('a', { href: '#/shared' }, '共通口座へ戻る'));
+    setView('見つかりません', h('p', {}, 'この定例項目は見つかりませんでした。'), h('a', { href: '#/flow/member' }, 'お金へ戻る'));
     return;
   }
   if (r.contract_id) {
@@ -1649,7 +1720,22 @@ function renderSharedRule(id) {
         h('p', {}, 'この定例項目は契約から自動で管理しています。金額・支払元・解約などは契約の画面で変更してください（過去の月の計算は変わりません）。'),
         h('div', { class: 'button-row' },
           c ? h('a', { class: 'button primary', href: `#/view/contracts/${c.id}` }, `契約「${c.name}」を開く`) : h('p', { class: 'muted' }, '元の契約は削除されています。'),
-          h('a', { class: 'button', href: '#/shared' }, '戻る'))));
+          h('a', { class: 'button', href: '#/flow/member' }, '戻る'))));
+    return;
+  }
+  if (!isAdmin()) {
+    if (isNew) {
+      location.hash = '#/flow/member';
+      return;
+    }
+    setView(`${r.label}（定例）`, h('a', { class: 'back', href: '#/flow/member' }, '← お金'), h('h1', {}, `${r.label}（定例）`),
+      h('section', { class: 'card' },
+        h('dl', { class: 'shared-figures' },
+          h('dt', {}, '人'), h('dd', {}, memberNick(r.member_id)),
+          h('dt', {}, '金額'), h('dd', { class: 'num' }, signedYen(r.amount)),
+          h('dt', {}, '期間'), h('dd', {}, ruleSchedule(r)),
+          r.memo ? [h('dt', {}, 'メモ'), h('dd', {}, r.memo)] : null),
+        h('p', { class: 'muted small' }, '定例項目は管理者が設定します。')));
     return;
   }
   const member = sharedMemberSelect('f-member', r.member_id);
@@ -1658,7 +1744,7 @@ function renderSharedRule(id) {
   fields[0].el.querySelector('input').setAttribute('list', 'shared-labels');
   sharedForm({
     title: isNew ? '定例項目を追加' : `${r.label}（定例）を編集`,
-    back: '#/shared',
+    back: '#/flow/member',
     fields,
     extra: {
       before: memberField,
@@ -1671,14 +1757,14 @@ function renderSharedRule(id) {
       else await db.updateRow('shared_rules', id, values);
       await reloadShared();
       toast('保存しました。');
-      location.hash = '#/shared';
+      location.hash = '#/flow/member';
     },
     onDelete: isNew ? null : async () => {
       if (!window.confirm(`定例項目「${r.label}」を削除します。過去の月の計算からも消えます。金額が変わっただけなら、削除せず終了月を入れてください。よろしいですか？`)) return;
       await db.deleteWhere('shared_rules', 'id', id);
       await reloadShared();
       toast('削除しました。');
-      location.hash = '#/shared';
+      location.hash = '#/flow/member';
     },
   });
 }
@@ -2266,7 +2352,7 @@ function renderEdit(ledger, id) {
   if (ledger === 'contracts') {
     const shared = inputs.find((i) => i.field.key === 'shared_cost');
     const preview = h('p', { class: 'deduction small', 'aria-live': 'polite' });
-    const candidates = isNew || !state.sharedRules.some((x) => x.contract_id === r.id) ? adoptableRules() : [];
+    const candidates = !isAdmin() ? [] : isNew || !state.sharedRules.some((x) => x.contract_id === r.id) ? adoptableRules() : [];
     adopt = candidates.length ? h('select', { id: 'f-adopt' }, h('option', { value: '' }, '（引き継がない・今月から差し引く）'),
       candidates.map((x) => h('option', { value: x.id }, `${memberNick(x.member_id)}：${x.label} ${signedYen(x.amount)}（${ruleSchedule(x)}）`))) : null;
     const adoptBox = adopt ? h('div', { class: 'field', 'data-key': 'adopt' }, h('label', { for: 'f-adopt' }, '既存の定例項目に引き継ぐ'), adopt,

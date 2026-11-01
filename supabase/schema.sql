@@ -562,11 +562,41 @@ begin
   end loop;
 
   -- household data: every active member can read and write
-  foreach t in array array['accounts', 'cards', 'contracts', 'items', 'memberships', 'item_photos', 'push_subscriptions', 'chores', 'shared_rules', 'shared_entries', 'transactions'] loop
+  foreach t in array array['accounts', 'cards', 'contracts', 'items', 'memberships', 'item_photos', 'push_subscriptions', 'chores', 'transactions'] loop
     execute format('grant select, insert, update, delete on public.%I to authenticated', t);
     execute format('drop policy if exists member_all on public.%I', t);
     execute format('create policy member_all on public.%I for all to authenticated using (public.is_member()) with check (public.is_member())', t);
   end loop;
+
+  -- shared account ledger (2026-11-01): everyone reads; administrators write everything.
+  --   shared_entries: a member adds, changes and deletes only their own one-off items (立替 etc.);
+  --                   deposits come from the statement import (administrators).
+  --   shared_rules:   recurring items are kept by administrators; rules linked to a contract follow the
+  --                   contract, which any member may edit, so those stay writable.
+  foreach t in array array['shared_rules', 'shared_entries'] loop
+    execute format('grant select, insert, update, delete on public.%I to authenticated', t);
+    execute format('drop policy if exists member_all on public.%I', t);
+    execute format('drop policy if exists member_read on public.%I', t);
+    execute format('drop policy if exists member_write on public.%I', t);
+    execute format('drop policy if exists member_insert on public.%I', t);
+    execute format('drop policy if exists member_update on public.%I', t);
+    execute format('drop policy if exists member_delete on public.%I', t);
+    execute format('create policy member_read on public.%I for select to authenticated using (public.is_member())', t);
+  end loop;
+  create policy member_insert on public.shared_entries for insert to authenticated
+    with check (public.is_admin() or (public.is_member() and kind = 'charge' and member_id = public.current_member_id()));
+  create policy member_update on public.shared_entries for update to authenticated
+    using (public.is_admin() or (public.is_member() and kind = 'charge' and member_id = public.current_member_id()))
+    with check (public.is_admin() or (public.is_member() and kind = 'charge' and member_id = public.current_member_id()));
+  create policy member_delete on public.shared_entries for delete to authenticated
+    using (public.is_admin() or (public.is_member() and kind = 'charge' and member_id = public.current_member_id()));
+  create policy member_insert on public.shared_rules for insert to authenticated
+    with check (public.is_admin() or (public.is_member() and contract_id is not null));
+  create policy member_update on public.shared_rules for update to authenticated
+    using (public.is_admin() or (public.is_member() and contract_id is not null))
+    with check (public.is_admin() or (public.is_member() and contract_id is not null));
+  create policy member_delete on public.shared_rules for delete to authenticated
+    using (public.is_admin() or (public.is_member() and contract_id is not null));
 
   -- user master and settings: members read, administrators write
   -- (exception: everyone may record the last backup time)

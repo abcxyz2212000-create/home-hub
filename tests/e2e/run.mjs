@@ -225,7 +225,7 @@ try {
   await page.getByRole('link', { name: 'キャンセル' }).click();
 
   step('money flow page: accounts -> cards -> contracts with links to the records');
-  await page.getByRole('link', { name: 'お金の流れ' }).click();
+  await page.goto(`${appUrl}#/flow/flow`);
   await page.getByRole('heading', { name: '口座 → カード → 支払先（月額）' }).waitFor();
   const flowSvg = page.getByRole('img', { name: 'お金の流れ（月額）' });
   const flowText = await flowSvg.evaluate((el) => el.textContent);
@@ -399,11 +399,12 @@ try {
   await page.getByRole('heading', { name: '定例項目' }).waitFor();
   assert.deepEqual(mock.db.shared_rules.map((r) => [r.label, r.amount, r.start_ym, r.end_ym, r.member_id]),
     [['基本', 70000, ymPrev, null, hanako.id], ['dアニ', -500, ymPrev, null, hanako.id]]);
-  await page.getByRole('link', { name: '入金を記録' }).click();
+  await page.getByRole('link', { name: '＋ 入金（管理者）' }).click();
+  await page.getByLabel('人', { exact: true }).selectOption({ label: 'はなこ' });
   await fill('入金額（円） *', '100,000');
   await save();
   await page.locator('.shared-card').waitFor();
-  await page.getByRole('link', { name: '＋ 臨時の費目を追加' }).click();
+  await page.getByRole('link', { name: '＋ 臨時の費目（管理者）' }).click();
   await page.getByLabel('人', { exact: true }).selectOption({ label: 'はなこ' });
   await fill('費目 *', '管理費');
   await fill('金額（円） *', '-3000');
@@ -426,7 +427,9 @@ try {
   await page.getByRole('heading', { name: ymLabel(ymPrev), exact: true }).waitFor();
   assert.match(await page.locator('.shared-card').innerText(), /未入金の残高\s+69,500円/);
   step('one money page: people -> shared account -> cards -> payees, and the balance of the shared account');
-  await page.getByRole('link', { name: 'お金の流れ', exact: true }).first().click();
+  await page.getByRole('link', { name: 'お金', exact: true }).first().click();
+  await page.getByRole('heading', { name: 'お金', exact: true }).waitFor();
+  await page.getByRole('link', { name: '流れ図', exact: true }).click();
   await page.getByRole('heading', { name: '口座 → カード → 支払先（月額）' }).waitFor();
   assert.match(await page.locator('#view').innerText(), /共通口座にする口座を選ぶと/);
   await page.goto(`${appUrl}#/settings`);
@@ -435,7 +438,7 @@ try {
   await page.getByText('共通口座を設定しました。').waitFor();
   await page.getByText('今の設定: 生活費口座（さくら支店・普通・下4桁 1234）。', { exact: false }).waitFor();
   assert.equal(mock.db.settings.find((x) => x.key === 'shared_account_id').value, mock.db.accounts.find((a) => a.name === '生活費口座').id);
-  await page.goto(`${appUrl}#/flow`);
+  await page.goto(`${appUrl}#/flow/flow/${ymNow}`);
   await page.getByRole('heading', { name: 'はなこ → 口座 → カード → 支払先（月額）' }).waitFor();
   const money = await page.locator('#view').innerText();
   assert.match(money, /共通口座の収支（生活費口座・月額）/);
@@ -444,7 +447,9 @@ try {
   assert.match(money, /差（余裕）\s*59,500円/);
   const flow4 = await page.getByRole('img', { name: 'お金の流れ（月額）' }).textContent();
   for (const t of ['はなこ', '生活費口座（共通）', '入 66,500円 / 出 7,000円', 'メインカード', '火災保険']) assert.ok(flow4.includes(t), `4-column flow shows ${t}`);
-  assert.match(money, /共通口座への入金状況/);
+  await page.getByRole('link', { name: '年間' }).click();
+  await page.getByRole('heading', { name: 'はなこ → 口座 → カード → 支払先（年額）' }).waitFor();
+  assert.match(await page.locator('#view').innerText(), /口座ごとの引き落とし（年額）/);
   await page.screenshot({ path: join(OUT, 'money.png'), fullPage: true });
 
   step('a contract paid from a personal account (共通の費用) takes over the manual rule and keeps its history');
@@ -693,6 +698,31 @@ try {
   assert.equal(await mp.getByRole('button', { name: '取り込む' }).count(), 0);
   await mp.getByRole('link', { name: '山田 太郎' }).click();
   await mp.getByText('ユーザーの変更は管理者だけが行えます。').waitFor();
+
+  step('a regular member records only their own 立替 (deposits come from the statement)');
+  await mp.goto(`${appUrl}#/`);
+  await mp.getByRole('link', { name: '立替を記録' }).click(); // from the home screen
+  await mp.getByText('人: はなこ').waitFor();
+  assert.equal(await mp.getByLabel('人', { exact: true }).count(), 0, 'the person cannot be changed');
+  await mp.getByLabel('立て替えた額（円） *').fill('1,200');
+  await mp.getByLabel('費目 *').fill('立替（日用品）');
+  await mp.getByRole('button', { name: '保存' }).click();
+  await mp.locator('.shared-card').first().waitFor();
+  const adv = mock.db.shared_entries.find((e) => e.label === '立替（日用品）');
+  assert.deepEqual([adv.member_id, adv.kind, adv.amount, adv.ym], [hanako.id, 'charge', -1200, ymNow]);
+  assert.equal(await mp.getByRole('link', { name: '立替を記録' }).count(), 1, 'only on their own card');
+  for (const name of ['＋ 入金（管理者）', '＋ 臨時の費目（管理者）', '入金を記録', '＋ 追加']) assert.equal(await mp.getByRole('link', { name }).count(), 0, name);
+  await mp.goto(`${appUrl}#/shared-entry/${adv.id}`);
+  assert.equal(await mp.getByLabel('立て替えた額（円） *').inputValue(), '1200', 'shown as a plus amount');
+  const otherEntry = mock.db.shared_entries.find((e) => e.kind === 'deposit');
+  await mp.goto(`${appUrl}#/shared-entry/${otherEntry.id}`);
+  await mp.getByText('入金はマネーフォワードの明細から自動で記録しています。').waitFor();
+  assert.equal(await mp.getByRole('button', { name: '保存' }).count(), 0, 'read only');
+  await mp.goto(`${appUrl}#/shared-entry/new/deposit:${hanako.id}:${ymNow}`);
+  await mp.getByLabel('立て替えた額（円） *').waitFor(); // a deposit cannot be recorded by hand
+  const manualRule = mock.db.shared_rules.find((r) => !r.contract_id);
+  await mp.goto(`${appUrl}#/shared-rule/${manualRule.id}`);
+  await mp.getByText('定例項目は管理者が設定します。').waitFor();
 
   step('password: change it in the settings, forgot -> e-mail link -> set a new one');
   await mp.goto(`${appUrl}#/settings`);
