@@ -1193,34 +1193,69 @@ async function settlePersonal(memberId, lines) {
   render();
 }
 
+// 「負担」 of a statement line: 共通 / 確認中 / ○○負担 / 対象外. The same explanations are shown as
+// tooltips on the buttons and in the ? window.
+const BURDEN_HELP = {
+  common: '家の支出として数えます。',
+  review: '誰の負担かまだ決まっていない明細です。決まるまでは家の支出として数えます。',
+  person: '共用口座で払ったが、本当はその人の個人の支出だったもの。家の支出から外れ、「精算する」でその人が共用口座へ戻します。',
+  exclude: 'この明細自体をなかったことにします。家の支出にも、誰の負担にも入れません（例: 二重に取り込まれた明細、すぐ返金されたもの）。',
+};
+const BURDEN_HELP_LINES = [`共通: ${BURDEN_HELP.common}`, `確認中: ${BURDEN_HELP.review}`, `○○負担: ${BURDEN_HELP.person}`, `対象外（数えない）: ${BURDEN_HELP.exclude}`];
+
+function burdenOf(t) {
+  if (!t.counted && !t.transfer) return 'exclude';
+  return t.personal_member_id || (t.needs_review ? 'review' : '');
+}
+
+function burdenValues(choice) {
+  if (choice === 'exclude') return { counted: false, needs_review: false, personal_member_id: null };
+  return { counted: true, needs_review: choice === 'review', personal_member_id: choice && choice !== 'review' ? choice : null };
+}
+
+// people who can carry a cost: the shared account's members (signed-in person first)
+function burdenMembers(extraId) {
+  const ids = new Set(sharedMembers().map((m) => m.id));
+  return state.members.filter((m) => (m.active && ids.has(m.id)) || m.id === extraId).sort(meFirst);
+}
+
+async function setBurden(t, choice) {
+  await db.updateRow('transactions', t.id, burdenValues(choice));
+  state.personal = null;
+  clearTxCache();
+  render();
+}
+
 function personalCard() {
   if (!sharedAccountId()) return null;
   const data = personalLines();
-  const head = h('h2', { class: 'with-icon' }, icon('user'), '個人負担の精算', helpButton('個人負担の精算',
-    '共用口座やカードで払ったもののうち本人が負担するものは、明細を開いて「負担」を「○○の個人負担」にすると、ここにまとまります。',
-    '「精算する」を押すと、合計を今月の臨時の費目（その人が共用口座へ追加で入れる額）として追加します。その臨時の費目を削除すると、精算待ちに戻ります。',
-    '「確認中」は誰の負担か確かめている明細です。決まるまでは共通の支出として数えます。'));
+  const head = h('h2', { class: 'with-icon' }, icon('user'), '誰の負担かの確認と精算', helpButton('誰の負担かの確認と精算',
+    ...BURDEN_HELP_LINES,
+    '「精算する」を押すと、その人の精算待ちの合計を今月の当月分に加えます（その人が共用口座へ追加で入れる額）。その記録を削除すると精算待ちに戻ります。'));
   if (!data) return h('section', { class: 'card' }, head, h('p', { class: 'muted' }, '読み込み中…'));
   if (data.pending.length === 0 && data.review.length === 0) {
-    return h('section', { class: 'card' }, head,
-      h('p', { class: 'muted' }, '精算待ちはありません。'));
+    return h('section', { class: 'card' }, head, h('p', { class: 'muted' }, '確認中・精算待ちの明細はありません。'));
   }
   const byMember = new Map();
   for (const t of data.pending) {
     if (!byMember.has(t.personal_member_id)) byMember.set(t.personal_member_id, []);
     byMember.get(t.personal_member_id).push(t);
   }
+  const choices = (t) => h('div', { class: 'burden-choices', role: 'group', 'aria-label': '誰の負担か' },
+    h('button', { type: 'button', class: 'small', title: BURDEN_HELP.common, onclick: (ev) => busy(ev.currentTarget, () => setBurden(t, '')) }, '共通'),
+    burdenMembers().map((m) => h('button', { type: 'button', class: `small person-btn ${personClass(m.id)}`, title: `${nick(m)}負担: ${BURDEN_HELP.person}`,
+      onclick: (ev) => busy(ev.currentTarget, () => setBurden(t, m.id)) }, `${nick(m)}負担`)),
+    h('button', { type: 'button', class: 'small', title: BURDEN_HELP.exclude, onclick: (ev) => busy(ev.currentTarget, () => setBurden(t, 'exclude')) }, '対象外（数えない）'));
   return h('section', { class: 'card' }, head,
-    [...byMember].map(([memberId, lines]) => h('div', { class: 'personal-group' },
+    data.review.length ? [h('h3', {}, `確認中（${data.review.length}件）`),
+      h('div', { class: 'list' }, data.review.map((t) => h('div', { class: 'review-item' }, txRow(t), choices(t))))] : null,
+    [...byMember].map(([memberId, lines]) => h('div', { class: `personal-group ${personClass(memberId)}` },
       h('div', { class: 'title-row' },
         h('h3', {}, personChip(memberId), ` 精算待ち ${lines.length}件・${yen(personalTotal(lines))}`),
         isAdmin() || (me() && me().id === memberId)
           ? h('button', { type: 'button', class: 'primary', onclick: (ev) => busy(ev.currentTarget, () => settlePersonal(memberId, lines)) }, '精算する')
           : null),
-      h('div', { class: 'list' }, lines.map(txRow)))),
-    data.review.length ? [h('h3', {}, `確認中（${data.review.length}件）`),
-      h('div', { class: 'list' }, data.review.map(txRow))] : null,
-  );
+      h('div', { class: 'list' }, lines.map(txRow)))));
 }
 
 async function relinkUnlinked() {
@@ -1251,20 +1286,16 @@ function renderTx(id) {
       contracts.map((c) => h('option', { value: c.id, selected: c.id === t.contract_id }, c.name + (c.status === 'closed' ? '（解約済み）' : ''))));
     const remember = h('input', { type: 'checkbox', id: 'f-remember', checked: !t.contract_id });
     const keyword = h('input', { type: 'text', id: 'f-keyword', maxlength: 50, value: t.description.replace(/[\s　]+/g, ' ').trim().slice(0, 20), placeholder: '例: 中部電力（毎回変わる部分は消す）' });
-    const counted = h('input', { type: 'checkbox', id: 'f-counted', checked: t.counted && !t.transfer, disabled: t.transfer });
-    const burdenNow = t.personal_member_id || (t.needs_review ? 'review' : '');
-    const burden = h('select', { id: 'f-burden', disabled: Boolean(t.settled_entry_id) },
+    const burdenNow = burdenOf(t);
+    const burden = h('select', { id: 'f-burden', disabled: Boolean(t.settled_entry_id) || t.transfer },
       h('option', { value: '', selected: burdenNow === '' }, '共通'),
-      h('option', { value: 'review', selected: burdenNow === 'review' }, '確認中（誰の負担か確かめる）'),
-      state.members.filter((m) => m.active || m.id === t.personal_member_id).sort(byName)
-        .map((m) => h('option', { value: m.id, selected: burdenNow === m.id }, `${nick(m)}の個人負担`)));
+      h('option', { value: 'review', selected: burdenNow === 'review' }, '確認中'),
+      burdenMembers(t.personal_member_id).map((m) => h('option', { value: m.id, selected: burdenNow === m.id }, `${nick(m)}負担`)),
+      h('option', { value: 'exclude', selected: burdenNow === 'exclude' }, '対象外（数えない）'));
     const save = h('button', { type: 'button', class: 'primary', onclick: (ev) => busy(ev.currentTarget, async () => {
       const contractId = select.value || null;
-      const burdenValues = t.settled_entry_id ? {} : {
-        personal_member_id: burden.value && burden.value !== 'review' ? burden.value : null,
-        needs_review: burden.value === 'review',
-      };
-      await db.updateRow('transactions', t.id, { contract_id: contractId, counted: t.transfer ? t.counted : counted.checked, ...burdenValues });
+      const chosen = t.settled_entry_id || t.transfer ? {} : burdenValues(burden.value);
+      await db.updateRow('transactions', t.id, { contract_id: contractId, ...chosen });
       state.personal = null;
       let relinked = 0;
       if (contractId && remember.checked) {
@@ -1304,10 +1335,9 @@ function renderTx(id) {
         h('div', { class: 'field checkbox' }, remember, h('label', { for: 'f-remember' }, 'キーワードとして覚え、ほかの明細も照合する')),
         h('div', { class: 'field' }, h('label', { for: 'f-keyword' }, 'キーワード（明細の内容に含まれる語）'), keyword,
 ),
-        h('div', { class: 'field checkbox' }, counted, h('label', { for: 'f-counted' }, '集計に含める')),
         h('div', { class: 'field' }, h('div', { class: 'label-row' }, h('label', { for: 'f-burden' }, '負担'), helpButton('負担',
-          '共用口座で払ったが本人が負担するもの（個人の買い物など）は「○○の個人負担」にします。共通の支出から外れ、「個人負担の精算」にまとまります。',
-          '精算済みの明細を変えるときは、精算の臨時の費目を先に削除してください。')), burden,
+          ...BURDEN_HELP_LINES,
+          '精算済みの明細を変えるときは、精算の記録を先に削除してください。')), burden,
           t.settled_entry_id ? h('span', { class: 'tag' }, '精算済み') : null),
         h('div', { class: 'actions' }, h('a', { class: 'button', href: `#/flow/ext/${t.date.slice(0, 7)}` }, 'キャンセル'), save)));
   }).catch(handleError);
@@ -1733,6 +1763,64 @@ function sharedMemberSelect(id, value) {
   return h('select', { id }, choices.map((m) => h('option', { value: m.id, selected: m.id === value }, nick(m) + (m.active ? '' : '（無効）'))));
 }
 
+// 費目 of one-off items: a list kept in the settings (administrators edit it); 「その他」 = free text.
+const DEFAULT_EXPENSE_LABELS = ['立替（日用品）', '立替（家電・家具）', '立替（食費）', '管理費', '家賃更新料', '光熱費', '家財保険', '車関係（税金など）'];
+const OTHER_LABEL = '__other';
+
+function expenseLabels() {
+  const v = state.settings.expense_labels;
+  return Array.isArray(v) && v.length ? v : DEFAULT_EXPENSE_LABELS;
+}
+
+function labelPicker(field, value) {
+  const list = expenseLabels();
+  const known = list.includes(value);
+  const select = h('select', { id: 'f-label-pick', 'aria-label': field.label },
+    value ? null : h('option', { value: '', selected: true }, '（選んでください）'),
+    list.map((l) => h('option', { value: l, selected: l === value }, l)),
+    h('option', { value: OTHER_LABEL, selected: Boolean(value) && !known }, 'その他（自由入力）'));
+  const other = h('input', { type: 'text', id: 'f-label', maxlength: field.max, value: known ? '' : (value || ''), placeholder: '費目を入力', hidden: !(value && !known) });
+  select.addEventListener('change', () => {
+    other.hidden = select.value !== OTHER_LABEL;
+    if (!other.hidden) other.focus();
+  });
+  const el = h('div', { class: 'field', 'data-key': field.key },
+    h('label', { for: 'f-label-pick' }, field.label, field.required ? h('span', { class: 'req' }, ' *') : null),
+    select, other, h('p', { class: 'error small field-error' }));
+  return { field, el, get: () => (select.value === OTHER_LABEL ? other.value : select.value) };
+}
+
+function expenseLabelsSection() {
+  if (!isAdmin()) return null;
+  let items = [...expenseLabels()];
+  const list = h('ul', { class: 'label-list' });
+  const draw = () => list.replaceChildren(...items.map((l, i) => h('li', {},
+    h('span', {}, l),
+    h('button', { type: 'button', class: 'small', 'aria-label': `${l}を上へ`, disabled: i === 0, onclick: () => { [items[i - 1], items[i]] = [items[i], items[i - 1]]; draw(); } }, '↑'),
+    h('button', { type: 'button', class: 'small', 'aria-label': `${l}を下へ`, disabled: i === items.length - 1, onclick: () => { [items[i + 1], items[i]] = [items[i], items[i + 1]]; draw(); } }, '↓'),
+    h('button', { type: 'button', class: 'small danger', 'aria-label': `${l}を削除`, onclick: () => { items.splice(i, 1); draw(); } }, '削除'))));
+  const input = h('input', { type: 'text', maxlength: 50, placeholder: '新しい費目', 'aria-label': '新しい費目' });
+  const add = h('button', { type: 'button', class: 'small', onclick: () => {
+    const v = input.value.trim();
+    if (!v || items.includes(v)) return;
+    items.push(v);
+    input.value = '';
+    draw();
+  } }, '追加');
+  const save = h('button', { type: 'button', class: 'primary', onclick: (ev) => busy(ev.currentTarget, async () => {
+    if (items.length === 0) {
+      toast('費目を1つ以上入れてください。', 'error');
+      return;
+    }
+    await saveSetting('expense_labels', items);
+    toast('費目を保存しました。');
+  }) }, '保存');
+  draw();
+  return h('section', { class: 'card' },
+    h('h2', { class: 'with-icon' }, '費目', helpButton('費目', '立替や臨時の費目で選ぶ費目の一覧です。一覧にないものは「その他（自由入力）」で入れられます。', '一覧を変えても、これまでの記録の費目名は変わりません。')),
+    list, h('div', { class: 'inline-form' }, input, add), h('div', { class: 'actions' }, save));
+}
+
 function labelSuggestions(listId) {
   const labels = [...new Set([...state.sharedRules.map((r) => r.label), ...state.sharedEntries.filter((e) => e.kind === 'charge').map((e) => e.label)])].sort();
   return h('datalist', { id: listId }, labels.map((l) => h('option', { value: l })));
@@ -1958,7 +2046,7 @@ function renderSharedEntry(id, preset) {
       member_id: isAdmin() && memberId ? memberId : mine.id,
       ym: ym && YM_RE.test(ym) ? ym : thisYM(),
       paid_on: advance ? todayJST() : null,
-      label: k === 'deposit' ? '入金' : advance ? '立替' : '',
+      label: k === 'deposit' ? '入金' : '',
     };
   } else {
     advance = e.kind === 'charge' && (e.amount < 0 || Boolean(e.paid_on)) && !(isAdmin() && !e.paid_on);
@@ -1992,8 +2080,7 @@ function renderSharedEntry(id, preset) {
   const byDate = advance && (isNew || Boolean(e.paid_on));
   const when = byDate ? PAID_ON_FIELD : f.ym;
   const defs = deposit ? [f.ym, f.deposit, f.memo] : [when, f.label, advance ? ADVANCE_FIELD : f.amount, f.memo];
-  const fields = defs.map((field) => ({ ...fieldInput(field, shown), field }));
-  if (!deposit) fields[1].el.querySelector('input').setAttribute('list', 'shared-labels');
+  const fields = defs.map((field) => (field === f.label ? labelPicker(field, shown.label) : { ...fieldInput(field, shown), field }));
   const attach = deposit ? null : attachmentBox('entry', isNew ? null : e.id, '領収書などの画像',
     advance ? (result) => fillFromOcr(view(), result, { memo: true }) : null);
   sharedForm({
@@ -2002,7 +2089,7 @@ function renderSharedEntry(id, preset) {
     fields,
     extra: {
       before: memberField,
-      after: deposit ? null : h('div', {}, labelSuggestions('shared-labels'), attach.el),
+      after: deposit ? null : attach.el,
       values: () => ({ member_id: fixedMember ? e.member_id : member.value, kind: e.kind, ...(deposit ? { label: '入金' } : {}) }),
     },
     onSave: async (values) => {
@@ -3411,7 +3498,7 @@ function renderSettings(tabParam) {
     account: () => [accountSection(), notifySection()],
     users: () => [membersSection()],
     data: () => [backupSection(), importSection(), usageSection()],
-    other: () => [sharedAccountSection(), shortcutSection()],
+    other: () => [sharedAccountSection(), expenseLabelsSection(), shortcutSection()],
   }[tab]();
   setView('設定', pageHead({ title: '設定', icon: 'settings', tabs, tab }), ...content);
 }

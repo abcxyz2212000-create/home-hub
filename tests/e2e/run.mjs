@@ -415,7 +415,7 @@ try {
   await page.locator('.shared-card').waitFor();
   await page.getByRole('link', { name: '＋ 臨時の費目（管理者）' }).click();
   await page.getByLabel('人', { exact: true }).selectOption({ label: 'はなこ' });
-  await fill('費目 *', '管理費');
+  await page.getByLabel('費目', { exact: true }).selectOption('管理費'); // from the list of 費目
   await fill('金額（円） *', '-3000');
   await save();
   await page.locator('.shared-card').waitFor();
@@ -588,7 +588,7 @@ try {
 
   step('personal lines: mark as one person\'s, keep one under review, settle into a one-off charge');
   await page.getByRole('link', { name: /スーパーマーケット/ }).click();
-  await page.getByLabel('負担', { exact: true }).selectOption({ label: 'はなこの個人負担' });
+  await page.getByLabel('負担', { exact: true }).selectOption({ label: 'はなこ負担' });
   await page.getByRole('button', { name: '保存' }).click();
   await page.getByText('契約ごとの予定と実績').waitFor();
   assert.equal(mock.db.transactions.find((t) => t.mf_id === 'mf-c').personal_member_id, hanako.id);
@@ -596,11 +596,14 @@ try {
   await page.goto(`${appUrl}#/flow/member/${ymNow}`);
   await page.locator('h3', { hasText: 'はなこ 精算待ち 1件・3,000円' }).waitFor();
   await page.goto(`${appUrl}#/tx/${mock.db.transactions.find((t) => t.mf_id === 'mf-a').id}`); // linked lines are folded away
-  await page.getByLabel('負担', { exact: true }).selectOption({ label: '確認中（誰の負担か確かめる）' });
+  await page.getByLabel('負担', { exact: true }).selectOption({ label: '確認中' });
   await page.getByRole('button', { name: '保存' }).click();
   await page.getByText('契約ごとの予定と実績').waitFor();
   await page.goto(`${appUrl}#/flow/member/${ymNow}`);
   await page.getByText('確認中（1件）').waitFor();
+  const review = page.locator('.review-item').first();
+  for (const name of ['共通', 'はなこ負担', '対象外（数えない）']) assert.equal(await review.getByRole('button', { name, exact: true }).count(), 1, `${name} can be chosen right there`);
+  assert.match(await review.getByRole('button', { name: '対象外（数えない）' }).getAttribute('title'), /なかったことに/, 'the meaning is shown as a tooltip');
   assert.equal(mock.db.transactions.find((t) => t.mf_id === 'mf-a').needs_review, true);
   const entriesBefore = mock.db.shared_entries.length;
   await page.getByRole('button', { name: '精算する' }).click();
@@ -731,7 +734,7 @@ try {
   const advDay = `${ymPrev}-15`;
   await mp.getByLabel('日付 *').fill(advDay);
   await mp.getByLabel('立て替えた額（円） *').fill('1,200');
-  await mp.getByLabel('費目 *').fill('立替（日用品）');
+  await mp.getByLabel('費目', { exact: true }).selectOption('立替（日用品）');
   await mp.locator('#attach-entry').setInputFiles([1, 2, 3, 4].map((i) => ({ name: `r${i}.png`, mimeType: 'image/png', buffer: pngBytes(800, 600) })));
   await mp.getByText('画像は3枚までです。').waitFor();
   assert.equal(await mp.locator('.attach-box figure').count(), 3);
