@@ -570,3 +570,6 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 0.9rem; }
 .shortcut-icon img { width: 28px; height: 28px; object-fit: contain; }
 .shortcut-letter { font-weight: 700; font-size: 1.1rem; color: var(--accent); }
 .shortcut-label { font-size: 0.75rem; font-weight: 600; line-height: 1.25; overflow-wrap: anywhere; }
+
+.tag-attach { margin-left: 0.4rem; font-size: 0.7rem; vertical-align: middle; background: var(--accent-soft); color: var(--accent); }
+.attach-box .photos { margin: 0.4rem 0; }
