@@ -115,6 +115,69 @@ export async function signIn(email, password) {
   saveSession(await res.json());
 }
 
+// Sign-in by a link from an e-mail (invite / password reset). Supabase puts the session (or an error) in
+// the URL fragment: #access_token=…&refresh_token=…&expires_in=…&type=recovery, or #error=…&error_code=….
+// Returns null when the fragment is not such a link, { error } (Japanese), or { type }.
+export function linkFragment(hash) {
+  const text = String(hash || '').replace(/^#\/?/, '');
+  if (!/(^|&)(access_token|error|error_code)=/.test(text)) return null;
+  const p = new URLSearchParams(text);
+  if (p.get('error') || p.get('error_code')) {
+    const expired = p.get('error_code') === 'otp_expired';
+    console.error(`auth link error: ${p.get('error_code') || p.get('error')} ${p.get('error_description') || ''}`);
+    return { error: expired ? 'メールのリンクの有効期限が切れているか、すでに使われています。もう一度「パスワードを忘れた場合」からメールを送ってください。' : 'メールのリンクでログインできませんでした。もう一度お試しください。' };
+  }
+  const access = p.get('access_token');
+  const refresh = p.get('refresh_token');
+  if (!access || !refresh || access.length > 5000 || refresh.length > 1000) return { error: 'メールのリンクが正しくありません。' };
+  return { type: p.get('type') || '', access_token: access, refresh_token: refresh, expires_in: Number(p.get('expires_in')) || 3600 };
+}
+
+// Keep the session from a link, then read who it is.
+export async function signInWithLink(link) {
+  saveSession({ access_token: link.access_token, refresh_token: link.refresh_token, expires_in: link.expires_in, user: null });
+  const res = await authFetch(`${CONFIG.supabaseUrl}/auth/v1/user`);
+  const user = await res.json();
+  session.email = user.email;
+  localStorage.setItem(SESSION_KEY, JSON.stringify(session));
+}
+
+export const MIN_PASSWORD = 8;
+export const MAX_PASSWORD = 72; // bcrypt uses the first 72 bytes only
+
+// Set a new password for the signed-in user.
+export async function changePassword(password) {
+  const token = await accessToken();
+  const res = await rawFetch(`${CONFIG.supabaseUrl}/auth/v1/user`, {
+    method: 'PUT',
+    headers: baseHeaders({ 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }),
+    body: JSON.stringify({ password }),
+  });
+  if (!res.ok) {
+    const { code, detail } = await readError(res);
+    if (code === 'same_password') throw new AppError('今と同じパスワードです。別のパスワードにしてください。', detail, res.status);
+    if (code === 'weak_password') throw new AppError('パスワードが弱すぎます。長く、推測されにくいものにしてください。', detail, res.status);
+    if (code === 'reauthentication_needed') throw new AppError('本人確認が必要な設定になっているため変更できません。管理者に連絡してください。', detail, res.status);
+    if (res.status === 429) throw new AppError('操作が多すぎます。しばらく待ってからお試しください。', detail, 429);
+    throw new AppError(userMessage(res.status, code), detail, res.status);
+  }
+}
+
+// Ask Supabase to e-mail a reset link that opens `redirectTo`. The result does not tell whether the
+// address is registered.
+export async function requestPasswordReset(email, redirectTo) {
+  const res = await rawFetch(`${CONFIG.supabaseUrl}/auth/v1/recover?redirect_to=${encodeURIComponent(redirectTo)}`, {
+    method: 'POST',
+    headers: baseHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ email }),
+  });
+  if (!res.ok) {
+    const { code, detail } = await readError(res);
+    if (res.status === 429) throw new AppError('メールの送信が多すぎます。しばらく（1時間ほど）待ってからお試しください。', detail, 429);
+    throw new AppError(userMessage(res.status, code), detail, res.status);
+  }
+}
+
 async function refreshSession() {
   if (!session) throw new AppError(userMessage(401), 'no session', 401);
   if (!refreshing) {
