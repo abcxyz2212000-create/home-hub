@@ -45,6 +45,8 @@ const state = {
   chores: [],
   sharedRules: [],
   sharedEntries: [],
+  depositReports: [], // 入金報告 (reference only)
+  attachments: [], // images of one-off items and deposit reports
   tx: new Map(), // ym -> statement lines (null while loading)
   txYear: new Map(), // 'YYYY' -> statement lines of the year (null while loading)
   money: { tab: 'member', member: null, ext: null, flow: null }, // お金の流れ: the open tab and each tab's month or year
@@ -212,7 +214,7 @@ function recordLink(ledger, record) {
 // ---------------------------------------------------------------- data loading
 
 async function loadAll() {
-  const [accounts, cards, contracts, items, memberships, photos, settings, members, chores, sharedRules, sharedEntries] = await Promise.all([
+  const [accounts, cards, contracts, items, memberships, photos, settings, members, chores, sharedRules, sharedEntries, depositReports, attachments] = await Promise.all([
     db.selectAll('accounts'),
     db.selectAll('cards'),
     db.selectAll('contracts'),
@@ -224,6 +226,8 @@ async function loadAll() {
     db.selectAll('chores'),
     db.selectAll('shared_rules', 'start_ym.asc'),
     db.selectAll('shared_entries', 'ym.asc'),
+    db.selectAll('deposit_reports', 'paid_on.asc'),
+    db.selectAll('shared_attachments', 'created_at.asc'),
   ]);
   state.data = { accounts, cards, contracts, items, memberships };
   state.photos = photos;
@@ -232,6 +236,8 @@ async function loadAll() {
   state.chores = chores;
   state.sharedRules = sharedRules;
   state.sharedEntries = sharedEntries;
+  state.depositReports = depositReports;
+  state.attachments = attachments;
   state.loaded = true;
 }
 
@@ -253,6 +259,8 @@ function resetState() {
   state.chores = [];
   state.sharedRules = [];
   state.sharedEntries = [];
+  state.depositReports = [];
+  state.attachments = [];
   clearTxCache();
   state.personal = null;
   for (const url of photoUrls.values()) URL.revokeObjectURL(url);
@@ -272,7 +280,7 @@ function setNav(page) {
     const active = target === page || (target === 'ledgers' && ['list', 'view', 'edit'].includes(page))
       || (target === 'settings' && page === 'member')
       || (target === 'chores' && ['chore', 'chore-edit'].includes(page))
-      || (target === 'flow' && ['shared', 'shared-entry', 'shared-rule', 'tx'].includes(page));
+      || (target === 'flow' && ['shared', 'shared-entry', 'shared-rule', 'tx', 'deposit-report'].includes(page));
     a.classList.toggle('active', active);
     if (active) a.setAttribute('aria-current', 'page');
     else a.removeAttribute('aria-current');
@@ -326,6 +334,7 @@ async function render() {
   else if (page === 'flow') renderMoney(a, b);
   else if (page === 'shared') renderMoney('member', a || thisYM());
   else if (page === 'shared-entry') renderSharedEntry(a, b);
+  else if (page === 'deposit-report') renderDepositReport(a, b);
   else if (page === 'shared-rule') renderSharedRule(a);
   else if (page === 'tx') renderTx(a);
   else if (page === 'chores') renderChores();
@@ -1184,7 +1193,7 @@ function sharedHomeCard() {
     h('div', { class: 'kpis kpis-2' },
       kpi('当月分', signedYen(st.charges).replace('円', ''), '円'),
       kpi('未入金の残高', signedYen(st.balance).replace('円', ''), '円', st.balance > 0 ? 'kpi-alert' : '')),
-    h('div', { class: 'button-row' }, h('a', { class: 'button primary', href: `#/shared-entry/new/advance:${mine.id}:${thisYM()}` }, '立替を記録')));
+    advanceButton(mine.id, thisYM()));
 }
 
 function sharedAccountPicker() {
@@ -1396,7 +1405,9 @@ function memberIntroCard() {
 function advanceButton(memberId, ym) {
   const mine = me();
   if (!isAdmin() && !(mine && mine.id === memberId)) return null;
-  return h('a', { class: 'button primary', href: `#/shared-entry/new/advance:${memberId}:${ym}` }, '立替を記録');
+  return h('div', { class: 'button-row' },
+    h('a', { class: 'button primary', href: `#/shared-entry/new/advance:${memberId}:${ym}` }, '立替を記録'),
+    h('a', { class: 'button', href: `#/deposit-report/new/${memberId}` }, '入金を報告'));
 }
 
 function memberMonthView(ym) {
@@ -1451,8 +1462,10 @@ function memberMonthView(ym) {
     ? h('p', { class: 'muted' }, 'この月の臨時の費目・入金はありません（定例だけです）。')
     : h('div', { class: 'list' }, monthEntries.map((e) => h('a', { class: 'list-item', href: `#/shared-entry/${e.id}` },
       h('div', { class: 'list-body' },
-        h('div', { class: 'list-title' }, `${memberNick(e.member_id)}：${e.kind === 'deposit' ? '入金' : e.label}`),
-        e.memo ? h('div', { class: 'muted small' }, e.memo) : null),
+        h('div', { class: 'list-title' }, `${memberNick(e.member_id)}：${e.kind === 'deposit' ? '入金' : e.label}`,
+          attachmentsOf('entry', e.id).length ? h('span', { class: 'tag tag-attach' }, '添付あり') : null),
+        [e.paid_on ? dateText(e.paid_on) : null, e.memo].filter(Boolean).length
+          ? h('div', { class: 'muted small' }, [e.paid_on ? dateText(e.paid_on) : null, e.memo].filter(Boolean).join('　')) : null),
       h('span', { class: 'num' }, e.kind === 'deposit' ? yen(e.amount) : signedYen(e.amount)),
       icon('chevron', 'ic ic-sm list-chevron'))));
 
@@ -1496,6 +1509,7 @@ function memberMonthView(ym) {
       isAdmin() ? h('div', { class: 'button-row' },
         h('a', { class: 'button', href: `#/shared-entry/new/deposit::${ym}` }, '＋ 入金（管理者）'),
         h('a', { class: 'button', href: `#/shared-entry/new/charge::${ym}` }, '＋ 臨時の費目（管理者）')) : null),
+    depositReportsCard(ym, sts),
     personalCostsCard(),
     personalCard(),
     h('section', { class: 'card' },
@@ -1576,7 +1590,9 @@ const SHARED_ENTRY_FIELDS = {
 };
 
 async function reloadShared() {
-  [state.sharedRules, state.sharedEntries] = await Promise.all([db.selectAll('shared_rules', 'start_ym.asc'), db.selectAll('shared_entries', 'ym.asc')]);
+  [state.sharedRules, state.sharedEntries, state.depositReports, state.attachments] = await Promise.all([
+    db.selectAll('shared_rules', 'start_ym.asc'), db.selectAll('shared_entries', 'ym.asc'),
+    db.selectAll('deposit_reports', 'paid_on.asc'), db.selectAll('shared_attachments', 'created_at.asc')]);
 }
 
 function sharedForm({ title, back, fields, extra, onSave, onDelete }) {
@@ -1622,7 +1638,108 @@ function canWriteEntry(e) {
   return isAdmin() || Boolean(mine && e.kind === 'charge' && e.member_id === mine.id);
 }
 
-const ADVANCE_FIELD = { key: 'amount', label: '立て替えた額（円）', type: 'yen', required: true, min: 1, max: 100000000, help: 'プラスで入力します。その月の当月分から差し引きます。' };
+const ADVANCE_FIELD = { key: 'amount', label: '立て替えた額（円）', type: 'yen', required: true, min: 1, max: 100000000, help: 'プラスで入力します。日付の月の当月分から差し引きます。' };
+const PAID_ON_FIELD = { key: 'paid_on', label: '日付', type: 'date', required: true };
+const MAX_ATTACHMENTS = 3;
+
+function dateText(d) {
+  const [y, m, day] = String(d).split('-').map(Number);
+  return `${y}/${m}/${day}`;
+}
+
+// kind: 'entry' (one-off item) | 'report' (deposit report)
+function attachmentsOf(kind, id) {
+  return state.attachments.filter((a) => (kind === 'entry' ? a.entry_id : a.report_id) === id);
+}
+
+// Thumbnails of saved attachments (tap to enlarge); with onRemove, each has a delete button.
+function attachmentThumbs(list, onRemove) {
+  return h('div', { class: 'photos' }, list.map((p) => {
+    const img = h('img', { alt: '添付画像', loading: 'lazy' });
+    photoUrl(p.thumb_path).then((url) => { img.src = url; }).catch((e) => console.error(e.detail || e));
+    return h('figure', { class: 'photo' },
+      h('button', { type: 'button', class: 'photo-open', onclick: () => openPhoto(p), 'aria-label': '画像を拡大' }, img),
+      onRemove ? h('button', { type: 'button', class: 'small danger', onclick: (ev) => busy(ev.currentTarget, () => onRemove(p)) }, '削除') : null);
+  }));
+}
+
+// Picker for up to MAX_ATTACHMENTS images: saved ones (removable at once) + new ones (uploaded on save).
+// Returns { el, files: () => [File], firstImage: () => File | saved row | null }.
+function attachmentBox(kind, parentId, title) {
+  const pending = [];
+  const box = h('div', { class: 'field attach-box' });
+  const status = h('p', { class: 'muted small', role: 'status' });
+  const input = h('input', { type: 'file', accept: 'image/*', multiple: true, id: `attach-${kind}`, class: 'visually-hidden' });
+  const saved = () => (parentId ? attachmentsOf(kind, parentId) : []);
+  const draw = () => {
+    const previews = pending.map((file, i) => {
+      const url = URL.createObjectURL(file);
+      const img = h('img', { alt: '追加する画像', src: url });
+      return h('figure', { class: 'photo' }, img,
+        h('button', { type: 'button', class: 'small', onclick: () => { pending.splice(i, 1); URL.revokeObjectURL(url); draw(); } }, '外す'));
+    });
+    box.replaceChildren(
+      h('label', { for: `attach-${kind}` }, title),
+      saved().length ? attachmentThumbs(saved(), async (p) => {
+        if (!window.confirm('この画像を削除しますか？')) return;
+        await removeAttachments([p]);
+        draw();
+      }) : null,
+      previews.length ? h('div', { class: 'photos' }, previews) : null,
+      saved().length + pending.length < MAX_ATTACHMENTS ? h('label', { for: `attach-${kind}`, class: 'button' }, '画像を追加（撮影・選択）') : null,
+      input,
+      h('p', { class: 'muted small' }, `${MAX_ATTACHMENTS}枚まで。縮小してから保存します。カード番号の全桁などが写っていないか確認してください。`),
+      status);
+  };
+  input.addEventListener('change', () => {
+    const files = [...input.files];
+    input.value = '';
+    const room = MAX_ATTACHMENTS - saved().length - pending.length;
+    if (files.length > room) toast(`画像は${MAX_ATTACHMENTS}枚までです。`, 'error');
+    pending.push(...files.slice(0, Math.max(0, room)));
+    draw();
+  });
+  draw();
+  return { el: box, files: () => [...pending], firstImage: () => pending[0] || saved()[0] || null, status };
+}
+
+// Compress and upload images for a record; returns how many were saved.
+async function uploadAttachments(kind, parentId, files, status) {
+  let done = 0;
+  for (const file of files) {
+    if (status) status.textContent = `画像を保存しています（${done + 1}/${files.length}）…`;
+    let compressed;
+    try {
+      compressed = await compressImage(file);
+    } catch (e) {
+      console.error(e.message);
+      toast(`「${file.name}」は画像として読み込めませんでした（JPEG・PNG などを選んでください。30MB まで）。`, 'error');
+      continue;
+    }
+    const id = crypto.randomUUID();
+    const dir = kind === 'entry' ? 'receipts' : 'deposit-reports';
+    const path = `${dir}/${parentId}/${id}.jpg`;
+    const thumbPath = `${dir}/${parentId}/${id}_thumb.jpg`;
+    try {
+      await db.uploadPhoto(path, compressed.photo);
+      await db.uploadPhoto(thumbPath, compressed.thumb);
+      await db.insertRows('shared_attachments', [{ id, [kind === 'entry' ? 'entry_id' : 'report_id']: parentId, path, thumb_path: thumbPath, bytes: compressed.photo.size + compressed.thumb.size }]);
+      done += 1;
+    } catch (e) {
+      handleError(e);
+      db.removePhotos([path, thumbPath]).catch((err) => console.error(err.detail || err));
+    }
+  }
+  return done;
+}
+
+async function removeAttachments(list) {
+  if (list.length === 0) return;
+  for (const p of list) await db.deleteWhere('shared_attachments', 'id', p.id);
+  await db.removePhotos(list.flatMap((p) => [p.path, p.thumb_path])).catch((e) => console.error(e.detail || e));
+  const ids = new Set(list.map((p) => p.id));
+  state.attachments = state.attachments.filter((p) => !ids.has(p.id));
+}
 
 // preset: "kind:memberId:ym" (kind = advance | charge | deposit).
 function renderSharedEntry(id, preset) {
@@ -1643,23 +1760,26 @@ function renderSharedEntry(id, preset) {
       kind: k === 'deposit' ? 'deposit' : 'charge',
       member_id: isAdmin() && memberId ? memberId : mine.id,
       ym: ym && YM_RE.test(ym) ? ym : thisYM(),
+      paid_on: advance ? todayJST() : null,
       label: k === 'deposit' ? '入金' : advance ? '立替' : '',
     };
   } else {
-    advance = e.kind === 'charge' && e.amount < 0 && !isAdmin();
+    advance = e.kind === 'charge' && (e.amount < 0 || Boolean(e.paid_on)) && !(isAdmin() && !e.paid_on);
   }
   const back = `#/flow/member/${e.ym}`;
   const deposit = e.kind === 'deposit';
   const name = deposit ? '入金' : advance ? '立替' : '臨時の費目';
+  const files = deposit ? [] : attachmentsOf('entry', e.id);
   if (!isNew && !canWriteEntry(e)) {
     setView(name, h('a', { class: 'back', href: back }, '← お金'), h('h1', {}, `${memberNick(e.member_id)}の${name}`),
       h('section', { class: 'card' },
         h('dl', { class: 'shared-figures' },
           h('dt', {}, '人'), h('dd', {}, memberNick(e.member_id)),
-          h('dt', {}, '月'), h('dd', {}, ymLabel(e.ym)),
+          e.paid_on ? [h('dt', {}, '日付'), h('dd', {}, dateText(e.paid_on))] : [h('dt', {}, '月'), h('dd', {}, ymLabel(e.ym))],
           h('dt', {}, '費目'), h('dd', {}, e.label),
           h('dt', {}, '金額'), h('dd', { class: 'num' }, deposit ? yen(e.amount) : signedYen(e.amount)),
           e.memo ? [h('dt', {}, 'メモ'), h('dd', {}, e.memo)] : null),
+        files.length ? attachmentThumbs(files) : null,
         h('p', { class: 'muted small' }, deposit
           ? '入金はマネーフォワードの明細から自動で記録しています。直すときは管理者に連絡してください。'
           : '自分の記録だけ変更できます。直すときは本人か管理者に連絡してください。')));
@@ -1672,30 +1792,36 @@ function renderSharedEntry(id, preset) {
     : h('div', { class: 'field', 'data-key': 'member_id' }, h('label', { for: 'f-member' }, '人'), member, h('p', { class: 'error small field-error' }));
   const f = SHARED_ENTRY_FIELDS;
   const shown = advance ? { ...e, amount: isNew ? null : -e.amount } : e;
-  const defs = deposit ? [f.ym, f.deposit, f.memo] : [f.ym, f.label, advance ? ADVANCE_FIELD : f.amount, f.memo];
+  // 立替 by date; older items (moved from the spreadsheet) keep their month
+  const byDate = advance && (isNew || Boolean(e.paid_on));
+  const when = byDate ? PAID_ON_FIELD : f.ym;
+  const defs = deposit ? [f.ym, f.deposit, f.memo] : [when, f.label, advance ? ADVANCE_FIELD : f.amount, f.memo];
   const fields = defs.map((field) => ({ ...fieldInput(field, shown), field }));
   if (!deposit) fields[1].el.querySelector('input').setAttribute('list', 'shared-labels');
+  const attach = deposit ? null : attachmentBox('entry', isNew ? null : e.id, '領収書などの画像');
   sharedForm({
     title: isNew ? `${name}を記録` : `${name}を編集`,
     back,
     fields,
     extra: {
       before: memberField,
-      after: deposit ? null : labelSuggestions('shared-labels'),
+      after: deposit ? null : h('div', {}, labelSuggestions('shared-labels'), attach.el),
       values: () => ({ member_id: fixedMember ? e.member_id : member.value, kind: e.kind, ...(deposit ? { label: '入金' } : {}) }),
     },
     onSave: async (values) => {
-      const row = advance ? { ...values, amount: -values.amount } : values;
-      if (isNew) await db.insertRows('shared_entries', [row]);
-      else await db.updateRow('shared_entries', id, row);
+      const row = advance ? { ...values, amount: -values.amount } : { ...values };
+      if (byDate) row.ym = row.paid_on.slice(0, 7);
+      const saved = isNew ? (await db.insertRows('shared_entries', [row]))[0] : await db.updateRow('shared_entries', id, row);
+      if (attach && attach.files().length) await uploadAttachments('entry', saved.id, attach.files(), attach.status);
       await reloadShared();
       toast('保存しました。');
       location.hash = `#/flow/member/${row.ym}`;
     },
     onDelete: isNew ? null : async () => {
-      if (!window.confirm(`この${name}を削除します。元に戻せません。よろしいですか？`)) return;
+      if (!window.confirm(`この${name}を削除します。添付した画像も消えます。元に戻せません。よろしいですか？`)) return;
       const fromStatement = await db.selectWhere('transactions', `deposit_entry_id=eq.${encodeURIComponent(id)}&select=id`);
       for (const t of fromStatement) await db.updateRow('transactions', t.id, { deposit_ignored: true });
+      await removeAttachments(attachmentsOf('entry', id));
       await db.deleteWhere('shared_entries', 'id', id);
       clearTxCache();
       state.personal = null;
@@ -1704,6 +1830,101 @@ function renderSharedEntry(id, preset) {
       location.hash = back;
     },
   });
+}
+
+// ---- deposit reports (入金報告): reference only, the deposit records come from the statement
+
+const REPORT_FIELDS = [
+  { key: 'paid_on', label: '振込日', type: 'date', required: true },
+  { key: 'amount', label: '入金した額（円）', type: 'yen', required: true, min: 1, max: 100000000 },
+  { key: 'memo', label: 'メモ', type: 'textarea', max: 2000 },
+];
+
+function canWriteReport(r) {
+  const mine = me();
+  return isAdmin() || Boolean(mine && r.member_id === mine.id);
+}
+
+// #/deposit-report/new/<memberId> or #/deposit-report/<id>
+function renderDepositReport(id, memberParam) {
+  const isNew = id === 'new';
+  const mine = me();
+  const r = isNew
+    ? { member_id: isAdmin() && memberParam ? memberParam : mine.id, paid_on: todayJST() }
+    : state.depositReports.find((x) => x.id === id);
+  if (!r) {
+    setView('見つかりません', h('p', {}, 'この入金報告は見つかりませんでした。'), h('a', { href: '#/flow/member' }, 'お金へ戻る'));
+    return;
+  }
+  const back = `#/flow/member/${String(r.paid_on).slice(0, 7)}`;
+  if (!isNew && !canWriteReport(r)) {
+    setView('入金報告', h('a', { class: 'back', href: back }, '← お金'), h('h1', {}, `${memberNick(r.member_id)}の入金報告`),
+      h('section', { class: 'card' },
+        h('dl', { class: 'shared-figures' },
+          h('dt', {}, '振込日'), h('dd', {}, dateText(r.paid_on)),
+          h('dt', {}, '金額'), h('dd', { class: 'num' }, yen(r.amount)),
+          r.memo ? [h('dt', {}, 'メモ'), h('dd', {}, r.memo)] : null),
+        attachmentsOf('report', r.id).length ? attachmentThumbs(attachmentsOf('report', r.id)) : null,
+        h('p', { class: 'muted small' }, '入金報告は本人だけが変更できます。')));
+    return;
+  }
+  const fixedMember = !isAdmin();
+  const member = fixedMember ? null : sharedMemberSelect('f-member', r.member_id);
+  const memberField = fixedMember
+    ? h('p', { class: 'muted' }, `人: ${memberNick(r.member_id)}`)
+    : h('div', { class: 'field', 'data-key': 'member_id' }, h('label', { for: 'f-member' }, '人'), member, h('p', { class: 'error small field-error' }));
+  const fields = REPORT_FIELDS.map((field) => ({ ...fieldInput(field, r), field }));
+  const attach = attachmentBox('report', isNew ? null : r.id, '振込完了画面などの画像');
+  sharedForm({
+    title: isNew ? '入金を報告' : '入金報告を編集',
+    back,
+    fields,
+    extra: {
+      before: [memberField, h('p', { class: 'muted small' }, '報告は記録として残すだけで、計算には使いません（入金の実績はマネーフォワードの明細から自動で記録します）。')],
+      after: attach.el,
+      values: () => ({ member_id: fixedMember ? r.member_id : member.value }),
+    },
+    onSave: async (values) => {
+      const saved = isNew ? (await db.insertRows('deposit_reports', [values]))[0] : await db.updateRow('deposit_reports', id, values);
+      if (attach.files().length) await uploadAttachments('report', saved.id, attach.files(), attach.status);
+      await reloadShared();
+      toast(isNew ? '入金を報告しました。' : '保存しました。');
+      location.hash = `#/flow/member/${values.paid_on.slice(0, 7)}`;
+    },
+    onDelete: isNew ? null : async () => {
+      if (!window.confirm('この入金報告を削除します。添付した画像も消えます。よろしいですか？')) return;
+      await removeAttachments(attachmentsOf('report', id));
+      await db.deleteWhere('deposit_reports', 'id', id);
+      await reloadShared();
+      toast('削除しました。');
+      location.hash = back;
+    },
+  });
+}
+
+// Reports of one month next to the deposits recorded from the statement (per member).
+function depositReportsCard(ym, sts) {
+  const reports = state.depositReports.filter((r) => String(r.paid_on).startsWith(ym));
+  return h('section', { class: 'card' },
+    h('h2', {}, `入金報告（${ymLabel(ym)}）`),
+    h('div', { class: 'table-wrap' }, h('table', { class: 'table' },
+      h('thead', {}, h('tr', {}, h('th', {}, '人'), h('th', { class: 'num' }, '報告の合計'), h('th', { class: 'num' }, '明細からの入金'), h('th', { class: 'num' }, '差'))),
+      h('tbody', {}, sts.map(({ m, st }) => {
+        const reported = reports.filter((r) => r.member_id === m.id).reduce((n, r) => n + r.amount, 0);
+        return h('tr', {},
+          h('td', {}, nick(m)),
+          h('td', { class: 'num' }, reported ? yen(reported) : '—'),
+          h('td', { class: 'num' }, st.deposit ? yen(st.deposit) : '—'),
+          h('td', { class: 'num' }, reported || st.deposit ? signedYen(st.deposit - reported) : '—'));
+      })))),
+    reports.length ? h('div', { class: 'list' }, reports.map((r) => h('a', { class: 'list-item', href: `#/deposit-report/${r.id}` },
+      h('div', { class: 'list-body' },
+        h('div', { class: 'list-title' }, `${memberNick(r.member_id)}：${dateText(r.paid_on)}`,
+          attachmentsOf('report', r.id).length ? h('span', { class: 'tag tag-attach' }, '添付あり') : null),
+        r.memo ? h('div', { class: 'muted small' }, r.memo) : null),
+      h('span', { class: 'num' }, yen(r.amount)),
+      icon('chevron', 'ic ic-sm list-chevron')))) : h('p', { class: 'muted' }, 'この月の入金報告はありません。'),
+    h('p', { class: 'muted small' }, '報告は振込日の月で数えます。明細からの入金は、マネーフォワードの取り込みで記録した額です（明細の取り込みが遅れると差が出ます）。'));
 }
 
 const SHARED_RULE_FIELDS = [
@@ -1797,9 +2018,14 @@ function sharedRulesCSV() {
 }
 
 function sharedEntriesCSV() {
-  const head = ['ID', '月', '人', '種類', '費目', '金額（円）', 'メモ'];
-  const rows = state.sharedEntries.map((e) => [e.id, e.ym, memberNick(e.member_id), e.kind === 'deposit' ? '入金' : '臨時', e.label, e.amount, e.memo || '']);
+  const head = ['ID', '月', '日付', '人', '種類', '費目', '金額（円）', 'メモ', '添付'];
+  const rows = state.sharedEntries.map((e) => [e.id, e.ym, e.paid_on || '', memberNick(e.member_id), e.kind === 'deposit' ? '入金' : '臨時', e.label, e.amount, e.memo || '', attachmentsOf('entry', e.id).length]);
   return toCSV([head, ...rows]);
+}
+
+function depositReportsCSV() {
+  const head = ['ID', '振込日', '人', '金額（円）', 'メモ', '添付'];
+  return toCSV([head, ...state.depositReports.map((r) => [r.id, r.paid_on, memberNick(r.member_id), r.amount, r.memo || '', attachmentsOf('report', r.id).length])]);
 }
 
 // ---------------------------------------------------------------- ledgers / list
@@ -2691,11 +2917,23 @@ async function fullBackup(status) {
     photoRows.push([p.id, (find('items', p.item_id) || {}).name || '', p.item_id, name, p.created_at]);
   }
   files.push({ name: '写真一覧.csv', data: toCSV(photoRows) });
+  files.push({ name: '共通口座_入金報告.csv', data: depositReportsCSV() });
+  const attachRows = [['画像ID', '種類', '記録ID', 'ファイル', '登録日時']];
+  let j = 0;
+  for (const a of state.attachments) {
+    j += 1;
+    status.textContent = `添付画像を取得しています（${j}/${state.attachments.length}）…`;
+    const blob = await db.downloadPhoto(a.path);
+    const name = `attachments/${a.id}.jpg`;
+    files.push({ name, data: new Uint8Array(await blob.arrayBuffer()) });
+    attachRows.push([a.id, a.entry_id ? '立替など' : '入金報告', a.entry_id || a.report_id, name, a.created_at]);
+  }
+  files.push({ name: '添付画像一覧.csv', data: toCSV(attachRows) });
   status.textContent = 'ZIPファイルを作成しています…';
   const zip = createZip(files);
   download(`家の管理ハブ_バックアップ_${todayJST()}.zip`, new Blob([zip], { type: 'application/zip' }));
   await saveSetting('last_backup_at', new Date().toISOString());
-  status.textContent = `バックアップを書き出しました（写真${state.photos.length}枚を含む）。`;
+  status.textContent = `バックアップを書き出しました（写真${state.photos.length}枚・添付画像${state.attachments.length}枚を含む）。`;
 }
 
 function backupSection() {

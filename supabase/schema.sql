@@ -371,6 +371,37 @@ alter table public.transactions add column if not exists deposit_entry_id uuid r
 alter table public.transactions add column if not exists deposit_ignored boolean not null default false;
 -- Contract amounts by period (2026-11-01): [{ amount, from, to }] ('YYYY-MM', to null = current).
 alter table public.contracts add column if not exists price_history jsonb not null default '[]'::jsonb check (jsonb_typeof(price_history) = 'array');
+-- 立替 by date (2026-11-01): the day it was paid (its month decides the month of the one-off item).
+alter table public.shared_entries add column if not exists paid_on date;
+-- Deposit reports (入金報告, 2026-11-01): what a member says they paid in, with the bank's completion
+-- screen. Kept for reference only; the deposit records come from the statement.
+create table if not exists public.deposit_reports (
+  id uuid primary key default gen_random_uuid(),
+  member_id uuid not null references public.members (id) on delete restrict,
+  paid_on date not null,
+  amount integer not null check (amount between 1 and 100000000),
+  memo text check (char_length(memo) <= 2000),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  created_by uuid references public.members (id) on delete set null,
+  updated_by uuid references public.members (id) on delete set null
+);
+create index if not exists deposit_reports_member_idx on public.deposit_reports (member_id, paid_on);
+-- Images attached to a one-off item (receipt) or a deposit report (completion screen), stored in the
+-- item-photos bucket.
+create table if not exists public.shared_attachments (
+  id uuid primary key default gen_random_uuid(),
+  entry_id uuid references public.shared_entries (id) on delete cascade,
+  report_id uuid references public.deposit_reports (id) on delete cascade,
+  path text not null unique check (char_length(path) <= 300),
+  thumb_path text not null unique check (char_length(thumb_path) <= 300),
+  bytes integer not null default 0 check (bytes >= 0),
+  created_at timestamptz not null default now(),
+  created_by uuid default public.current_member_id() references public.members (id) on delete set null,
+  check (num_nonnulls(entry_id, report_id) = 1)
+);
+create index if not exists shared_attachments_entry_idx on public.shared_attachments (entry_id) where entry_id is not null;
+create index if not exists shared_attachments_report_idx on public.shared_attachments (report_id) where report_id is not null;
 
 do $$
 declare
@@ -526,6 +557,22 @@ revoke all on function public.stamp_row() from public, anon, authenticated;
 revoke all on function public.audit_row() from public, anon, authenticated;
 revoke all on function public.guard_last_admin() from public, anon, authenticated;
 
+-- Attachments: the parent record is the logged-in member's own (one-off item or deposit report).
+create or replace function public.owns_attachment_parent(p_entry uuid, p_report uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select coalesce(
+    (select e.member_id = public.current_member_id() and e.kind = 'charge' from public.shared_entries e where e.id = p_entry),
+    (select r.member_id = public.current_member_id() from public.deposit_reports r where r.id = p_report),
+    false);
+$$;
+revoke all on function public.owns_attachment_parent(uuid, uuid) from public, anon;
+grant execute on function public.owns_attachment_parent(uuid, uuid) to authenticated;
+
 -- ---------------------------------------------------------------------------
 -- Triggers, privileges and row level security
 -- ---------------------------------------------------------------------------
@@ -533,7 +580,7 @@ do $$
 declare
   t text;
 begin
-  foreach t in array array['accounts', 'cards', 'contracts', 'items', 'memberships', 'chores', 'shared_rules', 'shared_entries', 'transactions'] loop
+  foreach t in array array['accounts', 'cards', 'contracts', 'items', 'memberships', 'chores', 'shared_rules', 'shared_entries', 'transactions', 'deposit_reports'] loop
     execute format('drop trigger if exists %I_touch on public.%I', t, t);
     execute format('drop trigger if exists %I_stamp on public.%I', t, t);
     execute format('create trigger %I_stamp before insert or update on public.%I for each row execute function public.stamp_row()', t, t);
@@ -544,7 +591,7 @@ begin
     execute format('drop trigger if exists %I_touch on public.%I', t, t);
     execute format('create trigger %I_touch before update on public.%I for each row execute function public.touch_updated_at()', t, t);
   end loop;
-  foreach t in array array['accounts', 'cards', 'contracts', 'items', 'memberships', 'item_photos', 'members', 'chores', 'shared_rules', 'shared_entries'] loop
+  foreach t in array array['accounts', 'cards', 'contracts', 'items', 'memberships', 'item_photos', 'members', 'chores', 'shared_rules', 'shared_entries', 'deposit_reports'] loop
     execute format('drop trigger if exists %I_audit on public.%I', t, t);
     execute format('create trigger %I_audit after insert or update or delete on public.%I for each row execute function public.audit_row()', t, t);
   end loop;
@@ -552,7 +599,8 @@ begin
   execute 'create trigger members_guard_last_admin after update or delete on public.members for each statement execute function public.guard_last_admin()';
 
   foreach t in array array['members', 'accounts', 'cards', 'contracts', 'items', 'memberships',
-                           'item_photos', 'settings', 'push_subscriptions', 'notification_log', 'audit_log', 'chores', 'shared_rules', 'shared_entries', 'transactions'] loop
+                           'item_photos', 'settings', 'push_subscriptions', 'notification_log', 'audit_log', 'chores', 'shared_rules', 'shared_entries', 'transactions',
+                           'deposit_reports', 'shared_attachments'] loop
     execute format('alter table public.%I enable row level security', t);
     execute format('revoke all on public.%I from anon, authenticated', t);
     -- service_role (used only by the daily GitHub Actions job) bypasses RLS but still needs table
@@ -573,7 +621,7 @@ begin
   --                   deposits come from the statement import (administrators).
   --   shared_rules:   recurring items are kept by administrators; rules linked to a contract follow the
   --                   contract, which any member may edit, so those stay writable.
-  foreach t in array array['shared_rules', 'shared_entries'] loop
+  foreach t in array array['shared_rules', 'shared_entries', 'deposit_reports', 'shared_attachments'] loop
     execute format('grant select, insert, update, delete on public.%I to authenticated', t);
     execute format('drop policy if exists member_all on public.%I', t);
     execute format('drop policy if exists member_read on public.%I', t);
@@ -597,6 +645,21 @@ begin
     with check (public.is_admin() or (public.is_member() and contract_id is not null));
   create policy member_delete on public.shared_rules for delete to authenticated
     using (public.is_admin() or (public.is_member() and contract_id is not null));
+  -- deposit reports: a member reports only their own
+  create policy member_insert on public.deposit_reports for insert to authenticated
+    with check (public.is_admin() or (public.is_member() and member_id = public.current_member_id()));
+  create policy member_update on public.deposit_reports for update to authenticated
+    using (public.is_admin() or (public.is_member() and member_id = public.current_member_id()))
+    with check (public.is_admin() or (public.is_member() and member_id = public.current_member_id()));
+  create policy member_delete on public.deposit_reports for delete to authenticated
+    using (public.is_admin() or (public.is_member() and member_id = public.current_member_id()));
+  -- attachments follow the record they belong to
+  create policy member_insert on public.shared_attachments for insert to authenticated
+    with check (public.is_admin() or (public.is_member() and public.owns_attachment_parent(entry_id, report_id)));
+  create policy member_update on public.shared_attachments for update to authenticated
+    using (public.is_admin()) with check (public.is_admin());
+  create policy member_delete on public.shared_attachments for delete to authenticated
+    using (public.is_admin() or (public.is_member() and public.owns_attachment_parent(entry_id, report_id)));
 
   -- user master and settings: members read, administrators write
   -- (exception: everyone may record the last backup time)

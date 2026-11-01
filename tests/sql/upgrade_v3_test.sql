@@ -29,6 +29,10 @@ do $$ begin
      or exists (select 1 from pg_policies where tablename in ('shared_rules', 'shared_entries') and policyname = 'member_all') then
     raise exception 'shared account tables missing after the upgrade';
   end if;
+  if to_regclass('public.deposit_reports') is null or to_regclass('public.shared_attachments') is null
+     or not exists (select 1 from information_schema.columns where table_name = 'shared_entries' and column_name = 'paid_on') then
+    raise exception 'deposit reports / attachments missing after the upgrade';
+  end if;
   if not exists (select 1 from pg_policies where tablename = 'chores' and policyname = 'member_all') then
     raise exception 'chores has no access policy';
   end if;

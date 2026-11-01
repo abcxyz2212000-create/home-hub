@@ -713,16 +713,44 @@ try {
   await mp.getByRole('link', { name: '立替を記録' }).click(); // from the home screen
   await mp.getByText('人: はなこ').waitFor();
   assert.equal(await mp.getByLabel('人', { exact: true }).count(), 0, 'the person cannot be changed');
+  assert.equal(await mp.getByLabel('日付 *').inputValue(), todayJST(), 'by date, today by default');
+  const advDay = `${ymPrev}-15`;
+  await mp.getByLabel('日付 *').fill(advDay);
   await mp.getByLabel('立て替えた額（円） *').fill('1,200');
   await mp.getByLabel('費目 *').fill('立替（日用品）');
+  await mp.locator('#attach-entry').setInputFiles([1, 2, 3, 4].map((i) => ({ name: `r${i}.png`, mimeType: 'image/png', buffer: pngBytes(800, 600) })));
+  await mp.getByText('画像は3枚までです。').waitFor();
+  assert.equal(await mp.locator('.attach-box figure').count(), 3);
   await mp.getByRole('button', { name: '保存' }).click();
   await mp.locator('.shared-card').first().waitFor();
   const adv = mock.db.shared_entries.find((e) => e.label === '立替（日用品）');
-  assert.deepEqual([adv.member_id, adv.kind, adv.amount, adv.ym], [hanako.id, 'charge', -1200, ymNow]);
+  assert.deepEqual([adv.member_id, adv.kind, adv.amount, adv.paid_on, adv.ym], [hanako.id, 'charge', -1200, advDay, ymPrev], 'the month comes from the date');
+  assert.equal(mock.db.shared_attachments.filter((a) => a.entry_id === adv.id).length, 3);
+  assert.ok(mock.db.shared_attachments.every((a) => a.path.startsWith(`receipts/${adv.id}/`)));
+  assert.match(await mp.locator('#view').innerText(), new RegExp(`はなこ：立替（日用品）\\s*添付あり\\s*${Number(ymPrev.slice(0, 4))}/${Number(ymPrev.slice(5))}/15`));
+  await mp.goto(`${appUrl}#/flow/member/${ymNow}`);
+  await mp.locator('.shared-card').first().waitFor();
   assert.equal(await mp.getByRole('link', { name: '立替を記録' }).count(), 1, 'only on their own card');
   for (const name of ['＋ 入金（管理者）', '＋ 臨時の費目（管理者）', '入金を記録', '＋ 追加']) assert.equal(await mp.getByRole('link', { name }).count(), 0, name);
   await mp.goto(`${appUrl}#/shared-entry/${adv.id}`);
   assert.equal(await mp.getByLabel('立て替えた額（円） *').inputValue(), '1200', 'shown as a plus amount');
+  await mp.getByRole('button', { name: '削除' }).first().click(); // one of the receipts
+  await mp.waitForFunction(() => document.querySelectorAll('.attach-box figure').length === 2);
+  assert.equal(mock.db.shared_attachments.length, 2);
+
+  step('deposit report: kept for reference, compared with the deposits from the statement');
+  await mp.goto(`${appUrl}#/flow/member/${ymNow}`);
+  await mp.getByRole('link', { name: '入金を報告' }).click();
+  await mp.getByLabel('入金した額（円） *').fill('60,000');
+  await mp.locator('#attach-report').setInputFiles({ name: 'done.png', mimeType: 'image/png', buffer: pngBytes(600, 1200) });
+  await mp.getByRole('button', { name: '保存' }).click();
+  await mp.getByText('入金を報告しました。').waitFor();
+  const report = mock.db.deposit_reports[0];
+  assert.deepEqual([report.member_id, report.amount, report.paid_on], [hanako.id, 60000, todayJST()]);
+  assert.equal(mock.db.shared_attachments.filter((a) => a.report_id === report.id).length, 1);
+  const reportCard = await mp.locator('section', { hasText: `入金報告（${ymLabel(ymNow)}）` }).innerText();
+  assert.match(reportCard, /はなこ\s+60,000円\s+150,000円\s+90,000円/, 'reports next to the deposits from the statement');
+  assert.equal(mock.db.shared_entries.filter((e) => e.kind === 'deposit' && e.ym === ymNow).length, 2, 'a report is not a deposit record');
   const otherEntry = mock.db.shared_entries.find((e) => e.kind === 'deposit');
   await mp.goto(`${appUrl}#/shared-entry/${otherEntry.id}`);
   await mp.getByText('入金はマネーフォワードの明細から自動で記録しています。').waitFor();

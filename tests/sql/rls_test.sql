@@ -158,7 +158,7 @@ end $$;
 
 -- shared account: administrators record rules and deposits; a member only their own one-off items (立替)
 reset role;
-insert into public.members (name, email, role, active) values ('立替する人', 'adv@example.com', 'member', true);
+insert into public.members (name, email, role, active) values ('立替する人', 'adv@example.com', 'member', true), ('見るだけの人', 'view@example.com', 'member', true);
 set role authenticated;
 select pg_temp.login('owner@example.com');
 insert into public.shared_rules (member_id, label, amount, start_ym)
@@ -212,6 +212,40 @@ do $$ begin
   begin insert into public.shared_rules (member_id, label, amount, start_ym) select id, 'x', 0, '2026-05' from public.members limit 1;
     raise exception 'zero amount accepted'; exception when check_violation then null; end;
 end $$;
+-- 立替 by date with a receipt, deposit reports: a member writes only their own
+select pg_temp.login('adv@example.com');
+insert into public.shared_entries (member_id, ym, kind, label, amount, paid_on)
+  select id, '2026-04', 'charge', '立替', -1500, '2026-04-12' from public.members where name = '立替する人';
+insert into public.shared_attachments (entry_id, path, thumb_path)
+  select id, 'receipts/a.jpg', 'receipts/a_t.jpg' from public.shared_entries where paid_on = '2026-04-12';
+insert into public.deposit_reports (member_id, paid_on, amount) select id, '2026-04-25', 80000 from public.members where name = '立替する人';
+insert into public.shared_attachments (report_id, path, thumb_path) select id, 'reports/a.jpg', 'reports/a_t.jpg' from public.deposit_reports;
+do $$ begin
+  if (select count(*) from public.shared_attachments) <> 2 then raise exception 'member cannot attach to own records'; end if;
+  if (select created_by from public.deposit_reports) is null then raise exception 'deposit report not stamped'; end if;
+  begin insert into public.deposit_reports (member_id, paid_on, amount) select id, '2026-04-25', 1 from public.members where name = '祖母';
+    raise exception 'member reported for someone else'; exception when insufficient_privilege then null; end;
+  begin insert into public.shared_attachments (entry_id, path, thumb_path) select id, 'x.jpg', 'x_t.jpg' from public.shared_entries where label = '管理費';
+    raise exception 'member attached to someone else''s item'; exception when insufficient_privilege then null; end;
+  begin insert into public.deposit_reports (member_id, paid_on, amount) select id, '2026-04-25', 0 from public.members where name = '立替する人';
+    raise exception 'zero report accepted'; exception when check_violation then null; end;
+  begin insert into public.shared_attachments (path, thumb_path) values ('y.jpg', 'y_t.jpg');
+    raise exception 'attachment without a record accepted'; exception when check_violation or insufficient_privilege then null; end;
+end $$;
+select pg_temp.login('view@example.com');
+do $$ begin
+  if (select count(*) from public.deposit_reports) <> 1 or (select count(*) from public.shared_attachments) <> 2 then raise exception 'others cannot see reports'; end if;
+  delete from public.deposit_reports;
+  delete from public.shared_attachments;
+  if (select count(*) from public.deposit_reports) <> 1 or (select count(*) from public.shared_attachments) <> 2 then raise exception 'member deleted someone else''s report'; end if;
+end $$;
+select pg_temp.login('adv@example.com');
+delete from public.shared_entries where paid_on = '2026-04-12';
+delete from public.deposit_reports;
+do $$ begin
+  if (select count(*) from public.shared_attachments) <> 0 then raise exception 'attachments not removed with their record'; end if;
+end $$;
+
 select pg_temp.login('owner@example.com');
 do $$ begin
   begin delete from public.members where name = '佐藤 春子'; raise exception 'member with shared records deleted';
