@@ -143,14 +143,12 @@ try {
   assert.match(accountText, /この口座から直接支払っている契約\nインターネット/);
   assert.match(accountText, /上記カード経由で支払っている契約\n火災保険/);
 
-  step('home: events, monthly total, shortcuts');
+  step('home: my deposits, today\'s chores, deadlines, shortcuts (nothing else)');
   await page.goto(appUrl);
-  await page.getByText('7,000円', { exact: true }).waitFor();
-  assert.ok(await page.getByRole('img', { name: /今日から60日先までの期限/ }).isVisible(), 'deadline timeline');
-  assert.ok(await page.getByRole('img', { name: '固定費の種類別の月額' }).isVisible(), 'fixed cost bars');
-  assert.ok(await page.getByRole('img', { name: /お金の流れ/ }).isVisible(), 'money flow (boxes and arrows)');
+  await page.getByRole('img', { name: /今日から60日先までの期限/ }).waitFor();
   assert.match(await page.locator('.page-head h1').innerText(), /\d+月\d+日（.）/);
-  assert.match(await page.locator('.kpis').innerText(), /固定費 \/ 月\n7,000円[\s\S]*期限 30日以内\n\d+件/);
+  assert.equal(await page.locator('.kpis').count(), 0, 'no summary numbers');
+  assert.equal(await page.getByRole('img', { name: /お金の流れ|固定費/ }).count(), 0, 'no money charts on the home screen');
   const home = await page.locator('#view').innerText();
   assert.match(home, /あと7日[\s\S]*火災保険/);
   assert.match(home, /メインカード\nカード有効期限/);
@@ -891,7 +889,7 @@ try {
   await desk.getByLabel('メールアドレス', { exact: true }).fill(OWNER.email);
   await desk.getByLabel('パスワード', { exact: true }).fill(OWNER.password);
   await desk.getByRole('button', { name: 'ログイン' }).click();
-  await desk.getByText(/円$/).first().waitFor();
+  await desk.locator('.page-head').first().waitFor();
   await desk.goto(`${appUrl}#/settings/data`);
   await desk.getByText(/写真（1枚）/).waitFor();
   await desk.screenshot({ path: join(OUT, 'settings-dark.png'), fullPage: true });

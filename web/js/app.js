@@ -685,49 +685,23 @@ function sectionHead(iconName, title, link, help) {
 
 function renderHome() {
   const today = todayJST();
-  const all = collectEvents(state.data, today);
-  const events = upcomingEvents(all);
-  const soon = all.filter((e) => e.daysLeft >= 0 && e.daysLeft <= 30).length;
-  const active = state.data.contracts.filter((c) => c.status !== 'closed' && monthlyCost(c) > 0);
-  const byCategory = new Map();
-  for (const c of active) byCategory.set(c.category || '未分類', (byCategory.get(c.category || '未分類') || 0) + monthlyCost(c));
+  const events = upcomingEvents(collectEvents(state.data, today));
   const shortcuts = [...(state.settings.shortcuts || DEFAULT_SHORTCUTS), ...bankShortcuts()];
-  const records = LEDGER_ORDER.reduce((n, k) => n + state.data[k].filter((r) => r.status !== 'closed').length, 0);
-  const flow = flowModel();
   const pushHint = h('div');
   const [, m, d] = today.split('-').map(Number);
 
+  // ホーム: the signed-in person's deposits, today's chores, deadlines, shortcuts (2026-11-01)
   setView('ホーム',
     pageHead({ title: `${m}月${d}日（${weekdayJa(today)}）`, icon: 'home' }),
     backupReminder(),
     pushHint,
-    h('div', { class: 'kpis' },
-      kpi('固定費 / 月', yen(monthlyTotal(state.data.contracts)).replace('円', ''), '円', 'kpi-main'),
-      kpi('期限 30日以内', String(soon), '件', soon > 0 ? 'kpi-alert' : ''),
-      kpi('登録データ', String(records), '件')),
     h('div', { class: 'dash-grid' },
-      todayChoresCard(),
       sharedHomeCard(),
+      todayChoresCard(),
       h('section', { class: 'card' },
         sectionHead('clock', '期限が近い予定'),
         events.some((e) => e.daysLeft >= 0) ? timelineChart(events) : null,
         eventList(events)),
-      h('section', { class: 'card' },
-        sectionHead('yen', '固定費の内訳（月額）', { href: '#/list/contracts', text: '契約へ' }, ['年払いの契約は12で割った月額で計算しています。解約済みは含みません。']),
-        byCategory.size === 0
-          ? h('p', { class: 'muted' }, '金額が入力された契約はまだありません。')
-          : barChart([...byCategory.entries()], '固定費の種類別の月額')),
-      h('section', { class: 'card' },
-        sectionHead('flow', 'お金の流れ', { href: '#/flow/flow', text: '拡大' }),
-        flow.columns[flow.columns.length - 1].length === 0 && flow.columns.length === 3
-          ? h('p', { class: 'muted' }, '支払方法と金額が入った契約を登録すると、口座からの流れを表示します。')
-          : flowTree(flow)),
-      h('section', { class: 'card' },
-        sectionHead('grid', '台帳'),
-        h('div', { class: 'tiles' }, LEDGER_ORDER.map((k) => h('a', { class: 'tile', href: `#/list/${k}` },
-          ledgerIcon(k),
-          h('div', { class: 'tile-count num' }, String(state.data[k].filter((r) => r.status !== 'closed').length), h('small', {}, ' 件')),
-          h('div', { class: 'tile-label' }, TILE_LABELS[k]))))),
       h('section', { class: 'card' },
         sectionHead('link', 'ショートカット', null, ['口座・カードの台帳の「関連リンク」も表示します。その他は設定画面で変更できます。']),
         h('div', { class: 'shortcuts' }, shortcuts.map(shortcutTile)))));
@@ -980,7 +954,11 @@ function flowGraphModel(flow) {
     if (rest.length) lines.push(`ほか${rest.length}件 ${yen(Math.round(rest.reduce((n, i) => n + i.value, 0)))}`);
     return { from: a.from, to: a.to, lines };
   });
-  return { nodes: [...out.values()], edges };
+  // the signed-in person's account first
+  const mine = me();
+  const ownerOf = (n) => (kind(n.id) === 'p' ? n.id.slice(2) : kind(n.id) === 'a' ? (find('accounts', n.id.slice(2)) || {}).holder_id : null);
+  const ordered = [...out.values()].sort((a, b) => (mine ? (ownerOf(b) === mine.id) - (ownerOf(a) === mine.id) : 0));
+  return { nodes: ordered, edges };
 }
 
 function flowTree(flow, { unit = '月額' } = {}) {
@@ -1347,7 +1325,14 @@ function sharedMembers() {
   const first = (id) => [...state.sharedRules, ...state.sharedEntries].filter((r) => r.member_id === id)
     .map((r) => String(r.created_at || '')).sort()[0] || '';
   return ids.map((id) => memberById(id) || { id, name: '（削除済み）' })
-    .sort((a, b) => first(a.id).localeCompare(first(b.id)) || byName(a, b));
+    .sort((a, b) => meFirst(a, b) || first(a.id).localeCompare(first(b.id)) || byName(a, b));
+}
+
+// Lists of people put the signed-in person first.
+function meFirst(a, b) {
+  const mine = me();
+  const id = mine ? mine.id : null;
+  return (b.id === id) - (a.id === id);
 }
 
 function signedYen(n) {
@@ -3487,7 +3472,8 @@ function todayChoresCard() {
 }
 
 function workloadSection() {
-  const { rows, tbd } = workload(state.chores, state.members);
+  const { rows: all, tbd } = workload(state.chores, state.members);
+  const rows = [...all].sort((a, b) => meFirst(a.member, b.member));
   if (rows.length === 0 && tbd.count === 0) return h('section', { class: 'card' }, h('p', { class: 'muted' }, '家事を登録すると、担当ごとの負担を表示します。'));
   const sorted = [...rows].sort((a, b) => b.points - a.points);
   const diff = sorted.length >= 2 ? sorted[0].points - sorted[sorted.length - 1].points : 0;
@@ -3511,7 +3497,7 @@ const CHORE_TABS = { today: '今日', list: '一覧', load: '負担の割合' };
 
 function renderChores(tabParam) {
   const who = h('select', { 'aria-label': '担当で絞り込み' }, h('option', { value: '' }, '担当: すべて'),
-    choreSharers(state.chores, state.members).map((m) => h('option', { value: `member:${m.id}` }, nick(m))),
+    [...choreSharers(state.chores, state.members)].sort(meFirst).map((m) => h('option', { value: `member:${m.id}` }, nick(m))),
     h('option', { value: 'all' }, '全員'), h('option', { value: 'tbd' }, '未定'));
   const cat = h('select', { 'aria-label': 'カテゴリで絞り込み' }, h('option', { value: '' }, 'カテゴリ: すべて'), CATEGORIES.map((c) => h('option', { value: c }, c)));
   const list = h('div', { class: 'list' });
