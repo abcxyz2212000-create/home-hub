@@ -46,8 +46,14 @@ export function parseMfRows(rows) {
   return { items, errors };
 }
 
+// Rows typed in by hand in MoneyForward without a wallet have "なし" as 保有金融機関. In this
+// household they record costs someone paid personally (立替), which are managed in the shared
+// account ledger instead, so they are never imported (decided 2026-11-01).
+export const MF_MANUAL_INSTITUTION = 'なし';
+
 // Keep only the shared account and the cards paid from it (matched by their MoneyForward name).
-// ctx: { accounts, cards, sharedAccountId }. Returns { inScope, skipped, unknown: [institution names] }.
+// ctx: { accounts, cards, sharedAccountId }.
+// Returns { inScope, skipped (other institutions), manual (hand-typed rows), unknown: [institution names] }.
 export function classifyMf(items, ctx) {
   const norm = (s) => normalizeText(s);
   const shared = ctx.accounts.find((a) => a.id === ctx.sharedAccountId);
@@ -60,7 +66,12 @@ export function classifyMf(items, ctx) {
   const inScope = [];
   const unknown = new Set();
   let skipped = 0;
+  let manual = 0;
   for (const it of items) {
+    if (norm(it.institution) === norm(MF_MANUAL_INSTITUTION) || norm(it.institution) === '') {
+      manual += 1;
+      continue;
+    }
     const hit = byName.get(norm(it.institution));
     if (hit) inScope.push({ ...it, ...hit });
     else {
@@ -68,7 +79,7 @@ export function classifyMf(items, ctx) {
       if (!known.has(norm(it.institution))) unknown.add(it.institution);
     }
   }
-  return { inScope, skipped, unknown: [...unknown] };
+  return { inScope, skipped, manual, unknown: [...unknown] };
 }
 
 // Full-width -> half-width, lower case, no spaces: ＪＣＢ / jcb / "中部 電力" all match.

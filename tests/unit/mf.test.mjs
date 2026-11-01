@@ -37,8 +37,18 @@ test('keeps only the shared account and the cards paid from it', () => {
   const r = classifyMf(items, ctx);
   assert.deepEqual(r.inScope.map((t) => [t.mf_id, t.account_id, t.card_id]), [['1', 'acc-s', null], ['2', null, 'card-1']]);
   assert.equal(r.skipped, 2);
+  assert.equal(r.manual, 0);
   assert.deepEqual(r.unknown, [], 'names that are registered but out of scope are not "unknown"');
   assert.deepEqual(classifyMf(items, { ...ctx, accounts: [{ id: 'acc-s', mf_name: '共用口座' }], cards: [] }).unknown, ['ＪＣＢカード', '個人の銀行', '別のカード']);
+});
+
+test('hand-typed rows (保有金融機関「なし」) are never imported and not reported as unknown', () => {
+  const { items } = parseMfRows([MF_HEADERS, row({ i: 'なし', id: 'm1' }), row({ i: '', id: 'm2' }), row({ i: '共用口座', id: 's1' })]);
+  const r = classifyMf(items, { sharedAccountId: 'acc-s', accounts: [{ id: 'acc-s', mf_name: '共用口座' }], cards: [] });
+  assert.deepEqual(r.inScope.map((t) => t.mf_id), ['s1']);
+  assert.equal(r.manual, 2);
+  assert.equal(r.skipped, 0);
+  assert.deepEqual(r.unknown, []);
 });
 
 test('contract matching: width/case/space insensitive, longest keyword wins', () => {
