@@ -71,11 +71,13 @@ export function barChart(rows, ariaLabel, format = yen) {
   const valueW = 78;
   const trackW = W - labelW - valueW;
   const svg = root(W, sorted.length * rowH, ariaLabel);
-  sorted.forEach(([label, value], i) => {
+  sorted.forEach(([label, value, color], i) => {
     const y = i * rowH;
     svg.append(s('text', { x: 0, y: y + 18, class: 'bar-label' }, shorten(label, 6)));
     svg.append(s('rect', { x: labelW, y: y + 8, width: trackW, height: 12, rx: 4, class: 'bar-track' }));
-    svg.append(s('rect', { x: labelW, y: y + 8, width: Math.max((trackW * value) / max, 3), height: 12, rx: 4, class: 'bar-fill' }));
+    const fill = s('rect', { x: labelW, y: y + 8, width: Math.max((trackW * value) / max, 3), height: 12, rx: 4, class: 'bar-fill' });
+    if (color) fill.style.fill = color; // a person's color (CSSOM, allowed by the CSP)
+    svg.append(fill);
     svg.append(s('text', { x: W, y: y + 18, class: 'bar-value', 'text-anchor': 'end' }, format(value)));
   });
   return svg;

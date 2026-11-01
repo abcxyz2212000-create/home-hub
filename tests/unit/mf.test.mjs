@@ -146,7 +146,7 @@ test('money paid out to a member: recognised by the payee only, recorded as a on
   const txs = [line({ id: 'o1', d: 'サトウ タロウ', a: -20000 }), line({ id: 'o2', d: 'サンプル駐車場(依頼人名:サトウ ハナコ)', a: -9000 }), line({ id: 'i1', d: 'サトウ ハナコ', a: 50000 })];
   assert.deepEqual(depositCandidates(txs, members).map((c) => [c.tx.id, c.member_id]), [['o1', 'm-b'], ['i1', 'm-a']]);
   const e = depositEntryFor({ tx: txs[0], member_id: 'm-b' });
-  assert.deepEqual([e.member_id, e.ym, e.kind, e.label, e.amount], ['m-b', '2026-03', 'charge', '共通口座からの受け取り', 20000]);
+  assert.deepEqual([e.member_id, e.ym, e.kind, e.label, e.amount], ['m-b', '2026-03', 'charge', '共用口座からの受け取り', 20000]);
   // member flows are not outside income or payments
   const s = summarizeMonth(txs, members);
   assert.deepEqual(s.memberFlows.map((t) => t.id), ['o1', 'i1']);

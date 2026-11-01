@@ -367,6 +367,8 @@ create index if not exists transactions_personal_idx on public.transactions (per
 -- (振込名義, 「、」区切り), the deposit record made from a statement line, and lines whose record was
 -- deleted on purpose (so that importing again does not make it again).
 alter table public.members add column if not exists transfer_names text check (char_length(transfer_names) <= 300);
+-- The person's color in the app (2026-11-01): male = blue, female = red.
+alter table public.members add column if not exists gender text check (gender in ('male', 'female'));
 alter table public.transactions add column if not exists deposit_entry_id uuid references public.shared_entries (id) on delete set null;
 alter table public.transactions add column if not exists deposit_ignored boolean not null default false;
 -- Contract amounts by period (2026-11-01): [{ amount, from, to }] ('YYYY-MM', to null = current).
