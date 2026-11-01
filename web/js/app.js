@@ -16,7 +16,7 @@ import { compressImage } from './image.js';
 import { parseOcrText, receiptMemo, recognizeImage } from './ocr.js';
 import * as push from './push.js';
 import { icon, LEDGER_ICONS } from './icons.js';
-import { timelineChart, barChart, lineChart, urgency } from './charts.js';
+import { timelineChart, barChart, lineChart, flowGraph, urgency } from './charts.js';
 import {
   ymAdd, ymLabel, participantIds, firstYM, history, statement, YM_RE, contractDeduction, planRuleSync, ruleSchedule,
 } from './shared.js';
@@ -321,6 +321,7 @@ async function saveSetting(key, value) {
 }
 
 function resetState() {
+  state.mfBox = null;
   state.loaded = false;
   state.data = { accounts: [], cards: [], contracts: [], items: [], memberships: [] };
   state.photos = [];
@@ -889,69 +890,75 @@ function flowModel(period = thisYM()) {
   return { columns, links: [...links.values()], accounts: left, sharedId, sharedIn, sharedOut };
 }
 
-// The flow as boxes joined by arrows (top to bottom): personal accounts -> shared account -> cards ->
-// payees, and payments made straight from personal accounts. Every arrow has the same width and says
-// what the money is for and how much. Small payments of one box are folded into "ほかN件".
-const FLOW_TREE_SHOW = 4;
+// The flow as one box per account / card and one box for everything outside, joined by arrows of the
+// same width that say what the money is for and how much (charts.js flowGraph).
+const FLOW_ITEMS_SHOW = 3;
 
-function flowTree(flow, { unit = '月額', isYear = false } = {}) {
+function flowGraphModel(flow) {
   const nodes = new Map(flow.columns.flat().map((n) => [n.id, n]));
-  const outOf = (id) => flow.links.filter((l) => l.from === id).map((l) => ({ node: nodes.get(l.to), value: l.value }))
-    .filter((x) => x.node).sort((a, b) => b.value - a.value);
-  const sharedNodeId = flow.sharedId ? `a:${flow.sharedId}` : null;
   const kind = (id) => id.slice(0, 1); // p person, a account, c card, k contract
-  const contractOf = (node) => (kind(node.id) === 'k' ? find('contracts', node.id.slice(2)) : null);
-  const purpose = (from, to) => {
-    if (kind(from.id) === 'p') return '当月分';
-    if (kind(to.id) === 'c') return 'カードの引き落とし';
-    const c = contractOf(to);
-    const what = (c && c.category) || '支払い';
-    return c && c.cycle === 'yearly' && !isYear ? `${what}（年払い÷12）` : what;
+  const sharedNodeId = flow.sharedId ? `a:${flow.sharedId}` : null;
+  // a person is drawn as their own account (one box), or as themselves when they have none
+  const personAccount = (memberId) => state.data.accounts.find((a) => a.holder_id === memberId && a.id !== flow.sharedId && a.status !== 'closed');
+  const boxIdOf = (id) => {
+    if (kind(id) === 'k') return 'x:outside';
+    if (kind(id) === 'p') {
+      const acc = personAccount(id.slice(2));
+      return acc ? `a:${acc.id}` : id;
+    }
+    return id;
   };
-  // a person is shown as their own account when they have one
-  const personBox = (n) => {
-    const memberId = n.id.slice(2);
-    const acc = state.data.accounts.find((a) => a.holder_id === memberId && a.id !== flow.sharedId && a.status !== 'closed');
-    return acc ? { label: acc.name.includes(n.label) ? acc.name : `${acc.name}（${n.label}）`, href: `#/view/accounts/${acc.id}`, icon: 'bank' } : { label: n.label, href: n.href, icon: 'user' };
+  const out = new Map();
+  const addBox = (id, base) => {
+    if (out.has(id)) return;
+    const k = kind(id);
+    if (id === 'x:outside') {
+      out.set(id, { id, label: '外部（支払先）', tier: 3, kind: 'outside', icon: icon('out'), href: '#/list/contracts' });
+      return;
+    }
+    if (k === 'a') {
+      const accId = id.slice(2);
+      const acc = find('accounts', accId);
+      const owner = acc && acc.holder_id ? state.members.find((m) => m.id === acc.holder_id) : null;
+      const isShared = id === sharedNodeId;
+      const name = !acc ? (base ? base.label : id)
+        : isShared ? `${acc.name}（共通）`
+          : owner && !acc.name.includes(nick(owner)) ? `${acc.name}（${nick(owner)}）` : acc.name;
+      out.set(id, { id, label: name, tier: id === sharedNodeId ? 1 : 0, kind: id === sharedNodeId ? 'shared' : 'account', icon: icon('bank'), href: acc ? `#/view/accounts/${accId}` : null, color: base ? base.color : null });
+      return;
+    }
+    if (k === 'c') {
+      out.set(id, { id, label: base.label, tier: 2, kind: 'card', icon: icon('card'), href: base.href, color: base.color });
+      return;
+    }
+    out.set(id, { id, label: base.label, tier: 0, kind: 'person', icon: icon('user'), href: base.href, color: base.color });
   };
-  const box = (n, extra = {}) => {
-    const k = kind(n.id);
-    const ic = extra.icon || (k === 'c' ? 'card' : k === 'k' ? null : k === 'p' ? 'user' : 'bank');
-    const label = extra.label || n.label;
-    const href = extra.href !== undefined ? extra.href : n.href;
-    const body = [ic ? h('span', { class: 'ft-icon' }, icon(ic)) : null, h('span', { class: 'ft-label' }, label)];
-    const cls = `ft-box ft-${k === 'k' ? 'payee' : k === 'c' ? 'card' : n.id === sharedNodeId ? 'shared' : 'account'}`;
-    const el = href ? h('a', { class: cls, href }, ...body) : h('span', { class: cls }, ...body);
-    if (n.color && k !== 'k') el.style.setProperty('--ft-color', n.color);
-    return el;
-  };
-  const arrow = (from, to, value) => h('div', { class: 'ft-arrow' }, h('span', { class: 'ft-what' }, purpose(from, to)), h('span', { class: 'ft-amount num' }, yen(Math.round(value))));
-  const branch = (from) => {
-    const kids = outOf(from.id);
-    if (kids.length === 0) return null;
-    const shown = kids.length > FLOW_TREE_SHOW + 1 ? kids.slice(0, FLOW_TREE_SHOW) : kids;
-    const rest = kids.slice(shown.length);
-    const item = ({ node, value }) => h('li', {}, arrow(from, node, value), box(node), branch(node));
-    return h('ul', { class: 'ft-children' }, shown.map(item),
-      rest.length ? h('li', {}, h('details', { class: 'ft-more' },
-        h('summary', {}, h('span', { class: 'ft-what' }, `ほか${rest.length}件`), h('span', { class: 'ft-amount num' }, yen(Math.round(rest.reduce((n, x) => n + x.value, 0))))),
-        h('ul', { class: 'ft-children' }, rest.map(item)))) : null);
-  };
-  const people = flow.columns.length === 4 ? flow.columns[0] : [];
-  const shared = sharedNodeId ? nodes.get(sharedNodeId) : null;
-  const others = flow.accounts.filter((n) => n.id !== sharedNodeId && outOf(n.id).length);
-  const parts = [];
-  if (shared) {
-    parts.push(h('div', { class: 'ft-section' },
-      people.length ? h('div', { class: 'ft-in' }, people.map((p) => {
-        const value = (flow.links.find((l) => l.from === p.id) || {}).value || 0;
-        return h('div', { class: 'ft-in-item' }, box(p, personBox(p)), arrow(p, shared, value));
-      })) : null,
-      box(shared),
-      branch(shared)));
+  // arrows: one per pair of boxes, listing what goes through it
+  const arrows = new Map();
+  for (const l of flow.links) {
+    const from = boxIdOf(l.from);
+    const to = boxIdOf(l.to);
+    addBox(from, nodes.get(l.from));
+    addBox(to, nodes.get(l.to));
+    const key = `${from}>${to}`;
+    if (!arrows.has(key)) arrows.set(key, { from, to, items: [] });
+    const target = nodes.get(l.to);
+    const what = kind(l.from) === 'p' ? '当月分' : kind(l.to) === 'c' ? 'カードの引き落とし' : target ? target.label : '支払い';
+    arrows.get(key).items.push({ what, value: l.value });
   }
-  for (const n of others) parts.push(h('div', { class: 'ft-section' }, box(n), branch(n)));
-  return h('div', { class: 'ftree', role: 'group', 'aria-label': `お金の流れ（${unit}）` }, parts);
+  const edges = [...arrows.values()].map((a) => {
+    const items = a.items.sort((x, y) => y.value - x.value);
+    const shown = items.length > FLOW_ITEMS_SHOW + 1 ? items.slice(0, FLOW_ITEMS_SHOW) : items;
+    const rest = items.slice(shown.length);
+    const lines = shown.map((i) => `${i.what} ${yen(Math.round(i.value))}`);
+    if (rest.length) lines.push(`ほか${rest.length}件 ${yen(Math.round(rest.reduce((n, i) => n + i.value, 0)))}`);
+    return { from: a.from, to: a.to, lines };
+  });
+  return { nodes: [...out.values()], edges };
+}
+
+function flowTree(flow, { unit = '月額' } = {}) {
+  return flowGraph(flowGraphModel(flow), { ariaLabel: `お金の流れ（${unit}）` });
 }
 
 function flowLegend(flow) {
@@ -1001,7 +1008,10 @@ async function fetchAllPaged(table, query) {
   }
 }
 
+// The same box is reused while the page redraws (e.g. when the month's lines arrive), so a file being
+// read and its preview are not lost.
 function mfImportBox() {
+  if (state.mfBox) return state.mfBox;
   const status = h('div', { class: 'import-status', role: 'status' });
   const input = h('input', { type: 'file', accept: '.csv,text/csv', 'aria-label': 'マネーフォワードの CSV ファイル' });
   input.addEventListener('change', () => busy(input, async () => {
@@ -1058,6 +1068,7 @@ function mfImportBox() {
       clearTxCache();
       toast(`取り込みました（追加 ${added}件、更新 ${rows.length - added}件${recorded ? `、個人との入出金の記録 ${recorded}件` : ''}）。`);
       input.value = '';
+      state.mfBox = null;
       render();
     }) }, '取り込む');
     status.replaceChildren(...[
@@ -1066,13 +1077,14 @@ function mfImportBox() {
       ...hint,
       h('div', { class: 'actions' }, save)].filter(Boolean));
   }));
-  return h('div', { class: 'mf-import' },
+  state.mfBox = h('div', { class: 'mf-import' },
     h('div', { class: 'button-row' }, h('label', { class: 'button' }, 'マネーフォワードの CSV を選ぶ', input),
       helpButton('マネーフォワードの取り込み',
         'マネーフォワード ME の入出金（家計簿データ）の CSV を選びます。共通口座と、共通口座から引き落とされるカードの明細だけを保存します。同じ期間を取り込み直しても重複しません。',
         `${ymLabel(DEPOSIT_AUTO_FROM)}以降の明細から、ユーザーの「振込名義」で個人との入出金を見分けて記録します（入金 → その人の入金、個人への出金 → その人の「共通口座からの受け取り」）。依頼人名の部分は見ません。`,
         '手入力の立替の記録（保有金融機関が「なし」）は取り込みません。')),
     status);
+  return state.mfBox;
 }
 
 function txRow(t) {
@@ -3467,7 +3479,7 @@ function workloadSection() {
     tbd.count > 0 ? h('p', { class: 'meta' }, `担当が未定 ${points(tbd.points)}（${Math.round(tbd.count)}件・合計に含めない）`) : null);
 }
 
-const CHORE_TABS = { today: '今日', load: '負担の割合', list: '一覧' };
+const CHORE_TABS = { today: '今日', list: '一覧', load: '負担の割合' };
 
 function renderChores(tabParam) {
   const who = h('select', { 'aria-label': '担当で絞り込み' }, h('option', { value: '' }, '担当: すべて'),

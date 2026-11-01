@@ -23,6 +23,7 @@ const PATHS = {
   chevron: '<path d="M9 6l6 6-6 6"/>',
   chore: '<path d="M10 6h10M10 12h10M10 18h10"/><path d="M3.5 6l1.5 1.5L7.5 5M3.5 12l1.5 1.5 2.5-2.5M3.5 18l1.5 1.5 2.5-2.5"/>',
   user: '<circle cx="12" cy="8" r="4"/><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6"/>',
+  out: '<path d="M14 4h6v6M20 4l-9 9"/><path d="M18 14v6H4V6h6"/>',
 };
 
 export const LEDGER_ICONS = { accounts: 'bank', cards: 'card', contracts: 'doc', items: 'box', memberships: 'ticket' };
