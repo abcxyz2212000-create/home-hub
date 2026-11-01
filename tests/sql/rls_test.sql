@@ -215,6 +215,16 @@ do $$ begin
   if (select created_by from public.transactions where mf_id = 'mf-1') is null then raise exception 'transaction not stamped'; end if;
   if exists (select 1 from public.audit_log where table_name = 'transactions') then raise exception 'statement lines must not fill the history'; end if;
 end $$;
+-- personal lines: settled by a one-off charge; deleting the charge puts the line back to pending
+insert into public.shared_entries (member_id, ym, kind, label, amount)
+  select id, '2026-10', 'charge', '個人負担の精算（1件）', 8000 from public.members where name = '佐藤 春子';
+update public.transactions set personal_member_id = (select id from public.members where name = '佐藤 春子'), needs_review = false,
+  settled_entry_id = (select id from public.shared_entries where label = '個人負担の精算（1件）') where mf_id = 'mf-1';
+delete from public.shared_entries where label = '個人負担の精算（1件）';
+do $$ begin
+  if (select settled_entry_id from public.transactions where mf_id = 'mf-1') is not null then raise exception 'settlement link kept after the charge was deleted'; end if;
+  if (select personal_member_id from public.transactions where mf_id = 'mf-1') is null then raise exception 'personal owner lost'; end if;
+end $$;
 update public.accounts set mf_name = '共用口座' where false;
 update public.contracts set match_keywords = 'サンプル電力' where false;
 select pg_temp.login('stranger@example.com');

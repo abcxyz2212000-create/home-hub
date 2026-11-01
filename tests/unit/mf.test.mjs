@@ -1,7 +1,7 @@
 // MoneyForward ME CSV import. All rows are fictional.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseMfRows, classifyMf, matchContract, normalizeText, summarizeMonth, plannedInMonth, MF_HEADERS } from '../../web/js/mf.js';
+import { parseMfRows, classifyMf, matchContract, normalizeText, summarizeMonth, plannedInMonth, personalTotal, settlementMemo, MF_HEADERS } from '../../web/js/mf.js';
 import { parseCSV, decodeCSVBytes } from '../../web/js/csv.js';
 
 const row = (o) => [o.c ?? '1', o.d ?? '2026/10/05', o.t ?? '', String(o.a ?? -1000), o.i ?? '共用口座', o.l ?? '食費', o.m ?? '食費', '', o.f ?? '0', o.id];
@@ -89,4 +89,22 @@ test('planned amount per month', () => {
   assert.equal(plannedInMonth({ amount: 20000, cycle: 'yearly', renewal_date: '2027-05-01' }, '2026-05'), 20000);
   assert.equal(plannedInMonth({ amount: 20000, cycle: 'yearly', renewal_date: '2027-05-01' }, '2026-10'), 0);
   assert.equal(plannedInMonth({ amount: 5000, cycle: 'monthly', status: 'closed' }, '2026-10'), 0);
+});
+
+test('personal lines (個人負担) are left out of the shared totals; lines under review still count', () => {
+  const txs = [
+    { id: 'p1', date: '2025-06-09', description: 'サンプル会費', amount: -600, counted: true, transfer: false, personal_member_id: 'm-a', category: '教養・教育' },
+    { id: 'p2', date: '2025-06-20', description: 'サンプル返金', amount: 100, counted: true, transfer: false, personal_member_id: 'm-a', category: '収入' },
+    { id: 'r1', date: '2025-06-12', description: 'サンプル配信', amount: -980, counted: true, transfer: false, needs_review: true, category: '教養・教育' },
+    { id: 's1', date: '2025-06-15', description: 'スーパー', amount: -3000, counted: true, transfer: false, category: '食費' },
+  ];
+  const s = summarizeMonth(txs);
+  assert.deepEqual(s.personal.map((t) => t.id), ['p1', 'p2']);
+  assert.deepEqual(s.review.map((t) => t.id), ['r1']);
+  assert.equal(s.outflow, 3980, 'the line under review is still a shared cost');
+  assert.equal(s.inflow, 0);
+  assert.deepEqual([...s.byCategory].sort(), [['教養・教育', 980], ['食費', 3000]]);
+  assert.equal(personalTotal(txs.slice(0, 2)), 500, 'refunds reduce what is owed');
+  assert.equal(settlementMemo(txs.slice(0, 1)), '2025/06/09 サンプル会費 600円');
+  assert.ok(settlementMemo(Array.from({ length: 100 }, () => txs[0])).length <= 2000);
 });

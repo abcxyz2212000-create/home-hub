@@ -540,3 +540,6 @@ details summary { cursor: pointer; margin-top: 1rem; }
 details { margin-top: 0.75rem; }
 details > summary { cursor: pointer; color: var(--muted); font-size: 0.9rem; }
 .table th + th, .table td + td { padding-left: 0.9rem; }
+.tag-personal, .tag-review { margin-left: 0.4rem; font-size: 0.7rem; vertical-align: middle; }
+.tag-review { background: var(--warning-soft); color: var(--warning-ink); }
+.personal-group + .personal-group { margin-top: 1rem; }

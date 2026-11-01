@@ -7,7 +7,7 @@ import {
   parseField, parseTags, validateLinks, parseLinksCell, linksCell, parseNotifyDays, notifyDaysText, findCardNumberLike, safeUrl,
 } from './validate.js';
 import { parseCSV, toCSV, decodeCSVBytes, unescapeFormula } from './csv.js';
-import { parseMfRows, classifyMf, matchContract, normalizeText, summarizeMonth, plannedInMonth } from './mf.js';
+import { parseMfRows, classifyMf, matchContract, normalizeText, summarizeMonth, plannedInMonth, personalTotal, settlementMemo } from './mf.js';
 import { createZip } from './zip.js';
 import { compressImage } from './image.js';
 import * as push from './push.js';
@@ -44,6 +44,7 @@ const state = {
   sharedRules: [],
   sharedEntries: [],
   tx: new Map(), // ym -> statement lines (null while loading)
+  personal: null, // { pending, review } statement lines owed by one person / being checked (null until loaded)
 };
 const photoUrls = new Map();
 
@@ -229,6 +230,7 @@ function resetState() {
   state.sharedRules = [];
   state.sharedEntries = [];
   state.tx.clear();
+  state.personal = null;
   for (const url of photoUrls.values()) URL.revokeObjectURL(url);
   photoUrls.clear();
 }
@@ -774,7 +776,9 @@ function mfImportBox() {
 function txRow(t) {
   return h('a', { class: 'list-item', href: `#/tx/${t.id}` },
     h('div', { class: 'list-body' },
-      h('div', { class: 'list-title' }, t.description || '（内容なし）'),
+      h('div', { class: 'list-title' }, t.description || '（内容なし）',
+        t.personal_member_id ? h('span', { class: 'tag tag-personal' }, `${memberNick(t.personal_member_id)}の負担${t.settled_entry_id ? '・精算済み' : ''}`) : null,
+        t.needs_review ? h('span', { class: 'tag tag-review' }, '確認中') : null),
       h('div', { class: 'muted small' }, [t.date.slice(5).replace('-', '/'), t.institution, t.category && `${t.category}${t.subcategory ? `・${t.subcategory}` : ''}`].filter(Boolean).join('　'))),
     h('span', { class: 'num' }, signedYen(t.amount)),
     icon('chevron', 'ic ic-sm list-chevron'));
@@ -815,10 +819,74 @@ function actualCard(ym) {
         h('div', { class: 'list' }, sum.unlinked.map(txRow))] : null,
       txs.filter((t) => t.contract_id && t.counted && !t.transfer).length ? h('details', {}, h('summary', {}, '契約にひも付いた明細'),
         h('div', { class: 'list' }, txs.filter((t) => t.contract_id && t.counted && !t.transfer).map(txRow))) : null,
+      sum.personal.length ? h('details', {}, h('summary', {}, `個人負担（${sum.personal.length}件。共通の支出には含めず、本人が精算）`),
+        h('div', { class: 'list' }, sum.personal.map(txRow))) : null,
       sum.excluded.length ? h('details', {}, h('summary', {}, `振替・集計対象外（${sum.excluded.length}件。カードの引き落としなど、二重に数えないもの）`),
         h('div', { class: 'list' }, sum.excluded.map(txRow))) : null,
     ],
     mfImportBox());
+}
+
+function personalLines() {
+  if (state.personal) return state.personal;
+  if (state.personal === undefined) return null; // loading
+  state.personal = undefined;
+  Promise.all([
+    fetchAllPaged('transactions', 'personal_member_id=not.is.null&settled_entry_id=is.null&order=date.asc'),
+    fetchAllPaged('transactions', 'needs_review=eq.true&order=date.asc'),
+  ]).then(([pending, review]) => {
+    state.personal = { pending, review };
+    const { page } = route();
+    if (page === 'flow' || page === 'shared') render();
+  }).catch((e) => {
+    state.personal = null;
+    handleError(e);
+  });
+  return null;
+}
+
+// Settle one person's lines: one 臨時の費目 (plus = they put that much more into the shared account).
+async function settlePersonal(memberId, lines) {
+  const total = personalTotal(lines);
+  if (total <= 0) {
+    toast('精算する金額がありません。', 'error');
+    return;
+  }
+  const label = `個人負担の精算（${lines.length}件）`;
+  if (!window.confirm(`${memberNick(memberId)}の個人負担 ${lines.length}件・${yen(total)}を、${ymLabel(thisYM())}の臨時の費目として追加します。よろしいですか？`)) return;
+  const [entry] = await db.insertRows('shared_entries', [{ member_id: memberId, ym: thisYM(), kind: 'charge', label, amount: total, memo: settlementMemo(lines) }]);
+  for (const t of lines) await db.updateRow('transactions', t.id, { settled_entry_id: entry.id });
+  await reloadShared();
+  state.tx.clear();
+  state.personal = null;
+  toast(`${label}を追加しました。`);
+  render();
+}
+
+function personalCard() {
+  if (!sharedAccountId()) return null;
+  const data = personalLines();
+  const head = h('h2', { class: 'with-icon' }, icon('user'), '個人負担の精算');
+  if (!data) return h('section', { class: 'card' }, head, h('p', { class: 'muted' }, '読み込み中…'));
+  if (data.pending.length === 0 && data.review.length === 0) {
+    return h('section', { class: 'card' }, head,
+      h('p', { class: 'muted small' }, '共通口座やカードで払ったもののうち、本人が負担するものは、明細を開いて「負担」を変えると、ここにまとまります。'));
+  }
+  const byMember = new Map();
+  for (const t of data.pending) {
+    if (!byMember.has(t.personal_member_id)) byMember.set(t.personal_member_id, []);
+    byMember.get(t.personal_member_id).push(t);
+  }
+  return h('section', { class: 'card' }, head,
+    [...byMember].map(([memberId, lines]) => h('div', { class: 'personal-group' },
+      h('div', { class: 'title-row' },
+        h('h3', {}, `${memberNick(memberId)}：精算待ち ${lines.length}件・${yen(personalTotal(lines))}`),
+        h('button', { type: 'button', class: 'primary', onclick: (ev) => busy(ev.currentTarget, () => settlePersonal(memberId, lines)) }, '精算する')),
+      h('div', { class: 'list' }, lines.map(txRow)))),
+    data.review.length ? [h('h3', {}, `確認中（${data.review.length}件）`),
+      h('p', { class: 'muted small' }, '誰の負担か確認中の明細です。決まるまでは共通の支出として数えます。明細を開いて「負担」を選んでください。'),
+      h('div', { class: 'list' }, data.review.map(txRow))] : null,
+    h('p', { class: 'muted small' }, '「精算する」を押すと、合計を今月の臨時の費目（その人が共通口座へ追加で入れる額）として追加します。その臨時の費目を削除すると、精算待ちに戻ります。'));
 }
 
 async function relinkUnlinked() {
@@ -850,9 +918,20 @@ function renderTx(id) {
     const remember = h('input', { type: 'checkbox', id: 'f-remember', checked: !t.contract_id });
     const keyword = h('input', { type: 'text', id: 'f-keyword', maxlength: 50, value: t.description.replace(/[\s　]+/g, ' ').trim().slice(0, 20) });
     const counted = h('input', { type: 'checkbox', id: 'f-counted', checked: t.counted && !t.transfer, disabled: t.transfer });
+    const burdenNow = t.personal_member_id || (t.needs_review ? 'review' : '');
+    const burden = h('select', { id: 'f-burden', disabled: Boolean(t.settled_entry_id) },
+      h('option', { value: '', selected: burdenNow === '' }, '共通'),
+      h('option', { value: 'review', selected: burdenNow === 'review' }, '確認中（誰の負担か確かめる）'),
+      state.members.filter((m) => m.active || m.id === t.personal_member_id).sort(byName)
+        .map((m) => h('option', { value: m.id, selected: burdenNow === m.id }, `${nick(m)}の個人負担`)));
     const save = h('button', { type: 'button', class: 'primary', onclick: (ev) => busy(ev.currentTarget, async () => {
       const contractId = select.value || null;
-      await db.updateRow('transactions', t.id, { contract_id: contractId, counted: t.transfer ? t.counted : counted.checked });
+      const burdenValues = t.settled_entry_id ? {} : {
+        personal_member_id: burden.value && burden.value !== 'review' ? burden.value : null,
+        needs_review: burden.value === 'review',
+      };
+      await db.updateRow('transactions', t.id, { contract_id: contractId, counted: t.transfer ? t.counted : counted.checked, ...burdenValues });
+      state.personal = null;
       let relinked = 0;
       if (contractId && remember.checked) {
         const word = keyword.value.trim();
@@ -892,6 +971,10 @@ function renderTx(id) {
         h('div', { class: 'field' }, h('label', { for: 'f-keyword' }, 'キーワード（明細の内容に含まれる語）'), keyword,
           h('p', { class: 'muted small' }, '月や番号など毎回変わる部分は消してください（例: 「中部電力」）。')),
         h('div', { class: 'field checkbox' }, counted, h('label', { for: 'f-counted' }, '集計に含める')),
+        h('div', { class: 'field' }, h('label', { for: 'f-burden' }, '負担'), burden,
+          h('p', { class: 'muted small' }, t.settled_entry_id
+            ? '精算済みです。変えるときは、精算の臨時の費目（共通口座の入金管理）を先に削除してください。'
+            : '共通口座で払ったが、本人が負担するもの（個人の買い物など）は「○○の個人負担」にします。共通の支出から外れ、「個人負担の精算」にまとまります。')),
         h('div', { class: 'actions' }, h('a', { class: 'button', href: `#/shared/${t.date.slice(0, 7)}` }, 'キャンセル'), save)));
   }).catch(handleError);
 }
@@ -983,7 +1066,7 @@ function renderMoney(ymParam) {
       : [h('p', {}, '共通口座にする口座を選ぶと、入る額と出る額を比べられます。'), sharedAccountPicker()]);
 
   if (members.length === 0) {
-    setView('お金の流れ', h('h1', { class: 'with-icon' }, icon('flow'), 'お金の流れ'), monthNav, flowCard, balanceCard, actualCard(ym),
+    setView('お金の流れ', h('h1', { class: 'with-icon' }, icon('flow'), 'お金の流れ'), monthNav, flowCard, balanceCard, actualCard(ym), personalCard(),
       h('section', { class: 'card' },
         h('h2', {}, '共通口座への入金'),
         h('p', {}, '共通口座への入金を、人ごとに管理します。まず「定例項目」（毎月の基本の額や、個人で払っている共通の費用）を登録してください。'),
@@ -1069,7 +1152,7 @@ function renderMoney(ymParam) {
       icon('chevron', 'ic ic-sm list-chevron')))));
   });
 
-  setView('お金の流れ', h('h1', { class: 'with-icon' }, icon('flow'), 'お金の流れ'), monthNav, flowCard, balanceCard, actualCard(ym),
+  setView('お金の流れ', h('h1', { class: 'with-icon' }, icon('flow'), 'お金の流れ'), monthNav, flowCard, balanceCard, actualCard(ym), personalCard(),
     h('section', { class: 'month-panel', 'aria-label': `${ymLabel(ym)}の入金状況` },
       h('h2', {}, '共通口座への入金状況'),
       cards),
@@ -1212,6 +1295,8 @@ function renderSharedEntry(id, preset) {
     onDelete: isNew ? null : async () => {
       if (!window.confirm(`この${name}を削除します。元に戻せません。よろしいですか？`)) return;
       await db.deleteWhere('shared_entries', 'id', id);
+      state.tx.clear();
+      state.personal = null;
       await reloadShared();
       toast('削除しました。');
       location.hash = back;

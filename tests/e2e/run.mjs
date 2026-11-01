@@ -556,6 +556,37 @@ try {
   assert.equal(mock.db.transactions.length, 4);
   assert.equal(mock.db.transactions.find((t) => t.mf_id === 'mf-b').contract_id, elec.id);
   await page.screenshot({ path: join(OUT, 'actual.png'), fullPage: true });
+
+  step('personal lines: mark as one person\'s, keep one under review, settle into a one-off charge');
+  await page.getByRole('link', { name: /スーパーマーケット/ }).click();
+  await page.getByLabel('負担', { exact: true }).selectOption({ label: 'はなこの個人負担' });
+  await page.getByRole('button', { name: '保存' }).click();
+  await page.getByRole('heading', { name: '個人負担の精算' }).waitFor();
+  assert.equal(mock.db.transactions.find((t) => t.mf_id === 'mf-c').personal_member_id, hanako.id);
+  await page.getByText('はなこ：精算待ち 1件・3,000円').waitFor();
+  assert.match(await page.locator('#view').innerText(), /出金（実績）\s*13,000円/, 'the personal line is no longer a shared cost');
+  await page.goto(`${appUrl}#/tx/${mock.db.transactions.find((t) => t.mf_id === 'mf-a').id}`); // linked lines are folded away
+  await page.getByLabel('負担', { exact: true }).selectOption({ label: '確認中（誰の負担か確かめる）' });
+  await page.getByRole('button', { name: '保存' }).click();
+  await page.getByText('確認中（1件）').waitFor();
+  assert.equal(mock.db.transactions.find((t) => t.mf_id === 'mf-a').needs_review, true);
+  const entriesBefore = mock.db.shared_entries.length;
+  await page.getByRole('button', { name: '精算する' }).click();
+  await page.getByText('個人負担の精算（1件）を追加しました。').waitFor();
+  const settle = mock.db.shared_entries.at(-1);
+  assert.equal(mock.db.shared_entries.length, entriesBefore + 1);
+  assert.deepEqual([settle.member_id, settle.ym, settle.kind, settle.amount], [hanako.id, ymNow, 'charge', 3000]);
+  assert.match(settle.memo, /スーパーマーケット 3,000円/);
+  assert.equal(mock.db.transactions.find((t) => t.mf_id === 'mf-c').settled_entry_id, settle.id);
+  await page.goto(`${appUrl}#/tx/${mock.db.transactions.find((t) => t.mf_id === 'mf-c').id}`);
+  await page.getByText('精算済みです。').waitFor();
+  assert.equal(await page.getByLabel('負担', { exact: true }).isDisabled(), true, 'settled lines cannot be changed');
+  await page.goto(`${appUrl}#/shared-entry/${settle.id}`);
+  await page.getByRole('button', { name: '削除' }).click();
+  await page.locator('.shared-card').first().waitFor();
+  assert.equal(mock.db.transactions.find((t) => t.mf_id === 'mf-c').settled_entry_id, null, 'deleting the charge puts the line back');
+  await page.goto(`${appUrl}#/shared/${ymNow}`);
+  await page.getByText('はなこ：精算待ち 1件・3,000円').waitFor();
   await page.goto(`${appUrl}#/settings`);
   await page.getByRole('heading', { name: '設定', exact: true }).waitFor();
 

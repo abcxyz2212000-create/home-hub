@@ -109,14 +109,21 @@ export function matchContract(description, contracts) {
 
 // Totals of one month. Only counted, non-transfer rows are added up.
 // txs: transactions of the month. Returns { inflow, outflow, byContract: Map(id -> actual outflow),
-// byCategory: Map(大項目 -> outflow), unlinked: [tx], excluded: [tx] }.
+// byCategory: Map(大項目 -> outflow), unlinked: [tx], excluded: [tx], personal: [tx] (個人負担, not added up),
+// review: [tx] (確認中; still added up as shared until decided) }.
 export function summarizeMonth(txs) {
-  const out = { inflow: 0, outflow: 0, byContract: new Map(), byCategory: new Map(), unlinked: [], excluded: [] };
+  const out = { inflow: 0, outflow: 0, byContract: new Map(), byCategory: new Map(), unlinked: [], excluded: [], personal: [], review: [] };
   for (const t of txs) {
     if (!t.counted || t.transfer) {
       out.excluded.push(t);
       continue;
     }
+    // owed by one person (個人負担): not a shared cost, shown and settled separately
+    if (t.personal_member_id) {
+      out.personal.push(t);
+      continue;
+    }
+    if (t.needs_review) out.review.push(t);
     if (t.amount > 0) {
       out.inflow += t.amount;
       continue;
@@ -138,4 +145,16 @@ export function plannedInMonth(contract, ym) {
   if (contract.status === 'closed' || !(contract.amount > 0)) return 0;
   if (contract.cycle === 'yearly') return contract.renewal_date && contract.renewal_date.slice(5, 7) === ym.slice(5) ? contract.amount : 0;
   return contract.amount;
+}
+
+// Total a person owes for statement lines marked as theirs (expenses positive, refunds negative).
+export function personalTotal(txs) {
+  return txs.reduce((n, t) => n - t.amount, 0);
+}
+
+// Text kept in the one-off charge that settles personal lines (at most 2000 characters).
+export function settlementMemo(txs) {
+  const lines = txs.map((t) => `${t.date.replace(/-/g, '/')} ${t.description.slice(0, 40)} ${(-t.amount).toLocaleString('ja-JP')}円`);
+  const text = lines.join('\n');
+  return text.length <= 2000 ? text : `${text.slice(0, 1990)}\n…ほか`;
 }

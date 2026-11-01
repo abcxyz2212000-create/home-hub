@@ -25,12 +25,13 @@ const TABLE_DEFAULTS = {
   chores: { status: 'active', schedule: [], adjust: 1, assignee_type: 'member', assignee_id: null },
   shared_rules: { end_ym: null, memo: null, month_of_year: null, contract_id: null },
   shared_entries: { memo: null },
-  transactions: { contract_id: null, account_id: null, card_id: null, memo: null, counted: true, transfer: false },
+  transactions: { contract_id: null, account_id: null, card_id: null, memo: null, counted: true, transfer: false, personal_member_id: null, needs_review: false, settled_entry_id: null },
 };
 const SET_NULL = {
   accounts: [['cards', 'debit_account_id'], ['contracts', 'pay_account_id']],
   cards: [['contracts', 'pay_card_id'], ['memberships', 'card_id']],
   contracts: [['shared_rules', 'contract_id'], ['transactions', 'contract_id']],
+  shared_entries: [['transactions', 'settled_entry_id']],
   members: [...['accounts', 'cards', 'contracts', 'items', 'memberships'].map((t) => [t, 'holder_id']), ['chores', 'assignee_id']],
 };
 
