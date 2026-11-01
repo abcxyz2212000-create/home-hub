@@ -16,7 +16,7 @@ import { compressImage } from './image.js';
 import { parseOcrText, receiptMemo, recognizeImage } from './ocr.js';
 import * as push from './push.js';
 import { icon, LEDGER_ICONS } from './icons.js';
-import { timelineChart, barChart, flowChart, lineChart, urgency } from './charts.js';
+import { timelineChart, barChart, lineChart, urgency } from './charts.js';
 import {
   ymAdd, ymLabel, participantIds, firstYM, history, statement, YM_RE, contractDeduction, planRuleSync, ruleSchedule,
 } from './shared.js';
@@ -695,7 +695,7 @@ function renderHome() {
         sectionHead('flow', 'お金の流れ', { href: '#/flow/flow', text: '拡大' }),
         flow.columns[flow.columns.length - 1].length === 0 && flow.columns.length === 3
           ? h('p', { class: 'muted' }, '支払方法と金額が入った契約を登録すると、口座からの流れを表示します。')
-          : [flowChart(flow.columns, flow.links, { compact: true, ariaLabel: 'お金の流れ（月額）' }), flowLegend(flow)]),
+          : flowTree(flow)),
       h('section', { class: 'card' },
         sectionHead('grid', '台帳'),
         h('div', { class: 'tiles' }, LEDGER_ORDER.map((k) => h('a', { class: 'tile', href: `#/list/${k}` },
@@ -887,6 +887,71 @@ function flowModel(period = thisYM()) {
   const sharedIn = people.reduce((n, p) => n + p.value, 0);
   const sharedOut = sharedId ? contracts.filter((c) => source(c) === sharedId).reduce((n, c) => n + monthlyCost(c), 0) : 0;
   return { columns, links: [...links.values()], accounts: left, sharedId, sharedIn, sharedOut };
+}
+
+// The flow as boxes joined by arrows (top to bottom): personal accounts -> shared account -> cards ->
+// payees, and payments made straight from personal accounts. Every arrow has the same width and says
+// what the money is for and how much. Small payments of one box are folded into "ほかN件".
+const FLOW_TREE_SHOW = 4;
+
+function flowTree(flow, { unit = '月額', isYear = false } = {}) {
+  const nodes = new Map(flow.columns.flat().map((n) => [n.id, n]));
+  const outOf = (id) => flow.links.filter((l) => l.from === id).map((l) => ({ node: nodes.get(l.to), value: l.value }))
+    .filter((x) => x.node).sort((a, b) => b.value - a.value);
+  const sharedNodeId = flow.sharedId ? `a:${flow.sharedId}` : null;
+  const kind = (id) => id.slice(0, 1); // p person, a account, c card, k contract
+  const contractOf = (node) => (kind(node.id) === 'k' ? find('contracts', node.id.slice(2)) : null);
+  const purpose = (from, to) => {
+    if (kind(from.id) === 'p') return '当月分';
+    if (kind(to.id) === 'c') return 'カードの引き落とし';
+    const c = contractOf(to);
+    const what = (c && c.category) || '支払い';
+    return c && c.cycle === 'yearly' && !isYear ? `${what}（年払い÷12）` : what;
+  };
+  // a person is shown as their own account when they have one
+  const personBox = (n) => {
+    const memberId = n.id.slice(2);
+    const acc = state.data.accounts.find((a) => a.holder_id === memberId && a.id !== flow.sharedId && a.status !== 'closed');
+    return acc ? { label: acc.name.includes(n.label) ? acc.name : `${acc.name}（${n.label}）`, href: `#/view/accounts/${acc.id}`, icon: 'bank' } : { label: n.label, href: n.href, icon: 'user' };
+  };
+  const box = (n, extra = {}) => {
+    const k = kind(n.id);
+    const ic = extra.icon || (k === 'c' ? 'card' : k === 'k' ? null : k === 'p' ? 'user' : 'bank');
+    const label = extra.label || n.label;
+    const href = extra.href !== undefined ? extra.href : n.href;
+    const body = [ic ? h('span', { class: 'ft-icon' }, icon(ic)) : null, h('span', { class: 'ft-label' }, label)];
+    const cls = `ft-box ft-${k === 'k' ? 'payee' : k === 'c' ? 'card' : n.id === sharedNodeId ? 'shared' : 'account'}`;
+    const el = href ? h('a', { class: cls, href }, ...body) : h('span', { class: cls }, ...body);
+    if (n.color && k !== 'k') el.style.setProperty('--ft-color', n.color);
+    return el;
+  };
+  const arrow = (from, to, value) => h('div', { class: 'ft-arrow' }, h('span', { class: 'ft-what' }, purpose(from, to)), h('span', { class: 'ft-amount num' }, yen(Math.round(value))));
+  const branch = (from) => {
+    const kids = outOf(from.id);
+    if (kids.length === 0) return null;
+    const shown = kids.length > FLOW_TREE_SHOW + 1 ? kids.slice(0, FLOW_TREE_SHOW) : kids;
+    const rest = kids.slice(shown.length);
+    const item = ({ node, value }) => h('li', {}, arrow(from, node, value), box(node), branch(node));
+    return h('ul', { class: 'ft-children' }, shown.map(item),
+      rest.length ? h('li', {}, h('details', { class: 'ft-more' },
+        h('summary', {}, h('span', { class: 'ft-what' }, `ほか${rest.length}件`), h('span', { class: 'ft-amount num' }, yen(Math.round(rest.reduce((n, x) => n + x.value, 0))))),
+        h('ul', { class: 'ft-children' }, rest.map(item)))) : null);
+  };
+  const people = flow.columns.length === 4 ? flow.columns[0] : [];
+  const shared = sharedNodeId ? nodes.get(sharedNodeId) : null;
+  const others = flow.accounts.filter((n) => n.id !== sharedNodeId && outOf(n.id).length);
+  const parts = [];
+  if (shared) {
+    parts.push(h('div', { class: 'ft-section' },
+      people.length ? h('div', { class: 'ft-in' }, people.map((p) => {
+        const value = (flow.links.find((l) => l.from === p.id) || {}).value || 0;
+        return h('div', { class: 'ft-in-item' }, box(p, personBox(p)), arrow(p, shared, value));
+      })) : null,
+      box(shared),
+      branch(shared)));
+  }
+  for (const n of others) parts.push(h('div', { class: 'ft-section' }, box(n), branch(n)));
+  return h('div', { class: 'ftree', role: 'group', 'aria-label': `お金の流れ（${unit}）` }, parts);
 }
 
 function flowLegend(flow) {
@@ -1323,7 +1388,7 @@ function flowView(period) {
         : '左端は共通口座へ入れる当月分、右側はその月の契約の額です（※ 年払いは12で割った額）。',
       '帯の太さは金額です。カードの利用額（変動分）は含みません。名前を押すと詳細を開きます。')),
     hasFlow
-      ? [flowChart(flow.columns, flow.links, { ariaLabel: `お金の流れ（${unit}）` }), flowLegend(flow)]
+      ? flowTree(flow, { unit, isYear })
       : h('p', { class: 'muted' }, '支払方法と金額が入った契約を登録すると、口座からの流れを表示します。'));
   const diff = flow.sharedIn - flow.sharedOut;
   const balanceCard = h('section', { class: 'card' },
