@@ -738,6 +738,27 @@ try {
   await mp.waitForFunction(() => document.querySelectorAll('.attach-box figure').length === 2);
   assert.equal(mock.db.shared_attachments.length, 2);
 
+  step('OCR (bundled Tesseract.js, inside the browser): a transfer screen -> amount and date to check');
+  await mp.goto(`${appUrl}#/deposit-report/new/${hanako.id}`);
+  const screen = await mp.evaluate(() => {
+    const c = document.createElement('canvas');
+    c.width = 1100;
+    c.height = 520;
+    const g = c.getContext('2d');
+    g.fillStyle = '#fff';
+    g.fillRect(0, 0, c.width, c.height);
+    g.fillStyle = '#000';
+    g.font = '56px sans-serif';
+    ['振込が完了しました', '受付日 2026年10月25日', '振込金額 80,000円', '手数料 0円'].forEach((t, i) => g.fillText(t, 40, 100 + i * 110));
+    return c.toDataURL('image/png').split(',')[1];
+  });
+  await mp.locator('#attach-report').setInputFiles({ name: 'screen.png', mimeType: 'image/png', buffer: Buffer.from(screen, 'base64') });
+  await mp.getByRole('button', { name: '画像から読む（OCR）' }).click();
+  await mp.getByText(/読み取った値を入れました|読み取れませんでした/).waitFor({ timeout: 120000 });
+  assert.equal(await mp.getByLabel('入金した額（円） *').inputValue(), '80000', 'amount read from the image');
+  assert.equal(await mp.getByLabel('振込日 *').inputValue(), '2026-10-25', 'date read from the image');
+  assert.equal(mock.db.deposit_reports.length, 0, 'nothing is saved by reading');
+
   step('deposit report: kept for reference, compared with the deposits from the statement');
   await mp.goto(`${appUrl}#/flow/member/${ymNow}`);
   await mp.getByRole('link', { name: '入金を報告' }).click();
