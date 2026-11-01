@@ -632,3 +632,11 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 0.9rem; }
 .shared-card.person-male h3, .shared-card.person-female h3 { color: var(--person); }
 .person-name.person-male, .person-name.person-female { color: var(--person); }
 .person-chip .ic { width: 13px; height: 13px; }
+.review-item { border-bottom: 1px solid var(--line); padding-bottom: 0.5rem; }
+.review-item .list-item { border: 0; }
+.burden-choices { display: flex; flex-wrap: wrap; gap: 0.35rem; padding: 0 0.5rem; }
+.person-btn.person-male, .person-btn.person-female { color: var(--person); border-color: var(--person); background: var(--person-soft); }
+.personal-group.person-male h3, .personal-group.person-female h3 { color: var(--person); }
+.label-list { list-style: none; margin: 0 0 0.6rem; padding: 0; display: grid; gap: 0.3rem; }
+.label-list li { display: flex; align-items: center; gap: 0.35rem; padding: 0.35rem 0; border-bottom: 1px solid var(--line); }
+.label-list li span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
