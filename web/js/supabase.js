@@ -302,7 +302,8 @@ export async function rpc(name, args = {}) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(args),
   });
-  return res.json();
+  const text = await res.text(); // a function that returns nothing answers 204 / empty
+  return text ? JSON.parse(text) : null;
 }
 
 // ---------------------------------------------------------------- Storage

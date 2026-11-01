@@ -212,6 +212,15 @@ do $$ begin
   begin insert into public.shared_rules (member_id, label, amount, start_ym) select id, 'x', 0, '2026-05' from public.members limit 1;
     raise exception 'zero amount accepted'; exception when check_violation then null; end;
 end $$;
+-- each person sets only their own notification hour
+select pg_temp.login('adv@example.com');
+select public.set_my_notify_hour(21);
+do $$ begin
+  if (select notify_hour from public.members where name = '立替する人') <> 21 then raise exception 'own notify hour not set'; end if;
+  if (select count(*) from public.members where notify_hour is not null) <> 1 then raise exception 'someone else''s hour changed'; end if;
+  begin perform public.set_my_notify_hour(24); raise exception 'hour 24 accepted'; exception when invalid_parameter_value then null; end;
+end $$;
+
 -- 立替 by date with a receipt, deposit reports: a member writes only their own
 select pg_temp.login('adv@example.com');
 insert into public.shared_entries (member_id, ym, kind, label, amount, paid_on)

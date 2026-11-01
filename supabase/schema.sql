@@ -369,6 +369,8 @@ create index if not exists transactions_personal_idx on public.transactions (per
 alter table public.members add column if not exists transfer_names text check (char_length(transfer_names) <= 300);
 -- The person's color in the app (2026-11-01): male = blue, female = red.
 alter table public.members add column if not exists gender text check (gender in ('male', 'female'));
+-- The hour (Japan time, 0-23) the person gets notifications; null = 8 (2026-11-01).
+alter table public.members add column if not exists notify_hour smallint check (notify_hour between 0 and 23);
 alter table public.transactions add column if not exists deposit_entry_id uuid references public.shared_entries (id) on delete set null;
 alter table public.transactions add column if not exists deposit_ignored boolean not null default false;
 -- Contract amounts by period (2026-11-01): [{ amount, from, to }] ('YYYY-MM', to null = current).
@@ -726,6 +728,26 @@ $$;
 
 revoke all on function public.usage_stats() from public, anon;
 grant execute on function public.usage_stats() to authenticated;
+
+-- Each person sets their own notification hour (the user master is otherwise written by administrators).
+create or replace function public.set_my_notify_hour(p_hour integer)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if not public.is_member() then
+    raise exception 'not allowed' using errcode = '42501';
+  end if;
+  if p_hour is not null and (p_hour < 0 or p_hour > 23) then
+    raise exception 'hour must be 0-23' using errcode = '22023';
+  end if;
+  update public.members set notify_hour = p_hour where id = public.current_member_id();
+end;
+$$;
+revoke all on function public.set_my_notify_hour(integer) from public, anon;
+grant execute on function public.set_my_notify_hour(integer) to authenticated;
 
 -- ---------------------------------------------------------------------------
 -- Storage: private bucket for item photos (JPEG only, max 10 MB per file).
