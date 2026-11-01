@@ -553,7 +553,7 @@ try {
   await page.waitForLoadState('networkidle'); // the month's lines are loaded (the page redraws once)
   await page.getByLabel('マネーフォワードの CSV ファイル').setInputFiles(mfFile);
   await page.getByText('追加 5件（うち契約に自動でひも付け 1件）、更新 0件、対象外 2件').waitFor();
-  const importStatus = await page.locator('.import-status').innerText();
+  const importStatus = await page.locator('.mf-import:not(.bank-import) .import-status').innerText();
   assert.match(importStatus, /入金として記録: 1件（はなこ 1件）/);
   assert.match(importStatus, /対象外の金融機関: 個人の銀行\s*\?/);
   assert.match(importStatus, /手入力の記録 1件は対象外/);
@@ -667,6 +667,26 @@ try {
   await page.screenshot({ path: join(OUT, 'money-year.png'), fullPage: true });
   await page.getByRole('link', { name: '共用口座の入出金' }).click();
   await page.getByRole('heading', { name: `共用口座の明細（${Number(ymNow.slice(0, 4))}年）` }).waitFor(); // each tab keeps its own period
+
+  step('bank statement CSV: balances by day, the latest balance, a low balance alert');
+  await page.goto(`${appUrl}#/flow/ext/${ymNow}`);
+  await page.getByRole('heading', { name: /^残高/ }).waitFor();
+  const bankCsv = ['取引日,入出金(円),取引後残高(円),入出金内容', `${ymPrev.replace('-', '')}10,-30000,180000,カード`, `${ymNow.replace('-', '')}03,-150000,30000,カード`, `${ymNow.replace('-', '')}03,-3870,26130,駐車場`].join('\r\n') + '\r\n';
+  const bankSjis = execFileSync('python3', ['-I', '-c', 'import sys; sys.stdout.buffer.write(sys.stdin.read().encode("cp932"))'], { input: bankCsv });
+  await page.getByLabel('銀行の取引明細の CSV ファイル').setInputFiles({ name: 'bank.csv', mimeType: 'text/csv', buffer: bankSjis });
+  await page.getByText(/2日分の残高（最新 26,130円）/).waitFor();
+  await page.getByRole('button', { name: '取り込む' }).first().click();
+  await page.getByText('残高を取り込みました（2日分）。').waitFor();
+  assert.deepEqual(mock.db.account_balances.map((b) => [b.date, b.balance]).sort(), [[`${ymPrev}-10`, 180000], [`${ymNow}-03`, 26130]]);
+  assert.ok(mock.db.settings.some((x) => x.key === 'bank_imported_at'));
+  const balanceText = await page.locator('#view').innerText();
+  assert.match(balanceText, /3時点\s*26,130円/);
+  assert.match(balanceText, /共用口座の残高が少なくなっています: 26,130円/, 'below the default 100,000円');
+  await page.getByLabel('銀行の取引明細の CSV ファイル').setInputFiles({ name: 'bank.csv', mimeType: 'text/csv', buffer: bankSjis });
+  await page.getByText(/2日分の残高/).waitFor();
+  await page.getByRole('button', { name: '取り込む' }).first().click();
+  await page.getByText('残高を取り込みました（2日分）。').waitFor();
+  assert.equal(mock.db.account_balances.length, 2, 'importing again does not duplicate');
 
   step('contract amount by period: a new amount from this month, the old one kept for past months');
   await page.goto(`${appUrl}#/edit/contracts/${net.id}`);
