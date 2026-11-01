@@ -708,6 +708,9 @@ try {
   assert.ok(await mp.evaluate(() => document.documentElement.classList.contains('theme-female')), 'the signed-in person\'s color is the accent');
   await mp.goto(`${appUrl}#/settings/account`);
   await mp.getByText('ログイン中: はなこ（一般）').waitFor(); // the nickname is shown
+  await mp.getByLabel('通知の時刻（自分の端末すべて）').selectOption('21');
+  await mp.getByText('通知の時刻を21時にしました。').waitFor();
+  assert.equal(mock.db.members.find((m) => m.id === hanako.id).notify_hour, 21, 'each person sets their own hour');
   await mp.getByRole('link', { name: 'データ', exact: true }).click();
   await mp.getByRole('heading', { name: /バックアップ/ }).waitFor();
   assert.equal(await mp.getByRole('button', { name: '取り込む' }).count(), 0);

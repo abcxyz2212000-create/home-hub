@@ -1798,6 +1798,7 @@ function canWriteEntry(e) {
 const ADVANCE_FIELD = { key: 'amount', label: '立て替えた額（円）', type: 'yen', required: true, min: 1, max: 100000000, help: 'プラスで入力します。日付の月の当月分から差し引きます。' };
 const PAID_ON_FIELD = { key: 'paid_on', label: '日付', type: 'date', required: true };
 const MAX_ATTACHMENTS = 3;
+const NOTIFY_DEFAULT_HOUR = 8;
 
 function dateText(d) {
   const [y, m, day] = String(d).split('-').map(Number);
@@ -3180,6 +3181,20 @@ function defaultDeviceLabel() {
 
 function notifySection() {
   const body = h('div');
+  const hourBox = h('div', { class: 'field' });
+  const drawHour = () => {
+    const myHour = Number.isInteger(me().notify_hour) ? me().notify_hour : NOTIFY_DEFAULT_HOUR;
+    const hourSel = h('select', { id: 'notify-hour' }, Array.from({ length: 24 }, (_, i) => h('option', { value: String(i), selected: i === myHour }, `${i}時`)));
+    hourSel.addEventListener('change', () => busy(hourSel, async () => {
+      const v = Number(hourSel.value);
+      await db.rpc('set_my_notify_hour', { p_hour: v });
+      me().notify_hour = v;
+      toast(`通知の時刻を${v}時にしました。`);
+      drawHour();
+    }));
+    hourBox.replaceChildren(h('div', { class: 'label-row' }, h('label', { for: 'notify-hour' }, '通知の時刻（自分の端末すべて）'),
+      helpButton('通知の時刻', '期限・今日の家事・共用口座への入金のお知らせを、毎日この時刻ごろに送ります（日本時間）。', '自動実行の混み具合で、数十分遅れることがあります。')), hourSel);
+  };
   const draw = async () => {
     const key = state.settings.vapid_public_key;
     const nodes = [];
@@ -3193,7 +3208,8 @@ function notifySection() {
     } else {
       const sub = await push.currentSubscription();
       const label = h('input', { type: 'text', id: 'device-label', value: defaultDeviceLabel(), maxlength: 100 });
-      nodes.push(h('p', {}, sub ? '✓ この端末は通知を受け取ります（毎朝8時ごろ）。' : 'この端末は通知を受け取っていません。'));
+      const myHour = Number.isInteger(me().notify_hour) ? me().notify_hour : NOTIFY_DEFAULT_HOUR;
+      nodes.push(h('p', {}, sub ? `✓ この端末は通知を受け取ります（毎日${myHour}時ごろ）。` : 'この端末は通知を受け取っていません。'));
       if (Notification.permission === 'denied') nodes.push(h('p', { class: 'error small' }, '通知がブラウザでブロックされています。ブラウザのサイト設定で通知を許可してください。'));
       if (!sub) {
         nodes.push(h('label', { for: 'device-label' }, '端末の名前'), label);
@@ -3241,8 +3257,9 @@ function notifySection() {
       h('p', { class: 'notice-text small' }, '⚠ 秘密の値は他人に見せない・チャットやメールに貼らない'));
   };
 
+  drawHour();
   draw().catch(handleError);
-  return h('section', { class: 'card' }, h('h2', {}, '通知（この端末）'), body);
+  return h('section', { class: 'card' }, h('h2', {}, '通知'), hourBox, body);
 }
 
 function membersSection() {

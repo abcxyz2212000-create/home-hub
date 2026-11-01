@@ -1,11 +1,12 @@
-# Daily deadline check and push notifications (8:00 Japan time = 23:00 UTC).
+# Push notifications, every hour: each person gets the day's notifications once, at the hour they chose
+# in the app (default 8:00 Japan time).
 # Required repository secrets: SUPABASE_SERVICE_ROLE_KEY, VAPID_PRIVATE_KEY (see docs/setup.md).
 # Logs of a public repository are public: scripts/notify.mjs never prints ledger names.
-name: 毎朝の通知
+name: 通知（毎時）
 
 on:
   schedule:
-    - cron: '0 23 * * *'
+    - cron: '7 * * * *'
   workflow_dispatch:
     inputs:
       mode:

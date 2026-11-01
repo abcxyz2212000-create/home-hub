@@ -20,7 +20,7 @@ const DEFAULTS = {
 };
 const TABLES = ['accounts', 'cards', 'contracts', 'items', 'memberships', 'item_photos', 'settings', 'push_subscriptions', 'notification_log', 'members', 'audit_log', 'chores', 'shared_rules', 'shared_entries', 'transactions', 'deposit_reports', 'shared_attachments'];
 const TABLE_DEFAULTS = {
-  members: { role: 'member', active: true, email: null, nickname: null, transfer_names: null, gender: null },
+  members: { role: 'member', active: true, email: null, nickname: null, transfer_names: null, gender: null, notify_hour: null },
   settings: {}, notification_log: {}, push_subscriptions: {}, audit_log: {},
   chores: { status: 'active', schedule: [], adjust: 1, assignee_type: 'member', assignee_id: null },
   shared_rules: { end_ym: null, memo: null, month_of_year: null, contract_id: null },
@@ -143,6 +143,16 @@ export function createMock() {
         for (const p of JSON.parse(body.toString()).prefixes) files.delete(p);
         return send(res, 200, []);
       }
+    }
+
+    if (url.pathname === '/rest/v1/rpc/set_my_notify_hour') {
+      const user = tokens.get(bearer);
+      const m = db.members.find((x) => x.email === user.email);
+      const { p_hour: hour } = JSON.parse(body.toString() || '{}');
+      if (!m) return send(res, 403, { code: '42501', message: 'not allowed' });
+      if (hour !== null && !(Number.isInteger(hour) && hour >= 0 && hour <= 23)) return send(res, 400, { code: '22023', message: 'hour must be 0-23' });
+      m.notify_hour = hour;
+      return send(res, 204);
     }
 
     if (url.pathname === '/rest/v1/rpc/usage_stats') {

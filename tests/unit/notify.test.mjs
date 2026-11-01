@@ -62,9 +62,9 @@ test('daily run sends each due notification once and removes expired devices', a
     );
     mock.db.items.push({ id: 'i1', name: '洗濯機', status: 'active', warranty_until: in7, notify_days: { warranty: [] } });
 
-    const env = { ...process.env, SUPABASE_URL: apiUrl, SUPABASE_SERVICE_ROLE_KEY: SERVICE_KEY, VAPID_PRIVATE_KEY: b64urlEncode(privateKey32(vapid)), GITHUB_REPOSITORY: 'Owner/home-hub' };
+    const env = { ...process.env, SUPABASE_URL: apiUrl, SUPABASE_SERVICE_ROLE_KEY: SERVICE_KEY, VAPID_PRIVATE_KEY: b64urlEncode(privateKey32(vapid)), GITHUB_REPOSITORY: 'Owner/home-hub', NOTIFY_HOUR: '9' };
     const first = await run('node', [SCRIPT], { env });
-    assert.match(first.stdout, /1 notification\(s\) due/);
+    assert.match(first.stdout, /1 deadline notification\(s\) due/);
     assert.doesNotMatch(first.stdout + first.stderr, /火災保険/); // names never appear in public logs
 
     const delivered = mock.pushes.filter((p) => p.id === 'dev1');
@@ -83,14 +83,24 @@ test('daily run sends each due notification once and removes expired devices', a
     assert.ok(!mock.pushes.filter((p) => p.id === 'dev1').map((p) => decrypt(p.body, ua, auth)).some((p) => p.title.startsWith('今日の家事')),
       'a device without a member gets no chore reminder');
     assert.doesNotMatch(first.stdout + first.stderr, /ゴミ出し|郵便物/, 'chore names never appear in public logs');
-    assert.equal(mock.db.notification_log.length, 2);
+    assert.equal(mock.db.notification_log.filter((l) => !l.key.startsWith('daily:')).length, 3, 'deadline to each person/device group + chores');
 
     await run('node', [SCRIPT], { env });
     assert.equal(mock.pushes.filter((p) => p.id === 'dev1').length, 1, 'no duplicate on the second run');
     assert.equal(mock.pushes.filter((p) => p.id === 'dev2').length, 2, 'deadline + chores once each');
 
+    // each person at their own hour: はる chose 21時, so nothing for her device before then
+    mock.db.members.find((m) => m.id === 'm-haru').notify_hour = 21;
+    mock.db.push_subscriptions.push({ id: 'dev3', endpoint: `${apiUrl}/push/dev3`, p256dh: b64urlEncode(ua.getPublicKey()), auth: b64urlEncode(auth), member_id: 'm-haru' });
+    await run('node', [SCRIPT], { env: { ...env, NOTIFY_HOUR: '20' } });
+    assert.equal(mock.pushes.filter((p) => p.id === 'dev3').length, 0, 'not before her hour');
+    await run('node', [SCRIPT], { env: { ...env, NOTIFY_HOUR: '22' } }); // a late run still sends
+    assert.equal(mock.pushes.filter((p) => p.id === 'dev3').length, 2, 'deadline + her chores at (or after) her hour');
+    await run('node', [SCRIPT], { env: { ...env, NOTIFY_HOUR: '23' } });
+    assert.equal(mock.pushes.filter((p) => p.id === 'dev3').length, 2, 'once a day');
+
     const t = await run('node', [SCRIPT], { env: { ...env, NOTIFY_TEST: '1' } });
-    assert.match(t.stdout, /delivered to 2\/2/);
+    assert.match(t.stdout, /delivered to 3\/3/);
     assert.equal(decrypt(mock.pushes.at(-1).body, ua, auth).title, 'テスト通知');
 
     // wrong key is rejected
@@ -121,7 +131,7 @@ test('shared account reminder: from the 25th, once a month, only to that member'
     );
     mock.db.shared_entries.push({ id: 'e1', member_id: 'm-shin', ym: '2026-11', kind: 'deposit', label: '入金', amount: 5000 });
 
-    const env = { ...process.env, SUPABASE_URL: apiUrl, SUPABASE_SERVICE_ROLE_KEY: SERVICE_KEY, VAPID_PRIVATE_KEY: b64urlEncode(privateKey32(vapid)), GITHUB_REPOSITORY: 'Owner/home-hub' };
+    const env = { ...process.env, SUPABASE_URL: apiUrl, SUPABASE_SERVICE_ROLE_KEY: SERVICE_KEY, VAPID_PRIVATE_KEY: b64urlEncode(privateKey32(vapid)), GITHUB_REPOSITORY: 'Owner/home-hub', NOTIFY_HOUR: '8' };
     await run('node', [SCRIPT], { env: { ...env, NOTIFY_DATE: '2026-11-24' } });
     assert.equal(mock.pushes.length, 0, 'nothing before the 25th');
 
@@ -130,7 +140,7 @@ test('shared account reminder: from the 25th, once a month, only to that member'
     assert.deepEqual(got.map((p) => p.id), ['d-shin']);
     assert.equal(got[0].title, '共用口座への入金（11月）');
     assert.equal(got[0].body, '今月 8,000円／未入金の残高 11,000円');
-    assert.equal(got[0].url, '#/shared/2026-11');
+    assert.equal(got[0].url, '#/flow/member/2026-11');
     assert.doesNotMatch(r.stdout + r.stderr, /8,000|11,000|しん|基本/, 'amounts and names never appear in public logs');
 
     await run('node', [SCRIPT], { env: { ...env, NOTIFY_DATE: '2026-11-28' } });
