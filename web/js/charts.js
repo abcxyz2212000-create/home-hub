@@ -152,3 +152,38 @@ export function flowChart(columns, links, { compact = false, ariaLabel = 'お金
   }
   return svg;
 }
+
+// Line chart over months. series: [{ label, color, points: [{ x: 'YYYY-MM', y }] }] (same x for all).
+// The y axis always includes 0; January of each year gets a tick.
+export function lineChart(series, ariaLabel, format = yen) {
+  const W = 360;
+  const H = 170;
+  const left = 46;
+  const right = 8;
+  const top = 10;
+  const bottom = 22;
+  const xs = series.length ? series[0].points.map((p) => p.x) : [];
+  const ys = series.flatMap((s) => s.points.map((p) => p.y));
+  const yMax = Math.max(0, ...ys);
+  const yMin = Math.min(0, ...ys);
+  const span = yMax - yMin || 1;
+  const x = (i) => left + (xs.length > 1 ? ((W - left - right) * i) / (xs.length - 1) : 0);
+  const y = (v) => top + ((H - top - bottom) * (yMax - v)) / span;
+  const svg = root(W, H, ariaLabel);
+  for (const v of [...new Set([yMax, 0, yMin])]) {
+    svg.append(s('line', { x1: left, y1: y(v), x2: W - right, y2: y(v), class: v === 0 ? 'line-zero' : 'line-grid' }));
+    svg.append(s('text', { x: left - 4, y: y(v) + 4, class: 'line-tick', 'text-anchor': 'end' }, format(v).replace('円', '')));
+  }
+  xs.forEach((ym, i) => {
+    if (!ym.endsWith('-01') && i !== 0) return;
+    svg.append(s('line', { x1: x(i), y1: H - bottom, x2: x(i), y2: H - bottom + 4, class: 'line-grid' }));
+    svg.append(s('text', { x: x(i), y: H - 6, class: 'line-tick', 'text-anchor': i === 0 ? 'start' : 'middle' }, `${ym.slice(0, 4)}年`));
+  });
+  for (const ser of series) {
+    if (!ser.points.length) continue;
+    svg.append(s('polyline', { points: ser.points.map((p, i) => `${x(i)},${y(p.y)}`).join(' '), class: 'line-path', stroke: ser.color }));
+    const last = ser.points.length - 1;
+    svg.append(s('circle', { cx: x(last), cy: y(ser.points[last].y), r: 3.5, fill: ser.color }));
+  }
+  return svg;
+}

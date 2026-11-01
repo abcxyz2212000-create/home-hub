@@ -70,6 +70,18 @@ export function parseField(field, raw) {
       if (!/^\d+$/.test(t) || Number(t) > (field.max || 100000000)) return { error: `${label}は0以上の整数で入力してください。` };
       return { value: Number(t) };
     }
+    case 'yen': {
+      // Signed whole yen (−/▲/△ are read as minus). Used by the shared account.
+      if (empty) return field.required ? { error: `${label}を入力してください。` } : { value: null };
+      const t = toHalfWidth(String(s)).replace(/円$/, '').replace(/^[−ー－▲△]/, '-').replace(/^\+/, '');
+      const n = Number(t);
+      const max = field.max ?? 100000000;
+      if (!/^-?\d+$/.test(t) || Math.abs(n) > max || (field.min !== undefined && n < field.min)) {
+        return { error: field.min === 1 ? `${label}は1以上の整数で入力してください。` : `${label}は整数で入力してください（マイナスは先頭に「-」）。` };
+      }
+      if (n === 0) return { error: `${label}は0以外で入力してください。` };
+      return { value: n };
+    }
     case 'decimal': {
       if (empty) return field.required ? { error: `${label}を入力してください。` } : { value: null };
       const t = toHalfWidth(String(s));

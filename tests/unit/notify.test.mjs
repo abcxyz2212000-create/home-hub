@@ -95,3 +95,42 @@ test('daily run sends each due notification once and removes expired devices', a
     await mock.stop();
   }
 });
+
+test('shared account reminder: from the 25th, once a month, only to that member', async () => {
+  const mock = createMock();
+  const { apiUrl } = await mock.start();
+  try {
+    const vapid = crypto.createECDH('prime256v1');
+    vapid.generateKeys();
+    const ua = crypto.createECDH('prime256v1');
+    ua.generateKeys();
+    const auth = crypto.randomBytes(16);
+    const dev = (id, memberId) => ({ id, endpoint: `${apiUrl}/push/${id}`, p256dh: b64urlEncode(ua.getPublicKey()), auth: b64urlEncode(auth), member_id: memberId });
+    mock.db.settings.push({ key: 'vapid_public_key', value: b64urlEncode(vapid.getPublicKey()) });
+    mock.db.members.push({ id: 'm-shin', name: '佐藤 真一', nickname: 'しん', active: true }, { id: 'm-haru', name: '佐藤 春子', nickname: 'はる', active: true });
+    mock.db.push_subscriptions.push(dev('d-shin', 'm-shin'), dev('d-haru', 'm-haru'), dev('d-none', null));
+    mock.db.shared_rules.push(
+      { id: 'r1', member_id: 'm-shin', label: '基本', amount: 90000, start_ym: '2026-10', end_ym: null },
+      { id: 'r2', member_id: 'm-shin', label: '家賃', amount: -82000, start_ym: '2026-10', end_ym: null },
+    );
+    mock.db.shared_entries.push({ id: 'e1', member_id: 'm-shin', ym: '2026-11', kind: 'deposit', label: '入金', amount: 5000 });
+
+    const env = { ...process.env, SUPABASE_URL: apiUrl, SUPABASE_SERVICE_ROLE_KEY: SERVICE_KEY, VAPID_PRIVATE_KEY: b64urlEncode(vapid.getPrivateKey()), GITHUB_REPOSITORY: 'Owner/home-hub' };
+    await run('node', [SCRIPT], { env: { ...env, NOTIFY_DATE: '2026-11-24' } });
+    assert.equal(mock.pushes.length, 0, 'nothing before the 25th');
+
+    const r = await run('node', [SCRIPT], { env: { ...env, NOTIFY_DATE: '2026-11-25' } });
+    const got = mock.pushes.map((p) => ({ id: p.id, ...decrypt(p.body, ua, auth) }));
+    assert.deepEqual(got.map((p) => p.id), ['d-shin']);
+    assert.equal(got[0].title, '共通口座への入金（11月）');
+    assert.equal(got[0].body, '今月 8,000円／未入金の残高 11,000円');
+    assert.equal(got[0].url, '#/shared/2026-11');
+    assert.doesNotMatch(r.stdout + r.stderr, /8,000|11,000|しん|基本/, 'amounts and names never appear in public logs');
+
+    await run('node', [SCRIPT], { env: { ...env, NOTIFY_DATE: '2026-11-28' } });
+    assert.equal(mock.pushes.length, 1, 'once a month');
+    await assert.rejects(run('node', [SCRIPT], { env: { ...env, NOTIFY_DATE: '2026/11/25' } }), /NOTIFY_DATE/);
+  } finally {
+    await mock.stop();
+  }
+});

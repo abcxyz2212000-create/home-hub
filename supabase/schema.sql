@@ -267,6 +267,42 @@ create table if not exists public.chores (
 );
 create index if not exists chores_assignee_id_idx on public.chores (assignee_id);
 
+-- Shared account deposits (共通口座の入金管理). Each member owes the shared account every month:
+--   recurring rules (基本・家賃・dアニ ...) for the months between start_ym and end_ym
+--   + one-off charges (管理費・立替 ...; minus = a shared cost the member paid personally)
+--   - deposits. The remaining amount is carried over to the next month (computed by the app).
+create table if not exists public.shared_rules (
+  id uuid primary key default gen_random_uuid(),
+  member_id uuid not null references public.members (id) on delete restrict,
+  label text not null check (char_length(label) between 1 and 50),
+  amount integer not null check (amount between -10000000 and 10000000 and amount <> 0),
+  start_ym text not null check (start_ym ~ '^[0-9]{4}-(0[1-9]|1[0-2])$'),
+  end_ym text check (end_ym ~ '^[0-9]{4}-(0[1-9]|1[0-2])$'),
+  memo text check (char_length(memo) <= 2000),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  created_by uuid references public.members (id) on delete set null,
+  updated_by uuid references public.members (id) on delete set null,
+  check (end_ym is null or end_ym >= start_ym)
+);
+create index if not exists shared_rules_member_id_idx on public.shared_rules (member_id);
+
+create table if not exists public.shared_entries (
+  id uuid primary key default gen_random_uuid(),
+  member_id uuid not null references public.members (id) on delete restrict,
+  ym text not null check (ym ~ '^[0-9]{4}-(0[1-9]|1[0-2])$'),
+  kind text not null check (kind in ('charge', 'deposit')),
+  label text not null check (char_length(label) between 1 and 50),
+  amount integer not null check (amount between -100000000 and 100000000 and amount <> 0),
+  memo text check (char_length(memo) <= 2000),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  created_by uuid references public.members (id) on delete set null,
+  updated_by uuid references public.members (id) on delete set null,
+  check (kind = 'charge' or amount > 0)
+);
+create index if not exists shared_entries_member_ym_idx on public.shared_entries (member_id, ym);
+
 -- ---------------------------------------------------------------------------
 -- Upgrades for projects created from an older version of this file ("create table if not exists"
 -- above does not add columns to an existing table). Safe to run any number of times.
@@ -380,7 +416,7 @@ declare
   tbl text := tg_table_name;
   rid uuid := (r ->> 'id')::uuid;
   act text := lower(tg_op);
-  rname text := r ->> 'name';
+  rname text := coalesce(r ->> 'name', r ->> 'label');
 begin
   if tg_table_name = 'item_photos' then
     if tg_op = 'UPDATE' then
@@ -443,7 +479,7 @@ do $$
 declare
   t text;
 begin
-  foreach t in array array['accounts', 'cards', 'contracts', 'items', 'memberships', 'chores'] loop
+  foreach t in array array['accounts', 'cards', 'contracts', 'items', 'memberships', 'chores', 'shared_rules', 'shared_entries'] loop
     execute format('drop trigger if exists %I_touch on public.%I', t, t);
     execute format('drop trigger if exists %I_stamp on public.%I', t, t);
     execute format('create trigger %I_stamp before insert or update on public.%I for each row execute function public.stamp_row()', t, t);
@@ -454,7 +490,7 @@ begin
     execute format('drop trigger if exists %I_touch on public.%I', t, t);
     execute format('create trigger %I_touch before update on public.%I for each row execute function public.touch_updated_at()', t, t);
   end loop;
-  foreach t in array array['accounts', 'cards', 'contracts', 'items', 'memberships', 'item_photos', 'members', 'chores'] loop
+  foreach t in array array['accounts', 'cards', 'contracts', 'items', 'memberships', 'item_photos', 'members', 'chores', 'shared_rules', 'shared_entries'] loop
     execute format('drop trigger if exists %I_audit on public.%I', t, t);
     execute format('create trigger %I_audit after insert or update or delete on public.%I for each row execute function public.audit_row()', t, t);
   end loop;
@@ -462,7 +498,7 @@ begin
   execute 'create trigger members_guard_last_admin after update or delete on public.members for each statement execute function public.guard_last_admin()';
 
   foreach t in array array['members', 'accounts', 'cards', 'contracts', 'items', 'memberships',
-                           'item_photos', 'settings', 'push_subscriptions', 'notification_log', 'audit_log', 'chores'] loop
+                           'item_photos', 'settings', 'push_subscriptions', 'notification_log', 'audit_log', 'chores', 'shared_rules', 'shared_entries'] loop
     execute format('alter table public.%I enable row level security', t);
     execute format('revoke all on public.%I from anon, authenticated', t);
     -- service_role (used only by the daily GitHub Actions job) bypasses RLS but still needs table
@@ -472,7 +508,7 @@ begin
   end loop;
 
   -- household data: every active member can read and write
-  foreach t in array array['accounts', 'cards', 'contracts', 'items', 'memberships', 'item_photos', 'push_subscriptions', 'chores'] loop
+  foreach t in array array['accounts', 'cards', 'contracts', 'items', 'memberships', 'item_photos', 'push_subscriptions', 'chores', 'shared_rules', 'shared_entries'] loop
     execute format('grant select, insert, update, delete on public.%I to authenticated', t);
     execute format('drop policy if exists member_all on public.%I', t);
     execute format('create policy member_all on public.%I for all to authenticated using (public.is_member()) with check (public.is_member())', t);
