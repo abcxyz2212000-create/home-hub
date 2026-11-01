@@ -198,3 +198,138 @@ export function lineChart(series, ariaLabel, format = yen) {
   }
   return svg;
 }
+
+// ---------------------------------------------------------------- flow as a graph (2026-11-01)
+//
+// Boxes in rows (tier 0: personal accounts, 1: shared account, 2: cards, 3: outside), each box once,
+// joined by arrows of the same width. Each arrow carries text lines (what for, how much). Arrows that
+// skip a row run along the side so that they never cross a box.
+// model: { nodes: [{ id, label, tier, icon (an <svg> from icons.js), href, color }],
+//          edges: [{ from, to, lines: [string] }] }
+
+// rough width of a text at 11px (CJK ~11px, others ~6.5px)
+function textWidth(t, size = 11) {
+  let w = 0;
+  for (const ch of String(t)) w += /[\u0000-ÿ]/.test(ch) ? size * 0.6 : size;
+  return w;
+}
+
+function fitText(t, maxWidth, size = 11) {
+  let out = '';
+  for (const ch of String(t)) {
+    if (textWidth(`${out}${ch}…`, size) > maxWidth) return `${out}…`;
+    out += ch;
+  }
+  return out;
+}
+
+export function flowGraph(model, { ariaLabel = 'お金の流れ', width = 360 } = {}) {
+  const W = width;
+  const BOX_H = 40;
+  const LINE = 14;
+  const tiers = [...new Set(model.nodes.map((n) => n.tier))].sort((a, b) => a - b);
+  const rowOf = new Map(tiers.map((t, i) => [t, i]));
+  const byId = new Map(model.nodes.map((n) => [n.id, n]));
+  const rows = tiers.map((t) => model.nodes.filter((n) => n.tier === t));
+  const edges = model.edges.filter((e) => byId.has(e.from) && byId.has(e.to));
+  const skips = (e) => rowOf.get(byId.get(e.to).tier) - rowOf.get(byId.get(e.from).tier) > 1;
+  // gap below each row: room for the labels of the arrows that start there
+  const gaps = rows.map((_, i) => {
+    const lines = edges.filter((e) => rowOf.get(byId.get(e.from).tier) === i && !skips(e)).map((e) => e.lines.length);
+    return Math.max(56, 30 + LINE * Math.max(0, ...lines));
+  });
+  // side lanes for arrows that skip rows
+  const lanes = { left: 0, right: 0 };
+  // rows passed by a skipping arrow leave room on that side for the arrow and its label
+  const SIDE = 96;
+  const xOf = (row, j, l, r) => l + ((W - l - r) * (j + 0.5)) / row.length;
+  const reserved = rows.map(() => ({ l: 0, r: 0 }));
+  for (const e of edges.filter(skips)) {
+    const ra = rowOf.get(byId.get(e.from).tier);
+    const rb = rowOf.get(byId.get(e.to).tier);
+    const srcRow = rows[ra];
+    const left = xOf(srcRow, srcRow.indexOf(byId.get(e.from)), 0, 0) <= W / 2;
+    for (let i = ra + 1; i < rb; i += 1) reserved[i][left ? 'l' : 'r'] = SIDE;
+  }
+  const pos = new Map();
+  let y = 8;
+  rows.forEach((row, i) => {
+    const { l, r } = reserved[i];
+    const bw = Math.min(170, (W - l - r) / row.length - 12);
+    row.forEach((n, j) => pos.set(n.id, { x: xOf(row, j, l, r), y, w: bw }));
+    y += BOX_H + gaps[i];
+  });
+  const H = y - gaps[gaps.length - 1] + 10;
+  const svg = root(W, H, ariaLabel);
+  svg.classList.add('flow-graph');
+  svg.append(s('defs', {}, s('marker', { id: 'fg-arrow', viewBox: '0 0 10 10', refX: 9, refY: 5, markerWidth: 7, markerHeight: 7, orient: 'auto-start-reverse' },
+    s('path', { d: 'M0 0L10 5L0 10z', class: 'fg-head' }))));
+  const lineLayer = s('g', {});
+  const labelLayer = s('g', {});
+  const boxLayer = s('g', {});
+  svg.append(lineLayer, boxLayer, labelLayer);
+
+  const label = (lines, x, yMid, anchor) => {
+    const widths = lines.map((l) => textWidth(l));
+    const w = Math.max(...widths) + 10;
+    const hgt = lines.length * LINE + 6;
+    const left = anchor === 'start' ? x : anchor === 'end' ? x - w : x - w / 2;
+    const top = yMid - hgt / 2;
+    labelLayer.append(s('g', { class: 'fg-label' },
+      s('rect', { x: left, y: top, width: w, height: hgt, rx: 5 }),
+      lines.map((l, k) => s('text', { x: left + 5, y: top + 4 + LINE * (k + 0.78) }, l))));
+  };
+
+  for (const e of edges) {
+    const a = pos.get(e.from);
+    const b = pos.get(e.to);
+    const from = byId.get(e.from);
+    const y1 = a.y + BOX_H;
+    const y2 = b.y;
+    let d;
+    if (!skips(e)) {
+      const my = (y1 + y2) / 2;
+      d = `M${a.x} ${y1} C${a.x} ${my} ${b.x} ${my} ${b.x} ${y2 - 2}`;
+      // near the start of the arrow, so that arrows meeting at one box keep their labels apart
+      const lines = e.lines.map((l) => fitText(l, 200));
+      const half = Math.max(...lines.map((l) => textWidth(l))) / 2 + 5;
+      const lx = a.x + (b.x - a.x) * 0.15;
+      label(lines, Math.min(Math.max(lx, half + 2), W - half - 2), my, 'middle');
+    } else {
+      const side = a.x <= W / 2 ? 'left' : 'right';
+      lanes[side] += 1;
+      const lx = side === 'left' ? 6 + (lanes[side] - 1) * 8 : W - 6 - (lanes[side] - 1) * 8;
+      // into the side of the target box
+      const tx = side === 'left' ? b.x - b.w / 2 - 2 : b.x + b.w / 2 + 2;
+      const ty = y2 + BOX_H / 2;
+      d = `M${a.x} ${y1} C${a.x} ${y1 + 22} ${lx} ${y1 + 8} ${lx} ${y1 + 34} L${lx} ${ty - 12} C${lx} ${ty} ${lx} ${ty} ${tx} ${ty}`;
+      const lines = e.lines.flatMap((l) => {
+        const m = /^(.*?)\s+([\d,]+円.*)$/.exec(l);
+        return m ? [fitText(m[1], SIDE - 18), m[2]] : [fitText(l, SIDE - 18)];
+      });
+      label(lines, side === 'left' ? lx + 5 : lx - 5, (y1 + 34 + ty - 12) / 2, side === 'left' ? 'start' : 'end');
+    }
+    const path = s('path', { d, class: 'fg-line', 'marker-end': 'url(#fg-arrow)' });
+    if (from.color) path.style.stroke = from.color; // CSSOM: allowed by the CSP
+    lineLayer.append(path);
+  }
+
+  for (const n of model.nodes) {
+    const p = pos.get(n.id);
+    const left = p.x - p.w / 2;
+    const rect = s('rect', { x: left, y: p.y, width: p.w, height: BOX_H, rx: 9 });
+    if (n.color && n.kind !== 'outside') rect.style.stroke = n.color;
+    const g = s('g', { class: `fg-node${n.kind ? ` fg-${n.kind}` : ''}` }, rect,
+      s('text', { x: left + 34, y: p.y + BOX_H / 2 + 4 }, fitText(n.label, p.w - 40)));
+    if (n.icon) {
+      n.icon.setAttribute('x', left + 9);
+      n.icon.setAttribute('y', p.y + BOX_H / 2 - 9);
+      n.icon.setAttribute('width', 18);
+      n.icon.setAttribute('height', 18);
+      if (n.color && n.kind !== 'outside') n.icon.style.color = n.color;
+      g.append(n.icon);
+    }
+    boxLayer.append(n.href ? s('a', { href: n.href }, g) : g);
+  }
+  return svg;
+}

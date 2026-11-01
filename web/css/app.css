@@ -641,3 +641,17 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 0.9rem; }
 .ft-more > summary { cursor: pointer; list-style: none; }
 .ft-more > summary::before { content: '＋'; color: var(--accent); font-weight: 700; }
 .ft-more[open] > summary::before { content: '－'; }
+
+/* flow graph */
+.flow-graph { max-width: 560px; display: block; margin: 0 auto; }
+.flow-graph .fg-line { fill: none; stroke: var(--muted); stroke-width: 1.6; }
+.flow-graph .fg-head { fill: var(--muted); }
+.flow-graph .fg-node rect { fill: var(--surface); stroke: var(--accent); stroke-width: 1.5; }
+.flow-graph .fg-node text { font-size: 12px; font-weight: 700; fill: var(--ink); }
+.flow-graph .fg-node svg { color: var(--accent); }
+.flow-graph .fg-shared rect { stroke-width: 2.4; }
+.flow-graph .fg-outside rect { fill: var(--surface-2); stroke: var(--line); stroke-dasharray: 4 3; }
+.flow-graph .fg-outside svg { color: var(--muted); }
+.flow-graph .fg-label rect { fill: var(--surface); stroke: var(--line); stroke-width: 0.8; }
+.flow-graph .fg-label text { font-size: 11px; fill: var(--ink-2); }
+.flow-graph a:hover rect, .flow-graph a:focus rect { fill: var(--accent-soft); }

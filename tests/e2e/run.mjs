@@ -148,7 +148,7 @@ try {
   await page.getByText('7,000円', { exact: true }).waitFor();
   assert.ok(await page.getByRole('img', { name: /今日から60日先までの期限/ }).isVisible(), 'deadline timeline');
   assert.ok(await page.getByRole('img', { name: '固定費の種類別の月額' }).isVisible(), 'fixed cost bars');
-  assert.ok(await page.getByRole('group', { name: /お金の流れ/ }).isVisible(), 'money flow (boxes and arrows)');
+  assert.ok(await page.getByRole('img', { name: /お金の流れ/ }).isVisible(), 'money flow (boxes and arrows)');
   assert.match(await page.locator('.page-head h1').innerText(), /\d+月\d+日（.）/);
   assert.match(await page.locator('.kpis').innerText(), /固定費 \/ 月\n7,000円[\s\S]*期限 30日以内\n\d+件/);
   const home = await page.locator('#view').innerText();
@@ -235,10 +235,12 @@ try {
   step('money flow page: accounts -> cards -> contracts with links to the records');
   await page.goto(`${appUrl}#/flow/flow`);
   await page.getByRole('heading', { name: '口座 → カード → 支払先（月額）' }).waitFor();
-  const flowBox = page.getByRole('group', { name: 'お金の流れ（月額）' });
-  assert.match(await flowBox.innerText(), /生活費口座\n通信\n5,000円\nインターネット\nカードの引き落とし\n2,000円\nメインカード\n保険（年払い÷12）\n2,000円\n火災保険/, 'boxes joined by arrows with purpose and amount');
+  const flowBox = page.getByRole('img', { name: 'お金の流れ（月額）' });
+  const flowText = await flowBox.evaluate((el) => [...el.querySelectorAll('text')].map((t) => t.textContent));
+  for (const t of ['外部（支払先）', 'メインカード', 'カードの引き落とし 2,000円', '火災保険 2,000円', '5,000円']) assert.ok(flowText.includes(t), `flow shows ${t}`);
+  assert.equal(new Set(flowText).size, flowText.length, 'every box once');
   assert.match(await page.locator('table').innerText(), /生活費口座\s+7,000円/);
-  await flowBox.getByRole('link', { name: 'メインカード' }).click();
+  await flowBox.locator('a', { hasText: 'メインカード' }).click();
   await page.getByRole('heading', { name: 'メインカード' }).waitFor();
 
   step('card list shows card faces');
@@ -454,8 +456,9 @@ try {
   assert.match(money, /入る額\s*66,500円/);
   assert.match(money, /出る額\s*7,000円/);
   assert.match(money, /差（余裕）\s*59,500円/);
-  const flow4 = await page.getByRole('group', { name: 'お金の流れ（月額）' }).innerText();
-  assert.match(flow4, /^給与口座（はなこ）\n当月分\n66,500円\n生活費口座（共通）\n/, 'a person is shown as their account, the arrow says 当月分');
+  const flow4 = await page.getByRole('img', { name: 'お金の流れ（月額）' }).evaluate((el) => [...el.querySelectorAll('text')].map((t) => t.textContent));
+  for (const t of ['給与口座（はなこ）', '当月分 66,500円', '生活費口座（共通）', '外部（支払先）', 'メインカード']) assert.ok(flow4.includes(t), `flow shows ${t}`);
+  assert.equal(flow4.filter((t) => t === '外部（支払先）').length, 1, 'one box for everything outside');
   await page.getByRole('link', { name: '年間' }).click();
   await page.getByRole('heading', { name: 'はなこ → 口座 → カード → 支払先（年額）' }).waitFor();
   assert.match(await page.locator('#view').innerText(), /口座ごとの引き落とし（年額）/);
