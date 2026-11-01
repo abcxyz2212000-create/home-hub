@@ -41,6 +41,8 @@ export function createMock() {
   const tokens = new Map(); // access token -> user
   const refresh = new Map();
   const pushes = [];
+  const passwords = new Map(USERS.map((u) => [u.email, u.password])); // changeable per mock
+  const recoveries = []; // e-mails a reset link was requested for
 
   const issue = (user) => {
     const access = crypto.randomUUID();
@@ -81,7 +83,7 @@ export function createMock() {
     if (url.pathname === '/auth/v1/token') {
       const data = JSON.parse(body.toString() || '{}');
       if (url.searchParams.get('grant_type') === 'password') {
-        const user = USERS.find((u) => u.email === data.email && u.password === data.password);
+        const user = USERS.find((u) => u.email === data.email && passwords.get(u.email) === data.password);
         if (user) return send(res, 200, issue(user));
         return send(res, 400, { error: 'invalid_grant', error_description: 'Invalid login credentials' });
       }
@@ -93,9 +95,26 @@ export function createMock() {
       return send(res, 400, { error: 'invalid_grant' });
     }
 
+    if (url.pathname === '/auth/v1/recover' && req.method === 'POST') {
+      const data = JSON.parse(body.toString() || '{}');
+      recoveries.push({ email: data.email, redirect_to: url.searchParams.get('redirect_to') });
+      return send(res, 200, {});
+    }
+
     const service = key === SERVICE_KEY;
     const bearer = (req.headers.authorization || '').replace(/^Bearer /, '');
     if (!service && !tokens.has(bearer)) return send(res, 401, { code: 'PGRST301', message: 'JWT expired' });
+
+    if (url.pathname === '/auth/v1/user') {
+      const user = tokens.get(bearer);
+      if (req.method === 'PUT') {
+        const data = JSON.parse(body.toString() || '{}');
+        if (typeof data.password !== 'string' || data.password.length < 6) return send(res, 422, { code: 422, error_code: 'weak_password', msg: 'Password should be at least 6 characters.' });
+        if (data.password === passwords.get(user.email)) return send(res, 422, { code: 422, error_code: 'same_password', msg: 'New password should be different from the old password.' });
+        passwords.set(user.email, data.password);
+      }
+      return send(res, 200, { id: user.id, email: user.email });
+    }
 
     if (url.pathname === '/auth/v1/logout') {
       if (url.searchParams.get('scope') === 'global') {
@@ -191,7 +210,7 @@ export function createMock() {
   const apiServer = http.createServer(async (req, res) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Headers', 'apikey, authorization, content-type, prefer, x-upsert');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
     if (req.method === 'OPTIONS') return send(res, 204);
     const url = new URL(req.url, 'http://127.0.0.1');
     if (url.pathname.startsWith('/push/')) {
@@ -227,7 +246,9 @@ export function createMock() {
   });
 
   return {
-    db, files, pushes,
+    db, files, pushes, passwords, recoveries,
+    // tokens as they arrive in a link from an e-mail (invite / password reset)
+    linkTokens: (user) => issue(user),
     async start() {
       await new Promise((r) => apiServer.listen(0, '127.0.0.1', r));
       await new Promise((r) => staticServer.listen(0, '127.0.0.1', r));

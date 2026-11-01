@@ -285,6 +285,12 @@ async function render() {
       return;
     }
   }
+  if (route().page === 'password') {
+    nav.hidden = !me();
+    setNav('settings');
+    renderPassword();
+    return;
+  }
   if (!me()) {
     nav.hidden = true;
     renderNotMember();
@@ -358,11 +364,114 @@ function renderLogin() {
     },
   },
   h('h1', {}, '家の管理ハブ'),
+  state.loginNotice ? h('p', { class: 'error', role: 'alert' }, state.loginNotice) : null,
   h('label', { for: 'login-email' }, 'メールアドレス'), email,
   h('label', { for: 'login-password' }, 'パスワード'), password,
   error, submit,
-  h('p', { class: 'muted small' }, '2人で共通のアカウントでログインします。新規登録はできません。'));
-  setView('ログイン', form);
+  h('p', { class: 'muted small' }, '1人1アカウントでログインします。アカウントは管理者が作ります（新規登録はできません）。'));
+  state.loginNotice = null;
+  setView('ログイン', form, forgotPasswordBox(email));
+}
+
+// 「パスワードを忘れた場合」: Supabase e-mails a link that opens this app (see handleAuthLink).
+function forgotPasswordBox(loginEmail) {
+  const email = h('input', { type: 'email', id: 'reset-email', autocomplete: 'username', maxlength: 254 });
+  const status = h('p', { role: 'status' });
+  const send = h('button', { type: 'button', onclick: (ev) => busy(ev.currentTarget, async () => {
+    status.className = '';
+    const value = email.value.trim();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value) || value.length > 254) {
+      status.className = 'error';
+      status.textContent = 'メールアドレスを正しく入力してください。';
+      return;
+    }
+    await db.requestPasswordReset(value, `${location.origin}${location.pathname}`);
+    status.className = 'muted';
+    status.textContent = '登録されているメールアドレスなら、パスワードの再設定のメールを送りました。メールのリンクを、この端末で開いてください（リンクは一定時間で使えなくなります）。';
+  }) }, '再設定のメールを送る');
+  const box = h('details', { class: 'card forgot' },
+    h('summary', {}, 'パスワードを忘れた場合'),
+    h('label', { for: 'reset-email' }, '再設定するメールアドレス'), email, send, status);
+  box.addEventListener('toggle', () => {
+    if (box.open && !email.value) email.value = loginEmail.value.trim();
+  });
+  return box;
+}
+
+// Opened from a link in an e-mail (invite / password reset): keep the session, then set a password.
+async function handleAuthLink() {
+  const link = db.linkFragment(location.hash);
+  if (!link) return;
+  const base = `${location.pathname}${location.search}`;
+  window.history.replaceState(null, '', `${base}#/`); // the tokens must not stay in the address bar or history
+  if (link.error) {
+    state.loginNotice = link.error;
+    return;
+  }
+  try {
+    await db.signInWithLink(link);
+    resetState();
+    state.passwordFromLink = true;
+    window.history.replaceState(null, '', `${base}#/password`);
+  } catch (e) {
+    console.error(e.detail || e);
+    await db.signOut('local').catch(() => {});
+    state.loginNotice = 'メールのリンクでログインできませんでした。もう一度「パスワードを忘れた場合」からメールを送ってください。';
+  }
+}
+
+// Change the password: with the current one, or (after an e-mail link) without it.
+function renderPassword() {
+  const fromLink = Boolean(state.passwordFromLink);
+  const current = h('input', { type: 'password', id: 'pw-current', autocomplete: 'current-password' });
+  const next = h('input', { type: 'password', id: 'pw-new', autocomplete: 'new-password', maxlength: db.MAX_PASSWORD });
+  const again = h('input', { type: 'password', id: 'pw-again', autocomplete: 'new-password', maxlength: db.MAX_PASSWORD });
+  const error = h('p', { class: 'error', role: 'alert' });
+  const submit = h('button', { type: 'submit', class: 'primary' }, 'パスワードを変更');
+  const done = fromLink ? '#/' : '#/settings';
+  const form = h('form', { class: 'card form', novalidate: true, onsubmit: (ev) => {
+    ev.preventDefault();
+    busy(submit, async () => {
+      error.textContent = '';
+      const problem = !fromLink && !current.value ? '今のパスワードを入力してください。'
+        : next.value.length < db.MIN_PASSWORD ? `新しいパスワードは${db.MIN_PASSWORD}文字以上にしてください。`
+          : new TextEncoder().encode(next.value).length > db.MAX_PASSWORD ? '新しいパスワードが長すぎます（半角72文字まで）。'
+            : next.value !== again.value ? '確認用のパスワードが一致しません。'
+              : !fromLink && next.value === current.value ? '今と同じパスワードです。別のパスワードにしてください。' : null;
+      if (problem) {
+        error.textContent = problem;
+        return;
+      }
+      if (!fromLink) {
+        try {
+          await db.signIn(db.currentEmail(), current.value);
+        } catch (e) {
+          console.error(e.detail || e);
+          error.textContent = e.status === 400 || e.status === 401 ? '今のパスワードが違います。' : e.message;
+          return;
+        }
+      }
+      try {
+        await db.changePassword(next.value);
+      } catch (e) {
+        console.error(e.detail || e);
+        error.textContent = e instanceof AppError ? e.message : 'パスワードを変更できませんでした。';
+        return;
+      }
+      for (const i of [current, next, again]) i.value = '';
+      state.passwordFromLink = false;
+      toast('パスワードを変更しました。');
+      location.hash = done;
+    });
+  } },
+  fromLink ? h('p', {}, `${db.currentEmail() || ''} の新しいパスワードを決めてください。`) : null,
+  fromLink ? null : h('div', { class: 'field' }, h('label', { for: 'pw-current' }, '今のパスワード'), current),
+  h('div', { class: 'field' }, h('label', { for: 'pw-new' }, '新しいパスワード'), next,
+    h('p', { class: 'muted small' }, `${db.MIN_PASSWORD}文字以上。ほかのサービスと同じものは避けてください（パスワードマネージャーでの生成がおすすめ）。`)),
+  h('div', { class: 'field' }, h('label', { for: 'pw-again' }, '新しいパスワード（確認）'), again),
+  error,
+  h('div', { class: 'actions' }, h('a', { class: 'button', href: done, onclick: () => { state.passwordFromLink = false; } }, fromLink ? 'あとで' : 'キャンセル'), submit));
+  setView('パスワードの変更', h('h1', {}, fromLink ? 'パスワードの設定' : 'パスワードの変更'), form);
 }
 
 // ---------------------------------------------------------------- home
@@ -2734,7 +2843,8 @@ function accountSection() {
         resetState();
         render();
       }) }, 'このアカウントのすべての端末からログアウト')),
-    h('p', { class: 'muted small' }, '端末をなくしたときは、このボタンを押してから、パスワードを変更してください。'));
+    h('div', { class: 'button-row' }, h('a', { class: 'button', href: '#/password' }, 'パスワードを変更')),
+    h('p', { class: 'muted small' }, '端末をなくしたときは、「すべての端末からログアウト」を押してから、パスワードを変更してください。'));
 }
 
 function sharedAccountSection() {
@@ -3031,8 +3141,8 @@ db.setSignedOutHandler(() => {
   resetState();
   render();
 });
-window.addEventListener('hashchange', () => render());
+window.addEventListener('hashchange', () => handleAuthLink().finally(() => render())); // the e-mail link may open in a tab that already shows the app
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('./sw.js').catch((e) => console.error(`service worker registration failed: ${e.message}`));
 }
-render();
+handleAuthLink().finally(() => render());

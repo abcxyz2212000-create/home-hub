@@ -554,3 +554,10 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 0.9rem; }
 .period-bar .month-nav { margin-bottom: 0.4rem; }
 .period-switch { justify-content: center; }
 .year-table td.due { color: var(--critical-ink); font-weight: 600; }
+
+/* ---------------------------------------------------------------- password reset */
+.forgot { max-width: 420px; margin: 0 auto 2rem; }
+.forgot summary { cursor: pointer; font-weight: 600; }
+.forgot label { display: block; margin-top: 0.75rem; }
+.forgot input { width: 100%; }
+.forgot button { width: 100%; margin-top: 0.75rem; }
