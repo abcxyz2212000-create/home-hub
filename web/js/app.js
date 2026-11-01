@@ -633,7 +633,7 @@ function sharedHomeCard() {
   return h('section', { class: 'card' },
     sectionHead('bank', '共通口座への入金', { href: '#/shared', text: '詳しく' }),
     h('div', { class: 'kpis kpis-2' },
-      kpi(`${Number(thisYM().slice(5))}月に入れる額`, signedYen(st.charges).replace('円', ''), '円'),
+      kpi(`${Number(thisYM().slice(5))}月分`, signedYen(st.charges).replace('円', ''), '円'),
       kpi('未入金の残高', signedYen(st.balance).replace('円', ''), '円', st.balance > 0 ? 'kpi-alert' : '')));
 }
 
@@ -652,13 +652,14 @@ function renderShared(ymParam) {
     return;
   }
   const sts = members.map((m) => ({ m, st: statement(rules, entries, m.id, ym) }));
+  const mon = `${Number(ym.slice(5))}月`;
 
   // per-member cards
   const cards = h('div', { class: 'shared-cards' }, sts.map(({ m, st }) => h('section', { class: 'card shared-card' },
     h('h2', { class: 'with-icon' }, icon('user'), nick(m)),
     h('dl', { class: 'shared-figures' },
-      h('dt', {}, '今月入れる額'), h('dd', { class: 'num' }, signedYen(st.charges)),
-      h('dt', {}, '入金済み'), h('dd', { class: 'num' }, yen(st.deposit)),
+      h('dt', {}, `${mon}分`), h('dd', { class: 'num' }, signedYen(st.charges)),
+      h('dt', {}, `${mon}の入金`), h('dd', { class: 'num' }, yen(st.deposit)),
       h('dt', {}, '未入金の残高'), h('dd', { class: `num big${st.balance > 0 ? ' due' : ''}` }, signedYen(st.balance))),
     h('a', { class: 'button primary', href: `#/shared-entry/new/deposit:${m.id}:${ym}` }, '入金を記録'))));
 
@@ -675,6 +676,7 @@ function renderShared(ymParam) {
     h('tbody', {},
       row('前月繰越', (st) => h('td', { class: 'num' }, signedYen(st.carry)), 'sub'),
       labels.map((l) => row(l, (st) => cell(st, l))),
+      row('当月分（小計）', (st) => h('td', { class: 'num' }, signedYen(st.charges)), 'subtotal'),
       row('合計', (st) => h('td', { class: 'num' }, signedYen(st.total)), 'total'),
       row('入金', (st) => h('td', { class: 'num' }, st.deposit ? yen(st.deposit) : '—')),
       row('未入金（翌月へ）', (st) => h('td', { class: 'num' }, signedYen(st.balance)), 'total'))));
@@ -726,7 +728,7 @@ function renderShared(ymParam) {
     h('section', { class: 'card' },
       h('h2', {}, `${ymLabel(ym)}の内訳`),
       table,
-      h('p', { class: 'muted small' }, 'プラスは共通口座へ入れる額、マイナスは個人で払った共通の費用（入れる額から差し引き）です。'),
+      h('p', { class: 'muted small' }, 'プラスは共通口座へ入れる額、マイナスは個人で払った共通の費用（入れる額から差し引き）です。合計 = 前月繰越 + 当月分。'),
       h('h3', {}, 'この月の明細・入金'),
       entryList,
       h('div', { class: 'button-row' },
