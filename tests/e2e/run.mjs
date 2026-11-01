@@ -408,12 +408,13 @@ try {
   await save();
   await page.locator('.shared-card').waitFor();
   const card = await page.locator('.shared-card').innerText();
-  assert.match(card, /今月入れる額\s+66,500円/);
-  assert.match(card, /入金済み\s+100,000円/);
+  assert.match(card, new RegExp(`${Number(ymNow.slice(5))}月分\\s+66,500円`));
+  assert.match(card, new RegExp(`${Number(ymNow.slice(5))}月の入金\\s+100,000円`));
   assert.match(card, /未入金の残高\s+36,000円/, '69,500 carried + 66,500 - 100,000');
   const monthSheet = await page.locator('.shared-table').innerText();
   assert.match(monthSheet, /前月繰越\s+69,500円/);
   assert.match(monthSheet, /管理費\s+−3,000円/);
+  assert.match(monthSheet, /当月分（小計）\s+66,500円/);
   assert.match(monthSheet, /合計\s+136,000円/);
   await page.getByRole('img', { name: '人ごとの未入金の残高の推移' }).waitFor();
   await page.getByRole('link', { name: '前の月' }).click();

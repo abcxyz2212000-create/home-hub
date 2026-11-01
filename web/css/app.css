@@ -514,6 +514,7 @@ details summary { cursor: pointer; margin-top: 1rem; }
 .table-wrap { overflow-x: auto; }
 .shared-table tr.total th, .shared-table tr.total td { font-weight: 700; border-top: 2px solid var(--line); }
 .shared-table tr.sub th, .shared-table tr.sub td { color: var(--muted); }
+.shared-table tr.subtotal th, .shared-table tr.subtotal td { font-weight: 600; border-top: 1px dashed var(--line); }
 .list-item.ended { opacity: 0.6; }
 .kpis.kpis-2 { grid-template-columns: 1fr 1fr; margin: 0.5rem 0 0; }
 .line-grid { stroke: var(--line); stroke-width: 1; }
