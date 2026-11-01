@@ -9,7 +9,7 @@ import {
 import { parseCSV, toCSV, decodeCSVBytes, unescapeFormula } from './csv.js';
 import { sortedHistory, applyPriceChange, periodText, priceAt } from './prices.js';
 import {
-  parseMfRows, classifyMf, matchContract, normalizeText, summarizeMonth, plannedInMonth, personalTotal, settlementMemo, depositCandidates, depositEntryFor, DEPOSIT_AUTO_FROM,
+  parseMfRows, classifyMf, matchContract, normalizeText, summarizeMonth, plannedInMonth, personalTotal, settlementMemo, depositCandidates, depositEntryFor, DEPOSIT_AUTO_FROM, accountFlows,
 } from './mf.js';
 import { createZip } from './zip.js';
 import { compressImage } from './image.js';
@@ -600,7 +600,6 @@ function renderPassword() {
 
 const URGENCY_ICON = { past: 'check', crit: 'alert', warn: 'clock', ok: 'clock' };
 // Short ledger names for the small dashboard tiles.
-const TILE_LABELS = { accounts: '口座', cards: 'カード', contracts: '契約・固定費', items: '書類・家電', memberships: '会員情報' };
 
 function ledgerIcon(ledger, extra = '') {
   return h('span', { class: `icbox lg-${ledger} ${extra}`.trim() }, icon(LEDGER_ICONS[ledger]));
@@ -1104,13 +1103,33 @@ function txRow(t) {
 }
 
 // Plan (contracts) vs actual (imported statement) for the shared account in one month.
+// 入金・出金の内訳 (people in their colors)
+function flowBreakdown(f) {
+  const people = (map, label) => [...map].filter(([, v]) => v > 0).sort((a, b) => meFirst({ id: a[0] }, { id: b[0] }))
+    .map(([id, v]) => h('tr', {}, h('td', { class: 'indent' }, id ? personChip(id) : '（名義不明）', ` ${label}`), h('td', { class: 'num' }, yen(v))));
+  const row = (label, v) => (v > 0 ? h('tr', {}, h('td', { class: 'indent' }, label), h('td', { class: 'num' }, yen(v))) : null);
+  return h('div', { class: 'table-wrap' }, h('table', { class: 'table flow-breakdown' },
+    h('tbody', {},
+      h('tr', { class: 'group' }, h('th', {}, '入金'), h('th', { class: 'num' }, yen(f.inTotal))),
+      people(f.inMember, 'から'),
+      row('その他', f.inOther),
+      h('tr', { class: 'group' }, h('th', {}, '出金'), h('th', { class: 'num' }, yen(f.outTotal))),
+      row('契約（固定費）', f.outContract),
+      row('契約にない支出', f.outUnlinked),
+      people(f.outMember, 'へ'),
+      people(f.outPersonal, '負担（精算待ち・済み）'))));
+}
+
 function actualCard(ym) {
   const sharedId = sharedAccountId();
-  const head = h('h2', { class: 'with-icon' }, icon('database'), `共用口座の明細（実績）`);
+  const head = h('h2', { class: 'with-icon' }, icon('database'), `共用口座の明細（実績）`, helpButton('共用口座の入出金',
+    '共用口座から見た実際の入出金です。はる・しんの口座との入出金や、○○負担の明細も入金・出金に含めます。',
+    '振替（カードの引き落としなど二重になるもの）と「対象外」にした明細は数えません。'));
   if (!sharedId) return h('section', { class: 'card' }, head, h('p', { class: 'muted' }, '共用口座を設定すると、マネーフォワードの明細を取り込めます。'));
   const txs = monthTransactions(ym);
   if (txs === null) return h('section', { class: 'card' }, head, h('p', { class: 'muted' }, '読み込み中…'), mfImportBox());
   const sum = summarizeMonth(txs, state.members);
+  const flows = accountFlows(sum, state.members);
   const planned = state.data.contracts.filter((c) => contractSourceAccountId(c) === sharedId && plannedInMonth(c, ym) > 0);
   const ids = new Set([...planned.map((c) => c.id), ...sum.byContract.keys()]);
   const rows = [...ids].map((id) => find('contracts', id)).filter(Boolean)
@@ -1121,9 +1140,10 @@ function actualCard(ym) {
   return h('section', { class: 'card' }, head,
     txs.length === 0 ? h('p', { class: 'muted' }, 'この月の明細はまだ取り込まれていません。') : [
       h('div', { class: 'kpis kpis-3' },
-        kpi('入金（外部から）', yen(sum.inflow).replace('円', ''), '円'),
-        kpi('出金（外部へ）', yen(sum.outflow).replace('円', ''), '円'),
+        kpi('入金', yen(flows.inTotal).replace('円', ''), '円'),
+        kpi('出金', yen(flows.outTotal).replace('円', ''), '円'),
         kpi('固定費（予定）', yen(planTotal).replace('円', ''), '円')),
+      flowBreakdown(flows),
       rows.length ? [h('h3', {}, '契約ごとの予定と実績'),
         h('div', { class: 'table-wrap' }, h('table', { class: 'table' },
           h('thead', {}, h('tr', {}, h('th', {}, '契約'), h('th', { class: 'num' }, '予定'), h('th', { class: 'num' }, '実績'), h('th', {}, '状態'))),
@@ -1137,11 +1157,9 @@ function actualCard(ym) {
         h('div', { class: 'list' }, sum.unlinked.map(txRow))] : null,
       txs.filter((t) => t.contract_id && t.counted && !t.transfer).length ? h('details', {}, h('summary', {}, '契約にひも付いた明細'),
         h('div', { class: 'list' }, txs.filter((t) => t.contract_id && t.counted && !t.transfer).map(txRow))) : null,
-      sum.memberFlows.length ? h('details', {}, h('summary', {}, `個人との入出金（${sum.memberFlows.length}件。外部との入出金には含めず、「個人 ⇔ 共用口座」で扱います）`),
-        h('div', { class: 'list' }, sum.memberFlows.map(txRow))) : null,
-      sum.personal.length ? h('details', {}, h('summary', {}, `個人負担（${sum.personal.length}件。共通の支出には含めず、本人が精算）`),
-        h('div', { class: 'list' }, sum.personal.map(txRow))) : null,
-      sum.excluded.length ? h('details', {}, h('summary', {}, `振替・集計対象外（${sum.excluded.length}件。カードの引き落としなど、二重に数えないもの）`),
+      sum.memberFlows.length ? [h('h3', {}, `個人との入出金（${sum.memberFlows.length}件）`), h('div', { class: 'list' }, sum.memberFlows.map(txRow))] : null,
+      sum.personal.length ? [h('h3', {}, `個人負担（${sum.personal.length}件）`), h('div', { class: 'list' }, sum.personal.map(txRow))] : null,
+      sum.excluded.length ? h('details', {}, h('summary', {}, `振替・対象外（${sum.excluded.length}件。数えないもの）`),
         h('div', { class: 'list' }, sum.excluded.map(txRow))) : null,
     ],
     mfImportBox());
@@ -1400,9 +1418,9 @@ function sharedAccountPicker() {
 
 // Money page: the overall diagram (people -> shared account -> cards -> payees, this month) and the
 // balance of the shared account, then two tabs, each with its own month or year:
-//   ext    共用口座 ⇔ 外部       statement of the shared account (plan vs actual)
-//   member 個人 ⇔ 共用口座       what each member puts in (当月分, deposits, balance)
-const MONEY_TABS = { member: '個人 ⇔ 共用口座', ext: '共用口座 ⇔ 外部', flow: '流れ図' };
+//   ext    共用口座の入出金      the shared account's money in and out (people's accounts included)
+//   member 個人の入金・立替      what each member puts in (当月分, deposits, 立替, balance)
+const MONEY_TABS = { member: '個人の入金・立替', ext: '共用口座の入出金', flow: '流れ図' };
 
 // 'YYYY-MM' (a month) or 'YYYY' (a year); anything else -> null.
 function moneyPeriod(v) {
@@ -1480,7 +1498,7 @@ function periodNav(tab, period) {
   ];
 }
 
-// ---- tab 1: 共用口座 ⇔ 外部
+// ---- tab 2: 共用口座の入出金
 
 function extMonthView(ym) {
   return actualCard(ym);
@@ -1511,7 +1529,7 @@ function clearTxCache() {
 function extYearView(year) {
   const sharedId = sharedAccountId();
   const head = h('h2', { class: 'with-icon' }, icon('database'), `共用口座の明細（${Number(year)}年）`,
-    helpButton('年間の明細', '入金・出金は外部とのお金だけです（個人との入出金・振替・個人負担は含みません）。', '月を押すとその月の詳細を開きます。'));
+    helpButton('年間の明細', '共用口座から見た実際の入出金です（はる・しんとの入出金や○○負担の明細も含みます。振替と対象外は数えません）。', '月を押すとその月の詳細を開きます。'));
   if (!sharedId) return h('section', { class: 'card' }, head, h('p', { class: 'muted' }, '共用口座を設定すると、マネーフォワードの明細を取り込めます。'));
   const txs = yearTransactions(year);
   if (txs === null) return h('section', { class: 'card' }, head, h('p', { class: 'muted' }, '読み込み中…'));
@@ -1519,10 +1537,11 @@ function extYearView(year) {
   const months = Array.from({ length: 12 }, (_, i) => `${year}-${String(i + 1).padStart(2, '0')}`);
   const rows = months.map((ym) => {
     const lines = txs.filter((t) => t.date.startsWith(ym));
-    const sum = summarizeMonth(lines, state.members);
-    return { ym, has: lines.length > 0, inflow: sum.inflow, outflow: sum.outflow, planned: contracts.reduce((n, c) => n + plannedInMonth(c, ym), 0) };
+    const f = accountFlows(summarizeMonth(lines, state.members), state.members);
+    return { ym, has: lines.length > 0, inflow: f.inTotal, outflow: f.outTotal, planned: contracts.reduce((n, c) => n + plannedInMonth(c, ym), 0) };
   });
   const year1 = summarizeMonth(txs, state.members);
+  const yearFlows = accountFlows(year1, state.members);
   const total = (k) => rows.reduce((n, r) => n + r[k], 0);
   const planByContract = new Map(contracts.map((c) => [c.id, months.reduce((n, ym) => n + plannedInMonth(c, ym), 0)]));
   const ids = new Set([...[...planByContract].filter(([, v]) => v > 0).map(([id]) => id), ...year1.byContract.keys()]);
@@ -1534,8 +1553,8 @@ function extYearView(year) {
     h('section', { class: 'card' }, head,
       txs.length === 0 ? h('p', { class: 'muted' }, 'この年の明細はまだ取り込まれていません。') : null,
       h('div', { class: 'kpis kpis-3' },
-        kpi('入金（外部から）', yen(year1.inflow).replace('円', ''), '円'),
-        kpi('出金（外部へ）', yen(year1.outflow).replace('円', ''), '円'),
+        kpi('入金', yen(yearFlows.inTotal).replace('円', ''), '円'),
+        kpi('出金', yen(yearFlows.outTotal).replace('円', ''), '円'),
         kpi('固定費（予定）', yen(total('planned')).replace('円', ''), '円')),
       h('div', { class: 'table-wrap' }, h('table', { class: 'table year-table' },
         h('thead', {}, h('tr', {}, h('th', {}, '月'), h('th', { class: 'num' }, '入金'), h('th', { class: 'num' }, '出金'), h('th', { class: 'num' }, '固定費（予定）'))),
@@ -1560,7 +1579,7 @@ function extYearView(year) {
   ];
 }
 
-// ---- tab 2: 個人 ⇔ 共用口座
+// ---- tab 1: 個人の入金・立替
 
 // Shared costs paid from a personal account (not imported): the planned amount and whose 当月分 it reduces.
 function personalCostsCard() {
@@ -2316,16 +2335,33 @@ function depositReportsCSV() {
 
 // ---------------------------------------------------------------- ledgers / list
 
+// 台帳: every ledger on one page with its records (a digest); a record opens its detail page.
+const LEDGER_SHORT = { accounts: '口座', cards: 'カード', contracts: '契約', items: '書類・家電', memberships: '会員' };
+
 function renderLedgers() {
-  setView('台帳', pageHead({ title: '台帳', icon: 'ledgers' }), h('div', { class: 'tiles tiles-wide' }, LEDGER_ORDER.map((k) => {
+  const sections = LEDGER_ORDER.map((k) => {
+    const def = LEDGERS[k];
     const rows = state.data[k];
-    const active = rows.filter((r) => r.status !== 'closed').length;
-    return h('a', { class: 'tile', href: `#/list/${k}` },
-      ledgerIcon(k),
-      h('div', { class: 'tile-count num' }, String(active), h('small', {}, ' 件')),
-      h('div', { class: 'tile-label' }, LEDGERS[k].label),
-      rows.length > active ? h('div', { class: 'meta' }, `解約済み ${rows.length - active}件`) : null);
-  })));
+    const live = rows.filter((r) => r.status !== 'closed').sort(byName);
+    const closed = rows.filter((r) => r.status === 'closed').sort(byName);
+    const item = (r) => h('a', { class: 'list-item', href: `#/view/${k}/${r.id}` },
+      h('div', { class: 'list-body' },
+        h('div', { class: 'list-title' }, r.name, r.holder_id ? personChip(r.holder_id) : null),
+        h('div', { class: 'meta' }, summaryLine(k, r))),
+      icon('chevron', 'ic ic-sm list-chevron'));
+    return h('section', { class: 'card ledger-digest', id: `ledger-${k}` },
+      h('div', { class: 'card-head' },
+        h('h2', { class: 'with-icon' }, ledgerIcon(k, 'icbox-sm'), def.label, h('span', { class: 'count-badge' }, `${live.length}件`)),
+        h('div', { class: 'button-row' },
+          h('a', { class: 'button small', href: `#/list/${k}` }, '検索'),
+          h('a', { class: 'button small primary', href: `#/edit/${k}/new` }, '＋ 追加'))),
+      live.length ? h('div', { class: 'list' }, live.map(item)) : h('p', { class: 'muted' }, 'まだありません。'),
+      closed.length ? h('details', {}, h('summary', {}, `解約済み ${closed.length}件`), h('div', { class: 'list' }, closed.map(item))) : null);
+  });
+  const jump = h('div', { class: 'ledger-jump', role: 'group', 'aria-label': '台帳へ移動' }, LEDGER_ORDER.map((k) => h('button', {
+    type: 'button', class: 'small', onclick: () => document.getElementById(`ledger-${k}`).scrollIntoView({ behavior: 'smooth', block: 'start' }),
+  }, LEDGER_SHORT[k])));
+  setView('台帳', pageHead({ title: '台帳', icon: 'ledgers', sub: jump }), sections);
 }
 
 function searchText(record) {

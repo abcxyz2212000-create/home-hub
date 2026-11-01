@@ -147,6 +147,29 @@ export function summarizeMonth(txs, members = []) {
   return out;
 }
 
+// Money in and out of the shared account as the account sees it (2026-11-01): people's accounts are
+// outside too. sum = summarizeMonth(...). Returns totals and their parts; member parts by member id
+// ('' when the person cannot be told).
+export function accountFlows(sum, members = []) {
+  const add = (map, key, v) => map.set(key, (map.get(key) || 0) + v);
+  const out = { inOther: sum.inflow, inMember: new Map(), outContract: 0, outUnlinked: 0, outMember: new Map(), outPersonal: new Map() };
+  for (const v of sum.byContract.values()) out.outContract += v;
+  for (const v of sum.byCategory.values()) out.outUnlinked += v;
+  for (const t of sum.memberFlows) {
+    const id = transferMember(t, members) || '';
+    if (t.amount > 0) add(out.inMember, id, t.amount);
+    else add(out.outMember, id, -t.amount);
+  }
+  for (const t of sum.personal) {
+    if (t.amount > 0) out.inOther += t.amount; // a refund of a personal purchase
+    else add(out.outPersonal, t.personal_member_id, -t.amount);
+  }
+  const total = (m) => [...m.values()].reduce((n, v) => n + v, 0);
+  out.inTotal = out.inOther + total(out.inMember);
+  out.outTotal = out.outContract + out.outUnlinked + total(out.outMember) + total(out.outPersonal);
+  return out;
+}
+
 // Planned amount of a contract in a month: monthly = amount, yearly = amount in the renewal month.
 export function plannedInMonth(contract, ym) {
   if (contract.status === 'closed') return 0;

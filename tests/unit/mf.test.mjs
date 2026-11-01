@@ -1,7 +1,7 @@
 // MoneyForward ME CSV import. All rows are fictional.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseMfRows, classifyMf, matchContract, normalizeText, summarizeMonth, plannedInMonth, personalTotal, settlementMemo, MF_HEADERS, depositMember, depositCandidates, depositEntryFor, transferMember, payeeText } from '../../web/js/mf.js';
+import { parseMfRows, classifyMf, matchContract, normalizeText, summarizeMonth, plannedInMonth, personalTotal, settlementMemo, MF_HEADERS, depositMember, depositCandidates, depositEntryFor, transferMember, payeeText, accountFlows } from '../../web/js/mf.js';
 import { parseCSV, decodeCSVBytes } from '../../web/js/csv.js';
 
 const row = (o) => [o.c ?? '1', o.d ?? '2026/10/05', o.t ?? '', String(o.a ?? -1000), o.i ?? '共用口座', o.l ?? '食費', o.m ?? '食費', '', o.f ?? '0', o.id];
@@ -153,4 +153,29 @@ test('money paid out to a member: recognised by the payee only, recorded as a on
   assert.equal(s.outflow, 9000);
   assert.equal(s.inflow, 0);
   assert.deepEqual(summarizeMonth([{ ...txs[2], deposit_entry_id: 'e1' }]).memberFlows.length, 1, 'linked lines count as member flows even without names');
+});
+
+test('money in and out as the shared account sees it: people are outside too', () => {
+  const members = [{ id: 'm-a', transfer_names: 'サトウ ハナコ' }, { id: 'm-b', transfer_names: 'サトウ タロウ' }];
+  const line = (id, d, a, x = {}) => ({ id, date: '2026-03-04', description: d, amount: a, account_id: 'acc-s', card_id: null, transfer: false, counted: true, ...x });
+  const txs = [
+    line('in-a', 'サトウ ハナコ', 80000),
+    line('out-b', 'サトウ タロウ', -20000),
+    line('c1', 'サンプル電力', -8000, { contract_id: 'k1' }),
+    line('u1', 'スーパー', -3000, { category: '食費' }),
+    line('p1', '本', -1200, { personal_member_id: 'm-b' }),
+    line('p2', '本の返金', 200, { personal_member_id: 'm-b' }),
+    line('i1', '利息', 5),
+    line('x1', '二重', -999, { counted: false }),
+    line('t1', 'カード引き落とし', -11000, { counted: false, transfer: true }),
+  ];
+  const f = accountFlows(summarizeMonth(txs, members), members);
+  assert.deepEqual([...f.inMember], [['m-a', 80000]]);
+  assert.deepEqual([...f.outMember], [['m-b', 20000]]);
+  assert.deepEqual([...f.outPersonal], [['m-b', 1200]]);
+  assert.equal(f.inOther, 205);
+  assert.equal(f.outContract, 8000);
+  assert.equal(f.outUnlinked, 3000);
+  assert.equal(f.inTotal, 80205);
+  assert.equal(f.outTotal, 32200, 'excluded lines and transfers are not counted');
 });

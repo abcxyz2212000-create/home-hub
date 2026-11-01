@@ -640,3 +640,10 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 0.9rem; }
 .label-list { list-style: none; margin: 0 0 0.6rem; padding: 0; display: grid; gap: 0.3rem; }
 .label-list li { display: flex; align-items: center; gap: 0.35rem; padding: 0.35rem 0; border-bottom: 1px solid var(--line); }
 .label-list li span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.flow-breakdown tr.group th { background: var(--accent-soft); color: var(--ink); }
+.flow-breakdown td.indent { padding-left: 1.2rem; }
+.ledger-jump { display: flex; gap: 0.35rem; overflow-x: auto; flex-wrap: nowrap; }
+.ledger-jump button { flex: none; }
+.ledger-digest { scroll-margin-top: calc(var(--page-head-top, 44px) + 120px); }
+.count-badge { font-size: 0.78rem; font-weight: 600; color: var(--muted); }
+.list-title .person-chip { margin-left: 0.4rem; }
