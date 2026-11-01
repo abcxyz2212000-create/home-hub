@@ -33,7 +33,6 @@ const MAX_IMPORT_BYTES = 5 * 1024 * 1024;
 const DEFAULT_SHORTCUTS = [
   { label: 'マネーフォワード ME', url: 'https://moneyforward.com/' },
   { label: 'Amazon', url: 'https://www.amazon.co.jp/' },
-  { label: 'Amazon 注文履歴', url: 'https://www.amazon.co.jp/gp/css/order-history' },
   { label: 'Google パスワードマネージャー', url: 'https://passwords.google.com/' },
 ];
 
@@ -76,6 +75,26 @@ function extLink(url, text) {
   const safe = safeUrl(url);
   if (!safe) return h('span', {}, text || url);
   return h('a', { href: safe, target: '_blank', rel: 'noopener noreferrer' }, text || safe);
+}
+
+// A shortcut as a tile with the site's icon (its /favicon.ico). When the icon cannot be loaded, the
+// first letter of the name is shown instead.
+function shortcutTile(s) {
+  const safe = safeUrl(s.url);
+  const label = s.label || safe || s.url;
+  const letter = h('span', { class: 'shortcut-letter', 'aria-hidden': 'true' }, Array.from(String(label).trim())[0] || '?');
+  const badge = h('span', { class: 'shortcut-icon' }, letter);
+  if (safe) {
+    const img = h('img', { src: `${new URL(safe).origin}/favicon.ico`, alt: '', referrerpolicy: 'no-referrer', width: 28, height: 28 });
+    img.addEventListener('load', () => {
+      if (img.naturalWidth > 1) badge.replaceChildren(img);
+    });
+    img.addEventListener('error', () => img.remove());
+  }
+  const body = [badge, h('span', { class: 'shortcut-label' }, label)];
+  return safe
+    ? h('a', { class: 'shortcut', href: safe, target: '_blank', rel: 'noopener noreferrer' }, ...body)
+    : h('span', { class: 'shortcut' }, ...body);
 }
 
 function view() {
@@ -611,12 +630,7 @@ function renderHome() {
           h('div', { class: 'tile-label' }, TILE_LABELS[k]))))),
       h('section', { class: 'card' },
         sectionHead('link', 'ショートカット'),
-        h('div', { class: 'chips' }, shortcuts.map((s) => {
-          const a = extLink(s.url, s.label);
-          a.classList.add('chip');
-          a.prepend(icon('link'));
-          return a;
-        })),
+        h('div', { class: 'shortcuts' }, shortcuts.map(shortcutTile)),
         h('p', { class: 'muted small' }, '銀行のリンクは口座台帳の「関連リンク」から表示します。その他は設定画面で変更できます。'))));
 
   push.currentSubscription().then((sub) => {

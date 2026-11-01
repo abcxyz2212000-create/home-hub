@@ -561,3 +561,12 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 0.9rem; }
 .forgot label { display: block; margin-top: 0.75rem; }
 .forgot input { width: 100%; }
 .forgot button { width: 100%; margin-top: 0.75rem; }
+
+/* ---------------------------------------------------------------- shortcuts (site icons) */
+.shortcuts { display: grid; grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); gap: 0.5rem; }
+.shortcut { display: flex; flex-direction: column; align-items: center; gap: 0.35rem; padding: 0.6rem 0.3rem; border-radius: 10px; background: var(--accent-soft); color: var(--ink); text-decoration: none; text-align: center; }
+.shortcut:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+.shortcut-icon { width: 40px; height: 40px; border-radius: 10px; background: #fff; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+.shortcut-icon img { width: 28px; height: 28px; object-fit: contain; }
+.shortcut-letter { font-weight: 700; font-size: 1.1rem; color: var(--accent); }
+.shortcut-label { font-size: 0.75rem; font-weight: 600; line-height: 1.25; overflow-wrap: anywhere; }

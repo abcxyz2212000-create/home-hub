@@ -41,11 +41,15 @@ const { appUrl } = await mock.start();
 const now = new Date().toISOString();
 mock.db.members.push({ id: 'm-admin', name: '共通（管理者）', email: OWNER.email, role: 'admin', active: true, created_at: now, updated_at: now });
 const browser = await chromium.launch();
-const context = await browser.newContext({ viewport: { width: 390, height: 844 }, acceptDownloads: true, locale: 'ja-JP' });
+// serviceWorkers: 'block' so that page.route() also sees requests (a controlled page bypasses it)
+const context = await browser.newContext({ viewport: { width: 390, height: 844 }, acceptDownloads: true, locale: 'ja-JP', serviceWorkers: 'block' });
+// site icons of the shortcuts are loaded from the sites themselves: whether they load here depends on the
+// network, so their load errors are not counted.
+const isSiteIcon = (m) => /\/favicon\.ico$/.test((m.location() || {}).url || '');
 const page = await context.newPage();
 const errors = [];
 page.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
-page.on('console', (m) => { if (m.type() === 'error') errors.push(`console: ${m.text()}`); });
+page.on('console', (m) => { if (m.type() === 'error' && !isSiteIcon(m)) errors.push(`console: ${m.text()}`); });
 page.on('dialog', (d) => d.accept());
 
 const fill = async (label, value) => page.getByLabel(label, { exact: true }).fill(value);
@@ -61,6 +65,10 @@ try {
   await fill('パスワード', OWNER.password);
   await page.getByRole('button', { name: 'ログイン' }).click();
   await page.getByRole('heading', { name: '期限が近い予定' }).waitFor();
+  assert.deepEqual((await page.locator('.shortcut-label').allInnerTexts()), ['マネーフォワード ME', 'Amazon', 'Google パスワードマネージャー'], '注文履歴 removed');
+  // each tile shows the site icon, or the first letter when the icon cannot be loaded
+  assert.equal(await page.locator('.shortcut-icon').count(), 3);
+  assert.equal(await page.locator('.shortcut-icon:not(:has(img)):not(:has(.shortcut-letter))').count(), 0);
 
   step('account with validation error');
   await page.goto(`${appUrl}#/edit/accounts/new`);
@@ -679,12 +687,13 @@ try {
   const login = async (p, user) => {
     p.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
     p.on('dialog', (d) => d.accept());
+    await p.goto('about:blank'); // never type into the previous page while the app is loading
     await p.goto(appUrl);
     await p.getByLabel('メールアドレス', { exact: true }).fill(user.email);
     await p.getByLabel('パスワード', { exact: true }).fill(user.password);
     await p.getByRole('button', { name: 'ログイン' }).click();
   };
-  const memberCtx = await browser.newContext({ viewport: { width: 390, height: 844 }, locale: 'ja-JP' });
+  const memberCtx = await browser.newContext({ viewport: { width: 390, height: 844 }, locale: 'ja-JP', serviceWorkers: 'block' });
   const mp = await memberCtx.newPage();
   await login(mp, MEMBER);
   await mp.getByRole('heading', { name: '期限が近い予定' }).waitFor();
@@ -745,6 +754,7 @@ try {
   await mp.getByText('パスワードを変更しました。').waitFor();
   assert.equal(mock.passwords.get(MEMBER.email), 'new-member-pass-1');
   await mp.getByRole('button', { name: 'ログアウト', exact: true }).click();
+  await mp.getByRole('button', { name: 'ログイン' }).waitFor(); // signed out before the next page load
   await login(mp, { email: MEMBER.email, password: MEMBER.password });
   await mp.getByText('メールアドレスまたはパスワードが違います。').waitFor();
   await mp.getByText('パスワードを忘れた場合').click();
@@ -771,7 +781,7 @@ try {
   await memberCtx.close();
 
   step('a logged-in user who is not in the user master gets no data');
-  const strangerCtx = await browser.newContext({ viewport: { width: 390, height: 844 }, locale: 'ja-JP' });
+  const strangerCtx = await browser.newContext({ viewport: { width: 390, height: 844 }, locale: 'ja-JP', serviceWorkers: 'block' });
   const sp = await strangerCtx.newPage();
   await login(sp, STRANGER);
   await sp.getByText('このアカウントは利用者として登録されていません').waitFor();
@@ -784,7 +794,7 @@ try {
   await page.getByRole('button', { name: 'ログイン' }).waitFor();
 
   step('desktop layout + dark mode screenshot');
-  const desk = await browser.newPage({ viewport: { width: 1280, height: 900 }, colorScheme: 'dark' });
+  const desk = await browser.newPage({ viewport: { width: 1280, height: 900 }, colorScheme: 'dark', serviceWorkers: 'block' });
   await desk.goto(appUrl);
   await desk.getByLabel('メールアドレス', { exact: true }).fill(OWNER.email);
   await desk.getByLabel('パスワード', { exact: true }).fill(OWNER.password);
