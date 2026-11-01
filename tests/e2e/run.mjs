@@ -143,6 +143,14 @@ try {
   assert.match(accountText, /この口座から直接支払っている契約\nインターネット/);
   assert.match(accountText, /上記カード経由で支払っている契約\n火災保険/);
 
+  step('ledgers: every ledger with its records at a glance');
+  await page.goto(`${appUrl}#/ledgers`);
+  await page.locator('#ledger-contracts').waitFor();
+  const digest = await page.locator('#ledger-contracts').innerText();
+  for (const t of ['契約・固定費', '火災保険', 'インターネット']) assert.ok(digest.includes(t), `digest shows ${t}`);
+  await page.locator('#ledger-contracts').getByRole('link', { name: /火災保険/ }).click();
+  await page.getByRole('heading', { name: '火災保険' }).waitFor();
+
   step('home: my deposits, today\'s chores, deadlines, shortcuts (nothing else)');
   await page.goto(appUrl);
   await page.getByRole('img', { name: /今日から60日先までの期限/ }).waitFor();
@@ -560,8 +568,9 @@ try {
   assert.equal(mock.db.transactions.find((t) => t.mf_id === 'mf-b').card_id, mainCard.id);
   await page.getByText('契約ごとの予定と実績').waitFor();
   const actual = await page.locator('#view').innerText();
-  assert.match(actual, /出金（外部へ）\s*16,000円/, 'card lines counted, the card payment (transfer) is not');
-  assert.match(actual, /入金（外部から）\s*0円/, 'money from a member is not outside income');
+  assert.match(actual, /出金\s*16,000円/, 'card lines counted, the card payment (transfer) is not');
+  assert.match(actual, /入金\s*50,000円/, 'money from a member is income of the shared account too');
+  assert.match(actual, /はなこ\s*から\s*50,000円/, 'shown per person');
   assert.match(actual, /個人との入出金（1件/);
   assert.match(actual, /インターネット\s+5,000円\s+5,000円\s+一致/);
   assert.match(actual, /電気代\s+8,000円\s+—\s+未確認/);
@@ -592,7 +601,9 @@ try {
   await page.getByRole('button', { name: '保存' }).click();
   await page.getByText('契約ごとの予定と実績').waitFor();
   assert.equal(mock.db.transactions.find((t) => t.mf_id === 'mf-c').personal_member_id, hanako.id);
-  assert.match(await page.locator('#view').innerText(), /出金（外部へ）\s*13,000円/, 'the personal line is no longer a shared cost');
+  const afterPersonal = await page.locator('#view').innerText();
+  assert.match(afterPersonal, /出金\s*16,000円/, 'money that left the shared account, whoever carries it');
+  assert.match(afterPersonal, /はなこ\s*負担（精算待ち・済み）\s*3,000円/);
   await page.goto(`${appUrl}#/flow/member/${ymNow}`);
   await page.locator('h3', { hasText: 'はなこ 精算待ち 1件・3,000円' }).waitFor();
   await page.goto(`${appUrl}#/tx/${mock.db.transactions.find((t) => t.mf_id === 'mf-a').id}`); // linked lines are folded away
@@ -643,8 +654,9 @@ try {
   await page.getByRole('heading', { name: `共用口座の明細（${Number(ymNow.slice(0, 4))}年）` }).waitFor();
   await page.locator('.year-table').waitFor(); // the year's lines are loaded
   const extYear = await page.locator('#view').innerText();
-  assert.match(extYear, /出金（外部へ）\s*22,000円/, '5,000 + 8,000 + 9,000 (the member payout and the personal line are not outside payments)');
-  await page.getByRole('link', { name: '個人 ⇔ 共用口座' }).click();
+  assert.match(extYear, /出金\s*45,000円/, '5,000 + 8,000 + 3,000 (personal) + 9,000 + 20,000 (to a member)');
+  assert.match(extYear, /入金\s*50,000円/);
+  await page.getByRole('link', { name: '個人の入金・立替' }).click();
   await page.locator('.shared-card').first().waitFor();
   assert.match(await page.locator('.shared-table').innerText(), /共用口座からの受け取り\s+20,000円/);
   await page.getByText('個人の口座から払っている共通の費用').waitFor();
@@ -653,7 +665,7 @@ try {
   await page.getByRole('heading', { name: `はなこ（${Number(ymNow.slice(0, 4))}年）` }).waitFor();
   assert.match(await page.locator('.member-year').innerText(), /当月分の合計/);
   await page.screenshot({ path: join(OUT, 'money-year.png'), fullPage: true });
-  await page.getByRole('link', { name: '共用口座 ⇔ 外部' }).click();
+  await page.getByRole('link', { name: '共用口座の入出金' }).click();
   await page.getByRole('heading', { name: `共用口座の明細（${Number(ymNow.slice(0, 4))}年）` }).waitFor(); // each tab keeps its own period
 
   step('contract amount by period: a new amount from this month, the old one kept for past months');
