@@ -156,19 +156,53 @@ do $$ begin
   exception when insufficient_privilege then null; end;
 end $$;
 
--- shared account: members record rules/entries; values are checked; members with records cannot be deleted
-select pg_temp.login('member@example.com');
+-- shared account: administrators record rules and deposits; a member only their own one-off items (立替)
+reset role;
+insert into public.members (name, email, role, active) values ('立替する人', 'adv@example.com', 'member', true);
+set role authenticated;
+select pg_temp.login('owner@example.com');
 insert into public.shared_rules (member_id, label, amount, start_ym)
   select id, '基本', 80000, '2026-01' from public.members where name = '佐藤 春子';
 insert into public.shared_entries (member_id, ym, kind, label, amount)
   select id, '2026-02', 'deposit', '入金', 150000 from public.members where name = '佐藤 春子';
+insert into public.shared_entries (member_id, ym, kind, label, amount)
+  select id, '2026-02', 'charge', '管理費', -3000 from public.members where name = '祖母';
+select pg_temp.login('adv@example.com');
+insert into public.shared_entries (member_id, ym, kind, label, amount)
+  select id, '2026-03', 'charge', '立替', -2500 from public.members where name = '立替する人';
 do $$ begin
-  if (select count(*) from public.shared_rules) <> 1 or (select count(*) from public.shared_entries) <> 1 then
-    raise exception 'member cannot record the shared account';
+  if (select count(*) from public.shared_rules) <> 1 or (select count(*) from public.shared_entries) <> 3 then
+    raise exception 'member cannot read or record the shared account';
   end if;
   if (select record_name from public.audit_log where table_name = 'shared_rules' and action = 'insert') <> '基本' then
     raise exception 'shared rule history has no label';
   end if;
+  -- own one-off items can be changed and deleted
+  update public.shared_entries set amount = -2600 where label = '立替';
+  if (select amount from public.shared_entries where label = '立替') <> -2600 then raise exception 'member cannot change own item'; end if;
+  -- not deposits, not other people's records, not manual recurring items
+  begin insert into public.shared_entries (member_id, ym, kind, label, amount) select id, '2026-03', 'deposit', '入金', 1 from public.members where name = '立替する人';
+    raise exception 'member recorded a deposit'; exception when insufficient_privilege then null; end;
+  begin insert into public.shared_entries (member_id, ym, kind, label, amount) select id, '2026-03', 'charge', '立替', -1 from public.members where name = '祖母';
+    raise exception 'member recorded for someone else'; exception when insufficient_privilege then null; end;
+  update public.shared_entries set amount = -1 where label = '管理費';
+  delete from public.shared_entries where label = '管理費';
+  update public.shared_entries set amount = 1 where kind = 'deposit';
+  if (select amount from public.shared_entries where label = '管理費') <> -3000 or (select amount from public.shared_entries where kind = 'deposit') <> 150000 then
+    raise exception 'member changed a record that is not theirs';
+  end if;
+  begin update public.shared_entries set member_id = (select id from public.members where name = '祖母') where label = '立替';
+    raise exception 'member moved own item to someone else'; exception when insufficient_privilege then null; end;
+  begin insert into public.shared_rules (member_id, label, amount, start_ym) select id, 'x', 1, '2026-05' from public.members limit 1;
+    raise exception 'member added a recurring item'; exception when insufficient_privilege then null; end;
+  update public.shared_rules set amount = 1;
+  delete from public.shared_rules;
+  if (select amount from public.shared_rules) <> 80000 then raise exception 'member changed a recurring item'; end if;
+  delete from public.shared_entries where label = '立替';
+  if (select count(*) from public.shared_entries) <> 2 then raise exception 'member cannot delete own item'; end if;
+end $$;
+select pg_temp.login('owner@example.com');
+do $$ begin
   begin insert into public.shared_entries (member_id, ym, kind, label, amount) select id, '2026-02', 'deposit', '入金', -1 from public.members limit 1;
     raise exception 'negative deposit accepted'; exception when check_violation then null; end;
   begin insert into public.shared_entries (member_id, ym, kind, label, amount) select id, '2026-13', 'charge', 'x', 1 from public.members limit 1;
@@ -203,8 +237,10 @@ do $$ begin
     raise exception 'rule lost or still linked after the contract was deleted';
   end if;
 end $$;
+select pg_temp.login('owner@example.com');
 delete from public.shared_entries;
 delete from public.shared_rules;
+select pg_temp.login('member@example.com');
 
 -- MoneyForward statement lines: members read/write, one row per MoneyForward ID, strangers see nothing
 select pg_temp.login('member@example.com');

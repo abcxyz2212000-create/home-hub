@@ -25,7 +25,8 @@ do $$ begin
       (('contracts', 'shared_cost'), ('shared_rules', 'month_of_year'), ('shared_rules', 'contract_id'))) <> 3 then
     raise exception 'shared cost columns missing after the upgrade';
   end if;
-  if (select count(*) from pg_policies where tablename in ('shared_rules', 'shared_entries') and policyname = 'member_all') <> 2 then
+  if (select count(*) from pg_policies where tablename in ('shared_rules', 'shared_entries') and policyname in ('member_read', 'member_insert', 'member_update', 'member_delete')) <> 8
+     or exists (select 1 from pg_policies where tablename in ('shared_rules', 'shared_entries') and policyname = 'member_all') then
     raise exception 'shared account tables missing after the upgrade';
   end if;
   if not exists (select 1 from pg_policies where tablename = 'chores' and policyname = 'member_all') then
