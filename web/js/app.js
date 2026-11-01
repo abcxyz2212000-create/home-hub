@@ -511,6 +511,12 @@ function renderHome() {
 const MAX_FLOW_ACCOUNTS = 8; // categorical palette slots; the rest is folded into "その他"
 
 // The account chosen as the shared account (settings, admin only); null when not set or deleted.
+// Account name with the details that tell accounts apart (branch, kind, last 4 digits only).
+function accountLabel(a) {
+  const details = [a.branch, a.kind, a.last4 && `下4桁 ${a.last4}`].filter(Boolean);
+  return details.length ? `${a.name}（${details.join('・')}）` : a.name;
+}
+
 function sharedAccountId() {
   const id = state.settings.shared_account_id;
   return typeof id === 'string' && find('accounts', id) ? id : null;
@@ -645,7 +651,7 @@ function sharedHomeCard() {
 function sharedAccountPicker() {
   if (!isAdmin()) return h('p', { class: 'muted' }, 'どの口座が共通口座かは、管理者が設定します。');
   const select = h('select', { 'aria-label': '共通口座にする口座' }, h('option', { value: '' }, '（選んでください）'),
-    [...state.data.accounts].sort(byName).map((a) => h('option', { value: a.id, selected: a.id === sharedAccountId() }, a.name)));
+    [...state.data.accounts].sort(byName).map((a) => h('option', { value: a.id, selected: a.id === sharedAccountId() }, accountLabel(a) + (a.status === 'closed' ? '（解約済み）' : ''))));
   const save = h('button', { type: 'button', class: 'primary', onclick: (ev) => busy(ev.currentTarget, async () => {
     if (!select.value) {
       toast('口座を選んでください。', 'error');
@@ -1391,14 +1397,14 @@ function fieldInput(field, r, ledger) {
     case 'ref': {
       const rows = [...state.data[field.ref]].sort(byName);
       const el = h('select', { id }, h('option', { value: '' }, '（なし）'),
-        rows.map((x) => h('option', { value: x.id, selected: x.id === v }, x.name + (x.status === 'closed' ? '（解約済み）' : ''))));
+        rows.map((x) => h('option', { value: x.id, selected: x.id === v }, (field.ref === 'accounts' ? accountLabel(x) : x.name) + (x.status === 'closed' ? '（解約済み）' : ''))));
       return wrap(el, () => el.value || null);
     }
     case 'payment': {
       const cur = r && r.pay_card_id ? `card:${r.pay_card_id}` : r && r.pay_account_id ? `account:${r.pay_account_id}` : '';
       const el = h('select', { id }, h('option', { value: '' }, '（未設定・現金など）'),
         h('optgroup', { label: 'カード' }, [...state.data.cards].sort(byName).map((c) => h('option', { value: `card:${c.id}`, selected: cur === `card:${c.id}` }, c.name))),
-        h('optgroup', { label: '口座（直接引き落とし）' }, [...state.data.accounts].sort(byName).map((a) => h('option', { value: `account:${a.id}`, selected: cur === `account:${a.id}` }, a.name))));
+        h('optgroup', { label: '口座（直接引き落とし）' }, [...state.data.accounts].sort(byName).map((a) => h('option', { value: `account:${a.id}`, selected: cur === `account:${a.id}` }, accountLabel(a)))));
       return wrap(el, () => el.value);
     }
     case 'links': {
@@ -2075,7 +2081,7 @@ function sharedAccountSection() {
   if (!isAdmin()) return null;
   const acc = sharedAccountId() ? find('accounts', sharedAccountId()) : null;
   return h('section', { class: 'card' }, h('h2', {}, '共通口座'),
-    h('p', { class: 'muted small' }, `今の設定: ${acc ? acc.name : '未設定'}。お金の流れの図で、個人からの入金を受ける口座です。`),
+    h('p', { class: 'muted small' }, `今の設定: ${acc ? accountLabel(acc) : '未設定'}。お金の流れの図で、個人からの入金を受ける口座です。`),
     sharedAccountPicker());
 }
 

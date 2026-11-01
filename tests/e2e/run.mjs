@@ -66,6 +66,8 @@ try {
   await page.goto(`${appUrl}#/edit/accounts/new`);
   await fill('名称 *', '生活費口座');
   await fill('金融機関名', 'みどり銀行');
+  await fill('支店', 'さくら支店');
+  await page.getByLabel('種別', { exact: true }).selectOption('普通');
   await fill('口座番号（全桁）', '12a4567');
   await page.getByLabel('リンクの名前', { exact: true }).first().fill('ログイン');
   await page.getByLabel('URL', { exact: true }).first().fill('https://bank.example/login');
@@ -94,7 +96,7 @@ try {
   await page.getByLabel('種別', { exact: true }).selectOption('クレジット');
   await page.getByLabel('ブランド', { exact: true }).selectOption('JCB');
   await page.getByLabel('有効期限（年月）', { exact: true }).fill(todayJST().slice(0, 7));
-  await page.getByLabel('引き落とし口座', { exact: true }).selectOption({ label: '生活費口座' });
+  await page.getByLabel('引き落とし口座', { exact: true }).selectOption({ label: '生活費口座（さくら支店・普通・下4桁 1234）' }); // accounts are told apart by branch, kind and last 4 digits
   await fill('年会費（円）', '1100');
   await fill('年会費の発生月', '12');
   await fill('通知: カード有効期限（何日前）', '60 30');
@@ -120,7 +122,7 @@ try {
   await page.getByLabel('種類', { exact: true }).selectOption('通信');
   await fill('金額（円）', '5000');
   await page.getByLabel('周期', { exact: true }).selectOption({ label: '月払い' });
-  await page.getByLabel('支払方法', { exact: true }).selectOption({ label: '生活費口座' });
+  await page.getByLabel('支払方法', { exact: true }).selectOption({ label: '生活費口座（さくら支店・普通・下4桁 1234）' });
   await fill('メモ', 'カード 4111 1111 1111 1111'); // triggers the card number warning (accepted by the dialog handler)
   await save();
   await page.getByRole('heading', { name: 'インターネット' }).waitFor();
@@ -428,9 +430,10 @@ try {
   await page.getByRole('heading', { name: '口座 → カード → 支払先（月額）' }).waitFor();
   assert.match(await page.locator('#view').innerText(), /共通口座にする口座を選ぶと/);
   await page.goto(`${appUrl}#/settings`);
-  await page.getByLabel('共通口座にする口座').selectOption({ label: '生活費口座' });
+  await page.getByLabel('共通口座にする口座').selectOption({ label: '生活費口座（さくら支店・普通・下4桁 1234）' });
   await page.getByRole('button', { name: '共通口座にする' }).click();
   await page.getByText('共通口座を設定しました。').waitFor();
+  await page.getByText('今の設定: 生活費口座（さくら支店・普通・下4桁 1234）。', { exact: false }).waitFor();
   assert.equal(mock.db.settings.find((x) => x.key === 'shared_account_id').value, mock.db.accounts.find((a) => a.name === '生活費口座').id);
   await page.goto(`${appUrl}#/flow`);
   await page.getByRole('heading', { name: 'はなこ → 口座 → カード → 支払先（月額）' }).waitFor();
