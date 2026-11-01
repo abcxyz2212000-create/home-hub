@@ -363,6 +363,14 @@ alter table public.transactions add column if not exists personal_member_id uuid
 alter table public.transactions add column if not exists needs_review boolean not null default false;
 alter table public.transactions add column if not exists settled_entry_id uuid references public.shared_entries (id) on delete set null;
 create index if not exists transactions_personal_idx on public.transactions (personal_member_id) where personal_member_id is not null;
+-- Deposits recognised from the statement (2026-11-01): the payer names a member uses at the bank
+-- (振込名義, 「、」区切り), the deposit record made from a statement line, and lines whose record was
+-- deleted on purpose (so that importing again does not make it again).
+alter table public.members add column if not exists transfer_names text check (char_length(transfer_names) <= 300);
+alter table public.transactions add column if not exists deposit_entry_id uuid references public.shared_entries (id) on delete set null;
+alter table public.transactions add column if not exists deposit_ignored boolean not null default false;
+-- Contract amounts by period (2026-11-01): [{ amount, from, to }] ('YYYY-MM', to null = current).
+alter table public.contracts add column if not exists price_history jsonb not null default '[]'::jsonb check (jsonb_typeof(price_history) = 'array');
 
 do $$
 declare

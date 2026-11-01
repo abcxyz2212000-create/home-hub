@@ -139,6 +139,7 @@ export const MEMBER_DEF = {
     { key: 'name', label: '本名', type: 'text', required: true, max: 50 },
     { key: 'nickname', label: 'ニックネーム', type: 'text', max: 30, placeholder: '画面での呼び名（空欄なら本名）。名義人の表示は本名' },
     { key: 'email', label: 'ログイン用メールアドレス', type: 'email', placeholder: '空欄ならログインしない家族（名義人などに使う）' },
+    { key: 'transfer_names', label: '振込名義', type: 'text', max: 300, placeholder: '例: ツツイ ハルカ、タテイシ ハルカ（共通口座の明細に出る振込人名。「、」区切り）' },
     { key: 'role', label: '権限', type: 'select', options: [['member', '一般'], ['admin', '管理者']], required: true },
     { key: 'active', label: '有効', type: 'bool' },
     { key: 'memo', label: 'メモ', type: 'textarea', max: 1000 },

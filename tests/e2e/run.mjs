@@ -508,6 +508,10 @@ try {
   await page.getByLabel('支払方法', { exact: true }).selectOption({ label: 'メインカード' });
   await save();
   await page.getByRole('heading', { name: '電気代', exact: true }).waitFor();
+  await page.goto(`${appUrl}#/member/${hanako.id}`);
+  await fill('振込名義', 'ツツイ ハナコ、タテイシ ハナコ');
+  await save();
+  await page.getByRole('heading', { name: '設定', exact: true }).waitFor();
   const d = `${ymNow.replace('-', '/')}/05`;
   const mfCsv = [
     '"計算対象","日付","内容","金額（円）","保有金融機関","大項目","中項目","メモ","振替","ID"',
@@ -517,25 +521,31 @@ try {
     `"0","${d}","(カ)カードエー","-11000","共用口座","現金・カード","カード引き落とし","","1","mf-d"`,
     `"1","${d}","コンビニ","-500","個人の銀行","食費","食費","","0","mf-e"`,
     `"1","${d}","家賃","-80000","なし","住宅","家賃・地代","済","0","mf-f"`,
+    `"1","${d}","ﾀﾃｲｼ ﾊﾅｺ","50000","共用口座","収入","計算対象外","","0","mf-g"`,
   ].join('\n') + '\n';
   const sjis = execFileSync('python3', ['-I', '-c', 'import sys; sys.stdout.buffer.write(sys.stdin.read().encode("cp932"))'], { input: mfCsv });
   const mfFile = { name: 'mf.csv', mimeType: 'text/csv', buffer: sjis };
   await page.goto(`${appUrl}#/shared/${ymNow}`);
   await page.getByRole('heading', { name: '共通口座の明細（実績）' }).waitFor();
   await page.getByLabel('マネーフォワードの CSV ファイル').setInputFiles(mfFile);
-  await page.getByText('追加 4件（うち契約に自動でひも付け 1件）、更新 0件、対象外 2件').waitFor();
+  await page.getByText('追加 5件（うち契約に自動でひも付け 1件）、更新 0件、対象外 2件').waitFor();
   const importStatus = await page.locator('.import-status').innerText();
+  assert.match(importStatus, /入金として記録: 1件（はなこ 1件）/);
   assert.match(importStatus, /対象外の金融機関: 個人の銀行。/);
   assert.match(importStatus, /手入力の立替の記録（保有金融機関が「なし」）1件は取り込みません/);
   assert.doesNotMatch(importStatus, /対象外の金融機関:[^。]*なし/, '"なし" is not offered as a name to register');
   await page.getByRole('button', { name: '取り込む' }).click();
-  await page.getByText('取り込みました（追加 4件、更新 0件）。').waitFor();
-  assert.equal(mock.db.transactions.length, 4);
+  await page.getByText('取り込みました（追加 5件、更新 0件、入金の記録 1件）。').waitFor();
+  assert.equal(mock.db.transactions.length, 5);
+  const autoDeposit = mock.db.shared_entries.find((e) => e.kind === 'deposit' && e.amount === 50000);
+  assert.deepEqual([autoDeposit.member_id, autoDeposit.ym, autoDeposit.label], [hanako.id, ymNow, '入金']);
+  assert.equal(mock.db.transactions.find((t) => t.mf_id === 'mf-g').deposit_entry_id, autoDeposit.id);
   assert.equal(mock.db.transactions.find((t) => t.mf_id === 'mf-a').contract_id, net.id);
   assert.equal(mock.db.transactions.find((t) => t.mf_id === 'mf-b').card_id, mainCard.id);
   await page.getByText('契約ごとの予定と実績').waitFor();
   const actual = await page.locator('#view').innerText();
   assert.match(actual, /出金（実績）\s*16,000円/, 'card lines counted, the card payment (transfer) is not');
+  assert.match(actual, /入金（実績）\s*50,000円/);
   assert.match(actual, /インターネット\s+5,000円\s+5,000円\s+一致/);
   assert.match(actual, /電気代\s+8,000円\s+—\s+未確認/);
   assert.match(actual, /契約にない明細（2件）/);
@@ -550,10 +560,11 @@ try {
   assert.match(await page.locator('#view').innerText(), /電気代\s+8,000円\s+8,000円\s+一致/);
   // importing the same file again updates, keeps the manual link and adds nothing
   await page.getByLabel('マネーフォワードの CSV ファイル').setInputFiles(mfFile);
-  await page.getByText('追加 0件（うち契約に自動でひも付け 0件）、更新 4件、対象外 2件').waitFor();
+  await page.getByText('追加 0件（うち契約に自動でひも付け 0件）、更新 5件、対象外 2件').waitFor();
   await page.getByRole('button', { name: '取り込む' }).click();
-  await page.getByText('取り込みました（追加 0件、更新 4件）。').waitFor();
-  assert.equal(mock.db.transactions.length, 4);
+  await page.getByText('取り込みました（追加 0件、更新 5件）。').waitFor();
+  assert.equal(mock.db.transactions.length, 5);
+  assert.equal(mock.db.shared_entries.filter((e) => e.amount === 50000 && e.kind === 'deposit').length, 1, 'importing again does not record the deposit twice');
   assert.equal(mock.db.transactions.find((t) => t.mf_id === 'mf-b').contract_id, elec.id);
   await page.screenshot({ path: join(OUT, 'actual.png'), fullPage: true });
 
@@ -587,6 +598,20 @@ try {
   assert.equal(mock.db.transactions.find((t) => t.mf_id === 'mf-c').settled_entry_id, null, 'deleting the charge puts the line back');
   await page.goto(`${appUrl}#/shared/${ymNow}`);
   await page.getByText('はなこ：精算待ち 1件・3,000円').waitFor();
+
+  step('contract amount by period: a new amount from this month, the old one kept for past months');
+  await page.goto(`${appUrl}#/edit/contracts/${net.id}`);
+  assert.equal(await page.getByLabel('新しい金額の適用開始月').isVisible(), false, 'asked only when the amount changes');
+  await fill('金額（円）', '5500');
+  await page.getByLabel('新しい金額の適用開始月').fill(ymNow);
+  await save();
+  await page.getByRole('heading', { name: '金額の履歴' }).waitFor();
+  const netNow = mock.db.contracts.find((c) => c.id === net.id);
+  assert.deepEqual(netNow.price_history, [{ amount: 5000, from: null, to: ymPrev }, { amount: 5500, from: ymNow, to: null }]);
+  assert.match(await page.locator('#view').innerText(), new RegExp(`${ymLabel(ymNow)}〜（今）\\s+5,500円`));
+  await page.goto(`${appUrl}#/shared/${ymNow}`);
+  await page.getByText('契約ごとの予定と実績').waitFor();
+  assert.match(await page.locator('#view').innerText(), /インターネット\s+5,500円\s+5,000円\s+差 −500円/);
   await page.goto(`${appUrl}#/settings`);
   await page.getByRole('heading', { name: '設定', exact: true }).waitFor();
 

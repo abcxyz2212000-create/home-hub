@@ -1,6 +1,8 @@
 // MoneyForward ME CSV (入出金 / 家計簿データ) -> transactions of the shared account.
 // Pure functions shared by the app and the tests. User-facing messages are in Japanese.
 
+import { priceAt } from './prices.js';
+
 export const MF_HEADERS = ['計算対象', '日付', '内容', '金額（円）', '保有金融機関', '大項目', '中項目', 'メモ', '振替', 'ID'];
 export const MAX_MF_ROWS = 5000;
 
@@ -142,9 +144,11 @@ export function summarizeMonth(txs) {
 
 // Planned amount of a contract in a month: monthly = amount, yearly = amount in the renewal month.
 export function plannedInMonth(contract, ym) {
-  if (contract.status === 'closed' || !(contract.amount > 0)) return 0;
-  if (contract.cycle === 'yearly') return contract.renewal_date && contract.renewal_date.slice(5, 7) === ym.slice(5) ? contract.amount : 0;
-  return contract.amount;
+  if (contract.status === 'closed') return 0;
+  const amount = priceAt(contract, ym);
+  if (!(amount > 0)) return 0;
+  if (contract.cycle === 'yearly') return contract.renewal_date && contract.renewal_date.slice(5, 7) === ym.slice(5) ? amount : 0;
+  return amount;
 }
 
 // Total a person owes for statement lines marked as theirs (expenses positive, refunds negative).
@@ -157,4 +161,54 @@ export function settlementMemo(txs) {
   const lines = txs.map((t) => `${t.date.replace(/-/g, '/')} ${t.description.slice(0, 40)} ${(-t.amount).toLocaleString('ja-JP')}円`);
   const text = lines.join('\n');
   return text.length <= 2000 ? text : `${text.slice(0, 1990)}\n…ほか`;
+}
+
+// ---------------------------------------------------------------- deposits recognised from the statement
+//
+// From DEPOSIT_AUTO_FROM on, money paid into the shared account by a member (the line's text contains
+// one of the member's 振込名義) is recorded as that member's deposit. Earlier deposits were moved from
+// the former spreadsheet and are kept as they are (their months differ from the bank dates).
+export const DEPOSIT_AUTO_FROM = '2026-01';
+
+export function transferNamesOf(member) {
+  return String(member.transfer_names || '').split(/[,、，\n]+/).map((k) => normalizeText(k)).filter((k) => k.length >= 2);
+}
+
+// The member who paid this line into the shared account, or null (longest matching name wins).
+export function depositMember(tx, members) {
+  if (!(tx.amount > 0) || !tx.account_id || tx.transfer) return null;
+  const text = normalizeText(tx.description);
+  let best = null;
+  let bestLen = 0;
+  for (const m of members) {
+    for (const n of transferNamesOf(m)) {
+      if (n.length > bestLen && text.includes(n)) {
+        best = m.id;
+        bestLen = n.length;
+      }
+    }
+  }
+  return best;
+}
+
+// Lines that should become deposit records: [{ tx, member_id }].
+export function depositCandidates(txs, members, from = DEPOSIT_AUTO_FROM) {
+  const out = [];
+  for (const tx of txs) {
+    if (tx.deposit_entry_id || tx.deposit_ignored || tx.date.slice(0, 7) < from) continue;
+    const memberId = depositMember(tx, members);
+    if (memberId) out.push({ tx, member_id: memberId });
+  }
+  return out;
+}
+
+export function depositEntryFor({ tx, member_id }) {
+  return {
+    member_id,
+    ym: tx.date.slice(0, 7),
+    kind: 'deposit',
+    label: '入金',
+    amount: tx.amount,
+    memo: `マネーフォワードの明細から自動（${tx.date.replace(/-/g, '/')} ${tx.description.slice(0, 60)}）`,
+  };
 }
