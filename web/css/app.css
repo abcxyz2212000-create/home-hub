@@ -500,9 +500,6 @@ details summary { cursor: pointer; margin-top: 1rem; }
 [hidden] { display: none !important; }
 
 /* ---------------------------------------------------------------- shared account (共通口座) */
-.tabs { display: flex; gap: 0.25rem; border-bottom: 1px solid var(--line); margin: 0 0 0.9rem; }
-.tabs .tab { padding: 0.5rem 0.9rem; text-decoration: none; color: var(--muted); border-bottom: 3px solid transparent; font-weight: 600; }
-.tabs .tab.active { color: var(--ink); border-bottom-color: var(--series-1); }
 .month-nav { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.75rem; }
 .month-panel { border: 1px solid var(--line); border-radius: 10px; padding: 0.75rem; margin-bottom: 0.9rem; background: var(--surface-2); }
 .month-panel .shared-cards .card { margin-bottom: 0; }
@@ -526,3 +523,8 @@ details summary { cursor: pointer; margin-top: 1rem; }
 .line-zero { stroke: var(--muted); stroke-width: 1; }
 .line-tick { font-size: 10px; fill: var(--muted); }
 .line-path { fill: none; stroke-width: 2.2; stroke-linejoin: round; stroke-linecap: round; }
+
+.kpis.kpis-3 { grid-template-columns: repeat(3, 1fr); margin: 0.5rem 0; }
+.inline-form { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; }
+.inline-form select { flex: 1; min-width: 12rem; }
+.month-panel > h2 { margin: 0 0 0.6rem; }

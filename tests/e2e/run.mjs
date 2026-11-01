@@ -224,8 +224,8 @@ try {
 
   step('money flow page: accounts -> cards -> contracts with links to the records');
   await page.getByRole('link', { name: 'お金の流れ' }).click();
-  await page.getByRole('heading', { name: '口座 → カード → 契約（月額）' }).waitFor();
-  const flowSvg = page.getByRole('img', { name: /口座からカード・契約へのお金の流れ/ });
+  await page.getByRole('heading', { name: '口座 → カード → 支払先（月額）' }).waitFor();
+  const flowSvg = page.getByRole('img', { name: 'お金の流れ（月額）' });
   const flowText = await flowSvg.evaluate((el) => el.textContent);
   for (const t of ['生活費口座', '月 7,000円', 'メインカード', '火災保険', '2,000円※', 'インターネット', '5,000円']) assert.ok(flowText.includes(t), `flow shows ${t}`);
   assert.match(await page.locator('table').innerText(), /生活費口座\s+7,000円/);
@@ -416,15 +416,33 @@ try {
   assert.match(monthSheet, /管理費\s+−3,000円/);
   assert.match(monthSheet, /当月分（小計）\s+66,500円/);
   assert.match(monthSheet, /定例（毎月）\s+基本\s+70,000円\s+dアニ\s+−500円\s+臨時（この月だけ）\s+管理費\s+−3,000円/);
-  assert.match(await page.locator('.month-label').innerText(), new RegExp(`${ymLabel(ymNow)}の入金状況\\s*今月`));
+  assert.match(await page.locator('.month-label').innerText(), new RegExp(`${ymLabel(ymNow)}\\s*今月`));
   assert.match(monthSheet, /合計\s+136,000円/);
   await page.getByRole('img', { name: '人ごとの未入金の残高の推移' }).waitFor();
   await page.screenshot({ path: join(OUT, 'shared.png'), fullPage: true });
   await page.getByRole('link', { name: '前の月' }).click();
-  await page.getByRole('heading', { name: `${ymLabel(ymPrev)}の入金状況`, exact: true }).waitFor();
+  await page.getByRole('heading', { name: ymLabel(ymPrev), exact: true }).waitFor();
   assert.match(await page.locator('.shared-card').innerText(), /未入金の残高\s+69,500円/);
+  step('one money page: people -> shared account -> cards -> payees, and the balance of the shared account');
   await page.getByRole('link', { name: 'お金の流れ', exact: true }).first().click();
-  await page.getByRole('heading', { name: '口座 → カード → 契約（月額）' }).waitFor();
+  await page.getByRole('heading', { name: '口座 → カード → 支払先（月額）' }).waitFor();
+  assert.match(await page.locator('#view').innerText(), /共通口座にする口座を選ぶと/);
+  await page.goto(`${appUrl}#/settings`);
+  await page.getByLabel('共通口座にする口座').selectOption({ label: '生活費口座' });
+  await page.getByRole('button', { name: '共通口座にする' }).click();
+  await page.getByText('共通口座を設定しました。').waitFor();
+  assert.equal(mock.db.settings.find((x) => x.key === 'shared_account_id').value, mock.db.accounts.find((a) => a.name === '生活費口座').id);
+  await page.goto(`${appUrl}#/flow`);
+  await page.getByRole('heading', { name: 'はなこ → 口座 → カード → 支払先（月額）' }).waitFor();
+  const money = await page.locator('#view').innerText();
+  assert.match(money, /共通口座の収支（生活費口座・月額）/);
+  assert.match(money, /入る額\s*66,500円/);
+  assert.match(money, /出る額\s*7,000円/);
+  assert.match(money, /差（余裕）\s*59,500円/);
+  const flow4 = await page.getByRole('img', { name: 'お金の流れ（月額）' }).textContent();
+  for (const t of ['はなこ', '生活費口座（共通）', '入 66,500円 / 出 7,000円', 'メインカード', '火災保険']) assert.ok(flow4.includes(t), `4-column flow shows ${t}`);
+  assert.match(money, /共通口座への入金状況/);
+  await page.screenshot({ path: join(OUT, 'money.png'), fullPage: true });
   await page.goto(`${appUrl}#/settings`);
   await page.getByRole('heading', { name: '設定', exact: true }).waitFor();
 

@@ -3,6 +3,12 @@ import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import { encryptPayload, loadVapidKeys, vapidAuthorization, b64urlDecode, b64urlEncode } from '../../scripts/webpush.mjs';
 
+// ECDH.getPrivateKey() drops leading zero bytes (about 1 in 256 keys); VAPID keys are always 32 bytes.
+function privateKey32(ecdh) {
+  const k = ecdh.getPrivateKey();
+  return Buffer.concat([Buffer.alloc(32 - k.length), k]);
+}
+
 // Test vector from RFC 8291 section 5 / appendix A.
 const RFC = {
   plaintext: 'When I grow up, I want to be a watermelon',
@@ -24,7 +30,7 @@ test('aes128gcm encryption matches the RFC 8291 example', () => {
 test('VAPID JWT is a valid ES256 signature for the endpoint origin', () => {
   const ecdh = crypto.createECDH('prime256v1');
   ecdh.generateKeys();
-  const vapid = loadVapidKeys(b64urlEncode(ecdh.getPrivateKey()));
+  const vapid = loadVapidKeys(b64urlEncode(privateKey32(ecdh)));
   assert.equal(vapid.publicKey, b64urlEncode(ecdh.getPublicKey()));
   const header = vapidAuthorization('https://fcm.googleapis.com/fcm/send/abc', vapid, 'https://example.github.io/home-hub/', 0);
   const m = /^vapid t=([^.]+)\.([^.]+)\.([^,]+), k=(.+)$/.exec(header);

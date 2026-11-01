@@ -81,17 +81,21 @@ export function barChart(rows, ariaLabel, format = yen) {
   return svg;
 }
 
-// Three-column flow (accounts -> cards -> contracts). Band width = monthly amount.
-// columns: [[node], [node], [node]], node: { id, label, sub, value, color, href }
+// Flow diagram, 3 columns (accounts -> cards -> contracts) or 4 columns (people -> accounts -> cards
+// -> contracts). Band width = monthly amount.
+// columns: [[node], ...], node: { id, label, sub, value, color, href }
+//   sub on a source/account node replaces the default "月 ○円" line; on a leaf it is appended.
 // links: [{ from, to, value, color }]
 export function flowChart(columns, links, { compact = false, ariaLabel = 'お金の流れ' } = {}) {
-  const W = 360;
-  const X = [0, 150, 222];
+  const four = columns.length === 4;
+  const W = four ? 460 : 360;
+  const X = four ? [0, 66, 222, 318] : [0, 150, 222];
+  const role = four ? ['person', 'source', 'mid', 'leaf'] : ['source', 'mid', 'leaf'];
   const nodeW = 8;
   const gap = compact ? 6 : 10;
   const minSlot = compact ? 0 : 18;
-  const total = columns[0].reduce((sum, n) => sum + n.value, 0) || 1;
-  const rightCount = columns[2].length;
+  const total = Math.max(...columns.map((list) => list.reduce((sum, n) => sum + n.value, 0)), 1);
+  const rightCount = columns[columns.length - 1].length;
   const target = compact ? 160 : Math.max(240, rightCount * 24);
   const scale = target / total;
   const nodes = new Map();
@@ -103,7 +107,7 @@ export function flowChart(columns, links, { compact = false, ariaLabel = 'お金
       y += Math.max(hgt, minSlot) + gap;
     }
   });
-  const H = Math.max(...[...nodes.values()].map((n) => n.y + Math.max(n.h, minSlot))) + 6;
+  const H = Math.max(...[...nodes.values()].map((n) => n.y + Math.max(n.h, minSlot)), 10) + 6;
   const svg = root(W, H, ariaLabel);
 
   for (const l of links) {
@@ -140,10 +144,17 @@ export function flowChart(columns, links, { compact = false, ariaLabel = 'お金
   for (const n of nodes.values()) {
     svg.append(s('rect', { x: n.x, y: n.y, width: nodeW, height: Math.max(n.h, 2), rx: 2, fill: n.color }));
     const mid = n.y + Math.max(n.h, 12) / 2 + 4;
-    if (n.col === 0) {
+    const r = role[n.col];
+    if (r === 'person') {
+      svg.append(label(n, s('text', { x: n.x + 12, y: n.y + 14, class: 'flow-name' }, shorten(n.label, 4))));
+      if (n.h >= 26 || !compact) svg.append(s('text', { x: n.x + 12, y: n.y + 28, class: 'flow-sub' }, n.sub || yen(n.value)));
+    } else if (r === 'source') {
       svg.append(label(n, s('text', { x: n.x + 14, y: n.y + 14, class: 'flow-name' }, shorten(n.label, 9))));
-      if (n.h >= 26 || !compact) svg.append(s('text', { x: n.x + 14, y: n.y + 28, class: 'flow-sub' }, `月 ${yen(n.value)}`));
-    } else if (n.col === 1) {
+      if (n.h >= 26 || !compact) svg.append(s('text', { x: n.x + 14, y: n.y + 28, class: 'flow-sub' }, n.sub || `月 ${yen(n.value)}`));
+    } else if (r === 'mid' && four) {
+      // 4 columns: the account labels use the space on the left, so card names go to the right
+      svg.append(label(n, s('text', { x: n.x + 12, y: mid, class: 'flow-name' }, shorten(n.label, 6))));
+    } else if (r === 'mid') {
       svg.append(label(n, s('text', { x: n.x - 5, y: mid, class: 'flow-name', 'text-anchor': 'end' }, shorten(n.label, 8))));
     } else if (n.h >= 9 || !compact) {
       svg.append(label(n, s('text', { x: n.x + 14, y: mid, class: 'flow-leaf' },

@@ -9,6 +9,12 @@ import { createMock, SERVICE_KEY } from '../mock-supabase.mjs';
 import { b64urlEncode } from '../../scripts/webpush.mjs';
 import { todayJST, toDayNumber, fromDayNumber } from '../../web/js/events.js';
 
+// ECDH.getPrivateKey() drops leading zero bytes (about 1 in 256 keys); VAPID keys are always 32 bytes.
+function privateKey32(ecdh) {
+  const k = ecdh.getPrivateKey();
+  return Buffer.concat([Buffer.alloc(32 - k.length), k]);
+}
+
 const run = promisify(execFile);
 const SCRIPT = fileURLToPath(new URL('../../scripts/notify.mjs', import.meta.url));
 
@@ -56,7 +62,7 @@ test('daily run sends each due notification once and removes expired devices', a
     );
     mock.db.items.push({ id: 'i1', name: '洗濯機', status: 'active', warranty_until: in7, notify_days: { warranty: [] } });
 
-    const env = { ...process.env, SUPABASE_URL: apiUrl, SUPABASE_SERVICE_ROLE_KEY: SERVICE_KEY, VAPID_PRIVATE_KEY: b64urlEncode(vapid.getPrivateKey()), GITHUB_REPOSITORY: 'Owner/home-hub' };
+    const env = { ...process.env, SUPABASE_URL: apiUrl, SUPABASE_SERVICE_ROLE_KEY: SERVICE_KEY, VAPID_PRIVATE_KEY: b64urlEncode(privateKey32(vapid)), GITHUB_REPOSITORY: 'Owner/home-hub' };
     const first = await run('node', [SCRIPT], { env });
     assert.match(first.stdout, /1 notification\(s\) due/);
     assert.doesNotMatch(first.stdout + first.stderr, /火災保険/); // names never appear in public logs
@@ -90,7 +96,7 @@ test('daily run sends each due notification once and removes expired devices', a
     // wrong key is rejected
     const other = crypto.createECDH('prime256v1');
     other.generateKeys();
-    await assert.rejects(run('node', [SCRIPT], { env: { ...env, VAPID_PRIVATE_KEY: b64urlEncode(other.getPrivateKey()) } }), /does not match/);
+    await assert.rejects(run('node', [SCRIPT], { env: { ...env, VAPID_PRIVATE_KEY: b64urlEncode(privateKey32(other)) } }), /does not match/);
   } finally {
     await mock.stop();
   }
@@ -115,7 +121,7 @@ test('shared account reminder: from the 25th, once a month, only to that member'
     );
     mock.db.shared_entries.push({ id: 'e1', member_id: 'm-shin', ym: '2026-11', kind: 'deposit', label: '入金', amount: 5000 });
 
-    const env = { ...process.env, SUPABASE_URL: apiUrl, SUPABASE_SERVICE_ROLE_KEY: SERVICE_KEY, VAPID_PRIVATE_KEY: b64urlEncode(vapid.getPrivateKey()), GITHUB_REPOSITORY: 'Owner/home-hub' };
+    const env = { ...process.env, SUPABASE_URL: apiUrl, SUPABASE_SERVICE_ROLE_KEY: SERVICE_KEY, VAPID_PRIVATE_KEY: b64urlEncode(privateKey32(vapid)), GITHUB_REPOSITORY: 'Owner/home-hub' };
     await run('node', [SCRIPT], { env: { ...env, NOTIFY_DATE: '2026-11-24' } });
     assert.equal(mock.pushes.length, 0, 'nothing before the 25th');
 
