@@ -113,11 +113,16 @@ export function matchContract(description, contracts) {
 // txs: transactions of the month. Returns { inflow, outflow, byContract: Map(id -> actual outflow),
 // byCategory: Map(大項目 -> outflow), unlinked: [tx], excluded: [tx], personal: [tx] (個人負担, not added up),
 // review: [tx] (確認中; still added up as shared until decided) }.
-export function summarizeMonth(txs) {
-  const out = { inflow: 0, outflow: 0, byContract: new Map(), byCategory: new Map(), unlinked: [], excluded: [], personal: [], review: [] };
+export function summarizeMonth(txs, members = []) {
+  const out = { inflow: 0, outflow: 0, byContract: new Map(), byCategory: new Map(), unlinked: [], excluded: [], personal: [], review: [], memberFlows: [] };
   for (const t of txs) {
     if (!t.counted || t.transfer) {
       out.excluded.push(t);
+      continue;
+    }
+    // money between a member and the shared account is not an outside payment (shown separately)
+    if (t.deposit_entry_id || transferMember(t, members)) {
+      out.memberFlows.push(t);
       continue;
     }
     // owed by one person (個人負担): not a shared cost, shown and settled separately
@@ -174,10 +179,17 @@ export function transferNamesOf(member) {
   return String(member.transfer_names || '').split(/[,、，\n]+/).map((k) => normalizeText(k)).filter((k) => k.length >= 2);
 }
 
-// The member who paid this line into the shared account, or null (longest matching name wins).
-export function depositMember(tx, members) {
-  if (!(tx.amount > 0) || !tx.account_id || tx.transfer) return null;
-  const text = normalizeText(tx.description);
+// The part of a bank line that names the other party: "(依頼人名:…)" names the sender (often one of
+// us paying a bill from the shared account), so it is left out.
+export function payeeText(description) {
+  return String(description || '').replace(/[(（]\s*依頼人名[:：].*$/, '');
+}
+
+// The member on the other side of a shared-account line (paid in, or paid out to them), or null.
+// The longest matching 振込名義 wins.
+export function transferMember(tx, members) {
+  if (!tx.amount || !tx.account_id || tx.transfer) return null;
+  const text = normalizeText(payeeText(tx.description));
   let best = null;
   let bestLen = 0;
   for (const m of members) {
@@ -191,18 +203,34 @@ export function depositMember(tx, members) {
   return best;
 }
 
-// Lines that should become deposit records: [{ tx, member_id }].
+// Paid into the shared account by a member (kept for callers that only want deposits).
+export function depositMember(tx, members) {
+  return tx.amount > 0 ? transferMember(tx, members) : null;
+}
+
+// Lines that should become records in the shared account ledger: [{ tx, member_id }]
+// (paid in -> deposit, paid out to the member -> a one-off charge: they received money).
 export function depositCandidates(txs, members, from = DEPOSIT_AUTO_FROM) {
   const out = [];
   for (const tx of txs) {
     if (tx.deposit_entry_id || tx.deposit_ignored || tx.date.slice(0, 7) < from) continue;
-    const memberId = depositMember(tx, members);
+    const memberId = transferMember(tx, members);
     if (memberId) out.push({ tx, member_id: memberId });
   }
   return out;
 }
 
 export function depositEntryFor({ tx, member_id }) {
+  if (tx.amount < 0) {
+    return {
+      member_id,
+      ym: tx.date.slice(0, 7),
+      kind: 'charge',
+      label: '共通口座からの受け取り',
+      amount: -tx.amount,
+      memo: `マネーフォワードの明細から自動（${tx.date.replace(/-/g, '/')} ${payeeText(tx.description).slice(0, 60)}）`,
+    };
+  }
   return {
     member_id,
     ym: tx.date.slice(0, 7),
