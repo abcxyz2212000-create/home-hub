@@ -13,6 +13,7 @@ import {
 } from './mf.js';
 import { createZip } from './zip.js';
 import { compressImage } from './image.js';
+import { parseOcrText, receiptMemo, recognizeImage } from './ocr.js';
 import * as push from './push.js';
 import { icon, LEDGER_ICONS } from './icons.js';
 import { timelineChart, barChart, flowChart, lineChart, urgency } from './charts.js';
@@ -1665,7 +1666,7 @@ function attachmentThumbs(list, onRemove) {
 
 // Picker for up to MAX_ATTACHMENTS images: saved ones (removable at once) + new ones (uploaded on save).
 // Returns { el, files: () => [File], firstImage: () => File | saved row | null }.
-function attachmentBox(kind, parentId, title) {
+function attachmentBox(kind, parentId, title, onRead = null) {
   const pending = [];
   const box = h('div', { class: 'field attach-box' });
   const status = h('p', { class: 'muted small', role: 'status' });
@@ -1686,10 +1687,26 @@ function attachmentBox(kind, parentId, title) {
         draw();
       }) : null,
       previews.length ? h('div', { class: 'photos' }, previews) : null,
-      saved().length + pending.length < MAX_ATTACHMENTS ? h('label', { for: `attach-${kind}`, class: 'button' }, '画像を追加（撮影・選択）') : null,
+      h('div', { class: 'button-row' },
+        saved().length + pending.length < MAX_ATTACHMENTS ? h('label', { for: `attach-${kind}`, class: 'button' }, '画像を追加（撮影・選択）') : null,
+        onRead && (pending.length || saved().length) ? h('button', { type: 'button', onclick: (ev) => busy(ev.currentTarget, () => readFirstImage()) }, '画像から読む（OCR）') : null),
       input,
       h('p', { class: 'muted small' }, `${MAX_ATTACHMENTS}枚まで。縮小してから保存します。カード番号の全桁などが写っていないか確認してください。`),
       status);
+  };
+  // OCR of the first image (the one just added, or the first saved one); onRead gets the parsed values
+  const readFirstImage = async () => {
+    const first = pending[0] || saved()[0];
+    if (!first) return;
+    status.textContent = '読み取りの準備をしています（初回は数MBを読み込みます）…';
+    try {
+      const image = first instanceof Blob ? first : await db.downloadPhoto(first.path);
+      const text = await recognizeImage(image, (p, label) => { status.textContent = `${label}…${Math.round(p * 100)}%`; });
+      status.textContent = onRead(parseOcrText(text, kind === 'entry' ? 'receipt' : 'transfer'));
+    } catch (e) {
+      console.error(`ocr failed: ${e && e.message}`);
+      status.textContent = '画像を読み取れませんでした。手で入力してください。';
+    }
   };
   input.addEventListener('change', () => {
     const files = [...input.files];
@@ -1701,6 +1718,29 @@ function attachmentBox(kind, parentId, title) {
   });
   draw();
   return { el: box, files: () => [...pending], firstImage: () => pending[0] || saved()[0] || null, status };
+}
+
+// Put OCR suggestions into the form (the user checks them before saving). Returns the message to show.
+function fillFromOcr(form, result, { memo = false } = {}) {
+  const set = (id, value) => {
+    const el = form.querySelector(`#${id}`);
+    if (!el || value === null || value === undefined || value === '') return false;
+    el.value = value;
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    return true;
+  };
+  const got = [];
+  if (set('f-amount', result.amount)) got.push(`金額 ${yen(result.amount)}`);
+  if (set('f-paid_on', result.date)) got.push(`日付 ${dateText(result.date)}`);
+  if (memo) {
+    const text = receiptMemo(result);
+    const el = form.querySelector('#f-memo');
+    if (text && el) {
+      el.value = el.value.trim() ? `${el.value.trim()}\n${text}` : text;
+      got.push('店名・品目（メモ）');
+    }
+  }
+  return got.length ? `読み取った値を入れました（${got.join('、')}）。保存する前に確認・修正してください。` : '金額や日付を読み取れませんでした。手で入力してください。';
 }
 
 // Compress and upload images for a record; returns how many were saved.
@@ -1798,7 +1838,8 @@ function renderSharedEntry(id, preset) {
   const defs = deposit ? [f.ym, f.deposit, f.memo] : [when, f.label, advance ? ADVANCE_FIELD : f.amount, f.memo];
   const fields = defs.map((field) => ({ ...fieldInput(field, shown), field }));
   if (!deposit) fields[1].el.querySelector('input').setAttribute('list', 'shared-labels');
-  const attach = deposit ? null : attachmentBox('entry', isNew ? null : e.id, '領収書などの画像');
+  const attach = deposit ? null : attachmentBox('entry', isNew ? null : e.id, '領収書などの画像',
+    advance ? (result) => fillFromOcr(view(), result, { memo: true }) : null);
   sharedForm({
     title: isNew ? `${name}を記録` : `${name}を編集`,
     back,
@@ -1874,7 +1915,7 @@ function renderDepositReport(id, memberParam) {
     ? h('p', { class: 'muted' }, `人: ${memberNick(r.member_id)}`)
     : h('div', { class: 'field', 'data-key': 'member_id' }, h('label', { for: 'f-member' }, '人'), member, h('p', { class: 'error small field-error' }));
   const fields = REPORT_FIELDS.map((field) => ({ ...fieldInput(field, r), field }));
-  const attach = attachmentBox('report', isNew ? null : r.id, '振込完了画面などの画像');
+  const attach = attachmentBox('report', isNew ? null : r.id, '振込完了画面などの画像', (result) => fillFromOcr(view(), result));
   sharedForm({
     title: isNew ? '入金を報告' : '入金報告を編集',
     back,
