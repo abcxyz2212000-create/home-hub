@@ -148,7 +148,7 @@ try {
   await page.getByText('7,000円', { exact: true }).waitFor();
   assert.ok(await page.getByRole('img', { name: /今日から60日先までの期限/ }).isVisible(), 'deadline timeline');
   assert.ok(await page.getByRole('img', { name: '固定費の種類別の月額' }).isVisible(), 'fixed cost bars');
-  assert.ok(await page.getByRole('img', { name: /お金の流れ/ }).isVisible(), 'money flow (compact)');
+  assert.ok(await page.getByRole('group', { name: /お金の流れ/ }).isVisible(), 'money flow (boxes and arrows)');
   assert.match(await page.locator('.page-head h1').innerText(), /\d+月\d+日（.）/);
   assert.match(await page.locator('.kpis').innerText(), /固定費 \/ 月\n7,000円[\s\S]*期限 30日以内\n\d+件/);
   const home = await page.locator('#view').innerText();
@@ -235,11 +235,10 @@ try {
   step('money flow page: accounts -> cards -> contracts with links to the records');
   await page.goto(`${appUrl}#/flow/flow`);
   await page.getByRole('heading', { name: '口座 → カード → 支払先（月額）' }).waitFor();
-  const flowSvg = page.getByRole('img', { name: 'お金の流れ（月額）' });
-  const flowText = await flowSvg.evaluate((el) => el.textContent);
-  for (const t of ['生活費口座', '月 7,000円', 'メインカード', '火災保険', '2,000円※', 'インターネット', '5,000円']) assert.ok(flowText.includes(t), `flow shows ${t}`);
+  const flowBox = page.getByRole('group', { name: 'お金の流れ（月額）' });
+  assert.match(await flowBox.innerText(), /生活費口座\n通信\n5,000円\nインターネット\nカードの引き落とし\n2,000円\nメインカード\n保険（年払い÷12）\n2,000円\n火災保険/, 'boxes joined by arrows with purpose and amount');
   assert.match(await page.locator('table').innerText(), /生活費口座\s+7,000円/);
-  await flowSvg.locator('a', { hasText: 'メインカード' }).click();
+  await flowBox.getByRole('link', { name: 'メインカード' }).click();
   await page.getByRole('heading', { name: 'メインカード' }).waitFor();
 
   step('card list shows card faces');
@@ -455,8 +454,8 @@ try {
   assert.match(money, /入る額\s*66,500円/);
   assert.match(money, /出る額\s*7,000円/);
   assert.match(money, /差（余裕）\s*59,500円/);
-  const flow4 = await page.getByRole('img', { name: 'お金の流れ（月額）' }).textContent();
-  for (const t of ['はなこ', '生活費口座（共通）', '入 66,500円 / 出 7,000円', 'メインカード', '火災保険']) assert.ok(flow4.includes(t), `4-column flow shows ${t}`);
+  const flow4 = await page.getByRole('group', { name: 'お金の流れ（月額）' }).innerText();
+  assert.match(flow4, /^給与口座（はなこ）\n当月分\n66,500円\n生活費口座（共通）\n/, 'a person is shown as their account, the arrow says 当月分');
   await page.getByRole('link', { name: '年間' }).click();
   await page.getByRole('heading', { name: 'はなこ → 口座 → カード → 支払先（年額）' }).waitFor();
   assert.match(await page.locator('#view').innerText(), /口座ごとの引き落とし（年額）/);
@@ -542,6 +541,7 @@ try {
   const mfFile = { name: 'mf.csv', mimeType: 'text/csv', buffer: sjis };
   await page.goto(`${appUrl}#/flow/ext/${ymNow}`);
   await page.getByRole('heading', { name: '共通口座の明細（実績）' }).waitFor();
+  await page.waitForLoadState('networkidle'); // the month's lines are loaded (the page redraws once)
   await page.getByLabel('マネーフォワードの CSV ファイル').setInputFiles(mfFile);
   await page.getByText('追加 5件（うち契約に自動でひも付け 1件）、更新 0件、対象外 2件').waitFor();
   const importStatus = await page.locator('.import-status').innerText();
@@ -575,6 +575,7 @@ try {
   assert.equal(mock.db.transactions.find((t) => t.mf_id === 'mf-b').contract_id, elec.id);
   assert.match(await page.locator('#view').innerText(), /電気代\s+8,000円\s+8,000円\s+一致/);
   // importing the same file again updates, keeps the manual link and adds nothing
+  await page.waitForLoadState('networkidle'); // the month's lines are loaded (the page redraws once)
   await page.getByLabel('マネーフォワードの CSV ファイル').setInputFiles(mfFile);
   await page.getByText('追加 0件（うち契約に自動でひも付け 0件）、更新 5件、対象外 2件').waitFor();
   await page.getByRole('button', { name: '取り込む' }).click();
@@ -626,6 +627,7 @@ try {
   ].join('\n') + '\n';
   await page.goto(`${appUrl}#/flow/ext/${ymNow}`);
   await page.getByRole('heading', { name: '共通口座の明細（実績）' }).waitFor();
+  await page.waitForLoadState('networkidle'); // the month's lines are loaded (the page redraws once)
   await page.getByLabel('マネーフォワードの CSV ファイル').setInputFiles({ name: 'pay.csv', mimeType: 'text/csv', buffer: Buffer.from(payCsv) });
   await page.getByText(/共通口座からの受け取りとして記録: 1件（はなこ 1件）/).waitFor();
   await page.getByRole('button', { name: '取り込む' }).click();

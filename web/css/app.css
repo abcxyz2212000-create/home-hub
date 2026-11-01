@@ -618,3 +618,26 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 0.9rem; }
 .label-row .field.checkbox { margin: 0; }
 .shared-cost-box .label-row { margin-bottom: 0; }
 .list + .button-row, .list + .button-row.equal { margin-top: 0.6rem; }
+
+/* ---------------------------------------------------------------- flow as boxes and arrows (2026-11-01) */
+.ftree { display: grid; gap: 1rem; }
+.ft-section { display: grid; justify-items: start; }
+.ft-box { --ft-color: var(--accent); display: inline-flex; align-items: center; gap: 0.45rem; padding: 0.45rem 0.7rem; border-radius: 10px; border: 1.5px solid var(--ft-color); background: var(--surface); color: var(--ink); text-decoration: none; font-weight: 600; font-size: 0.92rem; max-width: 100%; }
+.ft-box .ft-label { overflow-wrap: anywhere; }
+.ft-icon { display: inline-grid; place-items: center; width: 26px; height: 26px; border-radius: 6px; background: color-mix(in srgb, var(--ft-color) 15%, transparent); color: var(--ft-color); flex: none; }
+.ft-icon .ic { width: 16px; height: 16px; }
+.ft-shared { border-width: 2px; }
+.ft-payee { border: 1px solid var(--line); background: var(--surface-2); font-weight: 500; padding: 0.3rem 0.6rem; font-size: 0.88rem; }
+.ft-in { display: flex; flex-wrap: wrap; gap: 0.6rem 1rem; margin-bottom: 0.2rem; }
+.ft-in-item { display: grid; justify-items: start; }
+.ft-children { list-style: none; margin: 0 0 0 1rem; padding: 0 0 0 0.9rem; border-left: 1.5px solid var(--line); display: grid; gap: 0.35rem; }
+.ft-section > .ft-children { margin-top: 0.1rem; }
+.ft-children > li { position: relative; padding-top: 0.25rem; }
+.ft-children > li::before { content: ''; position: absolute; left: -0.9rem; top: 0.95rem; width: 0.7rem; border-top: 1.5px solid var(--line); }
+.ft-arrow, .ft-more > summary { display: flex; align-items: baseline; gap: 0.5rem; font-size: 0.8rem; color: var(--ink-2); margin: 0 0 0.2rem; }
+.ft-arrow::after { content: '▼'; font-size: 0.6rem; color: var(--muted); }
+.ft-in-item .ft-arrow { margin: 0.25rem 0 0.25rem 0.9rem; padding-left: 0.6rem; border-left: 1.5px solid var(--line); min-height: 1.6rem; align-items: center; }
+.ft-amount { font-weight: 700; color: var(--ink); }
+.ft-more > summary { cursor: pointer; list-style: none; }
+.ft-more > summary::before { content: '＋'; color: var(--accent); font-weight: 700; }
+.ft-more[open] > summary::before { content: '－'; }
