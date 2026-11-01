@@ -566,7 +566,7 @@ try {
   assert.equal(mock.db.transactions.find((t) => t.mf_id === 'mf-g').deposit_entry_id, autoDeposit.id);
   assert.equal(mock.db.transactions.find((t) => t.mf_id === 'mf-a').contract_id, net.id);
   assert.equal(mock.db.transactions.find((t) => t.mf_id === 'mf-b').card_id, mainCard.id);
-  await page.getByText('契約ごとの予定と実績').waitFor();
+  await page.getByText('固定費の予定と実績').waitFor();
   const actual = await page.locator('#view').innerText();
   assert.match(actual, /出金\s*16,000円/, 'card lines counted, the card payment (transfer) is not');
   assert.match(actual, /入金\s*50,000円/, 'money from a member is income of the shared account too');
@@ -574,12 +574,12 @@ try {
   assert.match(actual, /個人との入出金（1件/);
   assert.match(actual, /インターネット\s+5,000円\s+5,000円\s+一致/);
   assert.match(actual, /電気代\s+8,000円\s+—\s+未確認/);
-  assert.match(actual, /契約にない明細（2件）/);
+  assert.match(actual, /変動費の明細（2件）/);
   await page.getByRole('link', { name: /サンプル電力/ }).click();
   await page.getByLabel('契約にひも付ける').selectOption({ label: '電気代' });
   await page.getByLabel('キーワード（明細の内容に含まれる語）').fill('サンプル電力');
   await page.getByRole('button', { name: '保存' }).click();
-  await page.getByText('契約ごとの予定と実績').waitFor();
+  await page.getByText('固定費の予定と実績').waitFor();
   const elec = mock.db.contracts.find((x) => x.name === '電気代');
   assert.equal(elec.match_keywords, 'サンプル電力');
   assert.equal(mock.db.transactions.find((t) => t.mf_id === 'mf-b').contract_id, elec.id);
@@ -599,7 +599,7 @@ try {
   await page.getByRole('link', { name: /スーパーマーケット/ }).click();
   await page.getByLabel('負担', { exact: true }).selectOption({ label: 'はなこ負担' });
   await page.getByRole('button', { name: '保存' }).click();
-  await page.getByText('契約ごとの予定と実績').waitFor();
+  await page.getByText('固定費の予定と実績').waitFor();
   assert.equal(mock.db.transactions.find((t) => t.mf_id === 'mf-c').personal_member_id, hanako.id);
   const afterPersonal = await page.locator('#view').innerText();
   assert.match(afterPersonal, /出金\s*16,000円/, 'money that left the shared account, whoever carries it');
@@ -609,7 +609,7 @@ try {
   await page.goto(`${appUrl}#/tx/${mock.db.transactions.find((t) => t.mf_id === 'mf-a').id}`); // linked lines are folded away
   await page.getByLabel('負担', { exact: true }).selectOption({ label: '確認中' });
   await page.getByRole('button', { name: '保存' }).click();
-  await page.getByText('契約ごとの予定と実績').waitFor();
+  await page.getByText('固定費の予定と実績').waitFor();
   await page.goto(`${appUrl}#/flow/member/${ymNow}`);
   await page.getByText('確認中（1件）').waitFor();
   const review = page.locator('.review-item').first();
@@ -679,7 +679,7 @@ try {
   assert.deepEqual(netNow.price_history, [{ amount: 5000, from: null, to: ymPrev }, { amount: 5500, from: ymNow, to: null }]);
   assert.match(await page.locator('#view').innerText(), new RegExp(`${ymLabel(ymNow)}〜（今）\\s+5,500円`));
   await page.goto(`${appUrl}#/flow/ext/${ymNow}`);
-  await page.getByText('契約ごとの予定と実績').waitFor();
+  await page.getByText('固定費の予定と実績').waitFor();
   assert.match(await page.locator('#view').innerText(), /インターネット\s+5,500円\s+5,000円\s+差 −500円/);
   await page.goto(`${appUrl}#/settings/data`);
   await page.getByRole('heading', { name: '設定', exact: true }).waitFor();
