@@ -108,8 +108,77 @@ function setView(title, ...nodes) {
   document.title = title ? `${title} | 家の管理ハブ` : '家の管理ハブ';
   const root = view();
   root.replaceChildren(...nodes.flat(Infinity).filter((n) => n !== null && n !== undefined && n !== false));
+  updateStickyOffset();
   window.scrollTo(0, 0);
 }
+
+// ---------------------------------------------------------------- page frame (same on every page)
+//
+// The page head stays at the top while the page scrolls (below the app bar; on wide screens below the
+// menu too): ① back link + icon + title + main action, ② main tabs, ③ sub switch (one row).
+const PAGE_ICONS = { home: ['home', 'lg-home'], ledgers: ['grid', 'lg-ledgers'], chores: ['chore', 'lg-chores'], flow: ['flow', 'lg-flow'], settings: ['gear', 'lg-settings'] };
+
+function pageIcon(name) {
+  if (LEDGERS[name]) return ledgerIcon(name);
+  const [ic, cls] = PAGE_ICONS[name] || ['grid', 'lg-ledgers'];
+  return h('span', { class: `icbox ${cls}` }, icon(ic));
+}
+
+// { title, icon: page key or ledger key, back: { href, text }, action: node, tabs: [{ key, label, href }],
+//   tab: active key, sub: node, help: [title, ...paragraphs] }
+function pageHead({ title, icon: iconName, back, action, tabs, tab, sub, help }) {
+  return h('div', { class: 'page-head' },
+    h('div', { class: 'page-title' },
+      back ? h('a', { class: 'back-btn', href: back.href, 'aria-label': back.text || '戻る' }, h('span', { 'aria-hidden': 'true' }, '‹')) : null,
+      iconName ? pageIcon(iconName) : null,
+      h('h1', {}, title),
+      help ? helpButton(...help) : null,
+      action ? h('div', { class: 'page-action' }, action) : null),
+    tabs ? h('nav', { class: 'tabs', 'aria-label': `${title}の表示` }, tabs.map((t) => h('a', {
+      class: `tab${t.key === tab ? ' active' : ''}`, href: t.href, 'aria-current': t.key === tab ? 'page' : null,
+    }, t.label))) : null,
+    sub ? h('div', { class: 'page-sub' }, sub) : null);
+}
+
+// Small segmented switch: [{ label, href, active }]
+function segmented(items, label) {
+  return h('div', { class: 'segmented', role: 'group', 'aria-label': label }, items.map((i) => h('a', {
+    class: i.active ? 'active' : '', href: i.href, 'aria-current': i.active ? 'true' : null,
+  }, i.label)));
+}
+
+// 「?」: an explanation opens in a small window instead of text on the page.
+function helpButton(title, ...paragraphs) {
+  return h('button', { type: 'button', class: 'help-btn', 'aria-label': `${title}の説明`, onclick: (ev) => { ev.preventDefault(); openHelp(title, paragraphs); } }, '?');
+}
+
+function openHelp(title, paragraphs) {
+  const dialog = h('dialog', { class: 'help-dialog', 'aria-label': title },
+    h('h2', {}, title),
+    paragraphs.flat().filter(Boolean).map((p) => (typeof p === 'string' ? h('p', {}, p) : p)),
+    h('div', { class: 'actions' }, h('button', { type: 'button', class: 'primary', onclick: () => dialog.close() }, '閉じる')));
+  dialog.addEventListener('close', () => dialog.remove());
+  dialog.addEventListener('click', (ev) => { if (ev.target === dialog) dialog.close(); });
+  document.body.append(dialog);
+  dialog.showModal();
+}
+
+// A card heading: icon + title (+ ? + right-side link or action).
+function cardHead(iconName, title, { help, action } = {}) {
+  return h('div', { class: 'card-head' },
+    h('h2', { class: 'with-icon' }, iconName ? icon(iconName) : null, title, help ? helpButton(title, ...help) : null),
+    action || null);
+}
+
+// Height of the bars above the page head (app bar, and the menu when it sits at the top).
+function updateStickyOffset() {
+  const header = document.querySelector('.app-header');
+  const nav = document.getElementById('nav');
+  let top = header ? header.offsetHeight : 0;
+  if (nav && !nav.hidden && getComputedStyle(nav).position === 'sticky') top += nav.offsetHeight;
+  document.documentElement.style.setProperty('--page-head-top', `${top}px`);
+}
+window.addEventListener('resize', updateStickyOffset);
 
 function toast(message, kind = 'info') {
   const box = document.getElementById('toast');
@@ -331,14 +400,14 @@ async function render() {
   else if (page === 'list' && LEDGERS[a]) renderList(a);
   else if (page === 'view' && LEDGERS[a]) renderView(a, b);
   else if (page === 'edit' && LEDGERS[a]) renderEdit(a, b);
-  else if (page === 'settings') renderSettings();
+  else if (page === 'settings') renderSettings(a);
   else if (page === 'flow') renderMoney(a, b);
   else if (page === 'shared') renderMoney('member', a || thisYM());
   else if (page === 'shared-entry') renderSharedEntry(a, b);
   else if (page === 'deposit-report') renderDepositReport(a, b);
   else if (page === 'shared-rule') renderSharedRule(a);
   else if (page === 'tx') renderTx(a);
-  else if (page === 'chores') renderChores();
+  else if (page === 'chores') renderChores(a);
   else if (page === 'chore') renderChore(a);
   else if (page === 'chore-edit') renderChoreEdit(a);
   else if (page === 'member') renderMember(a);
@@ -396,8 +465,7 @@ function renderLogin() {
   state.loginNotice ? h('p', { class: 'error', role: 'alert' }, state.loginNotice) : null,
   h('label', { for: 'login-email' }, 'メールアドレス'), email,
   h('label', { for: 'login-password' }, 'パスワード'), password,
-  error, submit,
-  h('p', { class: 'muted small' }, '1人1アカウントでログインします。アカウントは管理者が作ります（新規登録はできません）。'));
+  error, submit);
   state.loginNotice = null;
   setView('ログイン', form, forgotPasswordBox(email));
 }
@@ -453,11 +521,11 @@ async function handleAuthLink() {
 function renderPassword() {
   const fromLink = Boolean(state.passwordFromLink);
   const current = h('input', { type: 'password', id: 'pw-current', autocomplete: 'current-password' });
-  const next = h('input', { type: 'password', id: 'pw-new', autocomplete: 'new-password', maxlength: db.MAX_PASSWORD });
+  const next = h('input', { type: 'password', id: 'pw-new', autocomplete: 'new-password', maxlength: db.MAX_PASSWORD, placeholder: `${db.MIN_PASSWORD}文字以上` });
   const again = h('input', { type: 'password', id: 'pw-again', autocomplete: 'new-password', maxlength: db.MAX_PASSWORD });
   const error = h('p', { class: 'error', role: 'alert' });
   const submit = h('button', { type: 'submit', class: 'primary' }, 'パスワードを変更');
-  const done = fromLink ? '#/' : '#/settings';
+  const done = fromLink ? '#/' : '#/settings/account';
   const form = h('form', { class: 'card form', novalidate: true, onsubmit: (ev) => {
     ev.preventDefault();
     busy(submit, async () => {
@@ -495,12 +563,11 @@ function renderPassword() {
   } },
   fromLink ? h('p', {}, `${db.currentEmail() || ''} の新しいパスワードを決めてください。`) : null,
   fromLink ? null : h('div', { class: 'field' }, h('label', { for: 'pw-current' }, '今のパスワード'), current),
-  h('div', { class: 'field' }, h('label', { for: 'pw-new' }, '新しいパスワード'), next,
-    h('p', { class: 'muted small' }, `${db.MIN_PASSWORD}文字以上。ほかのサービスと同じものは避けてください（パスワードマネージャーでの生成がおすすめ）。`)),
+  h('div', { class: 'field' }, h('label', { for: 'pw-new' }, '新しいパスワード'), next),
   h('div', { class: 'field' }, h('label', { for: 'pw-again' }, '新しいパスワード（確認）'), again),
   error,
   h('div', { class: 'actions' }, h('a', { class: 'button', href: done, onclick: () => { state.passwordFromLink = false; } }, fromLink ? 'あとで' : 'キャンセル'), submit));
-  setView('パスワードの変更', h('h1', {}, fromLink ? 'パスワードの設定' : 'パスワードの変更'), form);
+  setView('パスワードの変更', pageHead({ title: fromLink ? 'パスワードの設定' : 'パスワードの変更', icon: 'settings', back: fromLink ? null : { href: '#/settings/account', text: '設定へ' } }), form);
 }
 
 // ---------------------------------------------------------------- home
@@ -556,14 +623,14 @@ function deadlineHero(e, r) {
     gauge);
 }
 
+// Shortcuts from the 関連リンク of accounts (named after the bank) and cards (named after the link).
 function bankShortcuts() {
-  return state.data.accounts
-    .filter((a) => a.status !== 'closed' && a.links && a.links.length > 0)
-    .map((a) => {
-      const link = a.links.find((l) => /ログイン/.test(l.label)) || a.links[0];
-      return { label: a.institution || a.name, url: link.url };
-    })
-    .filter((v, i, list) => list.findIndex((x) => x.url === v.url) === i);
+  const pick = (r) => r.links.find((l) => /ログイン/.test(l.label)) || r.links[0];
+  const live = (r) => r.status !== 'closed' && r.links && r.links.length > 0;
+  return [
+    ...state.data.accounts.filter(live).map((a) => ({ label: a.institution || a.name, url: pick(a).url })),
+    ...state.data.cards.filter(live).map((c) => ({ label: pick(c).label || c.name, url: pick(c).url })),
+  ].filter((v, i, list) => list.findIndex((x) => x.url === v.url) === i);
 }
 
 function backupReminder() {
@@ -574,7 +641,7 @@ function backupReminder() {
   if (days !== null && days < BACKUP_REMIND_DAYS) return null;
   return h('section', { class: 'card notice' },
     h('p', {}, days === null ? 'まだバックアップしていません。' : `最後のバックアップから${days}日たっています。`),
-    h('a', { href: '#/settings', class: 'button' }, '設定画面でバックアップする'));
+    h('a', { href: '#/settings/data', class: 'button' }, '設定画面でバックアップする'));
 }
 
 function weekdayJa(iso) {
@@ -585,8 +652,8 @@ function kpi(label, value, unit, cls = '') {
   return h('div', { class: `kpi ${cls}`.trim() }, h('div', { class: 'kpi-label' }, label), h('div', { class: 'kpi-value num' }, value, h('small', {}, unit)));
 }
 
-function sectionHead(iconName, title, link) {
-  return h('h2', { class: 'with-icon' }, icon(iconName), title,
+function sectionHead(iconName, title, link, help) {
+  return h('h2', { class: 'with-icon' }, icon(iconName), title, help ? helpButton(title, ...help) : null,
     link ? h('a', { class: 'more', href: link.href }, link.text, icon('chevron', 'ic ic-sm')) : null);
 }
 
@@ -602,12 +669,10 @@ function renderHome() {
   const records = LEDGER_ORDER.reduce((n, k) => n + state.data[k].filter((r) => r.status !== 'closed').length, 0);
   const flow = flowModel();
   const pushHint = h('div');
-  const [y, m, d] = today.split('-').map(Number);
+  const [, m, d] = today.split('-').map(Number);
 
   setView('ホーム',
-    h('div', { class: 'dash-head' },
-      h('div', { class: 'dash-date' }, `${y}年${m}月${d}日（${weekdayJa(today)}）`),
-      h('h1', {}, `こんにちは、${nick(me())}さん`)),
+    pageHead({ title: `${m}月${d}日（${weekdayJa(today)}）`, icon: 'home' }),
     backupReminder(),
     pushHint,
     h('div', { class: 'kpis' },
@@ -622,11 +687,10 @@ function renderHome() {
         events.some((e) => e.daysLeft >= 0) ? timelineChart(events) : null,
         eventList(events)),
       h('section', { class: 'card' },
-        sectionHead('yen', '固定費の内訳（月額）', { href: '#/list/contracts', text: '契約へ' }),
+        sectionHead('yen', '固定費の内訳（月額）', { href: '#/list/contracts', text: '契約へ' }, ['年払いの契約は12で割った月額で計算しています。解約済みは含みません。']),
         byCategory.size === 0
           ? h('p', { class: 'muted' }, '金額が入力された契約はまだありません。')
-          : barChart([...byCategory.entries()], '固定費の種類別の月額'),
-        h('p', { class: 'muted small' }, '年払いの契約は12で割った月額で計算しています。解約済みは含みません。')),
+          : barChart([...byCategory.entries()], '固定費の種類別の月額')),
       h('section', { class: 'card' },
         sectionHead('flow', 'お金の流れ', { href: '#/flow/flow', text: '拡大' }),
         flow.columns[flow.columns.length - 1].length === 0 && flow.columns.length === 3
@@ -639,15 +703,14 @@ function renderHome() {
           h('div', { class: 'tile-count num' }, String(state.data[k].filter((r) => r.status !== 'closed').length), h('small', {}, ' 件')),
           h('div', { class: 'tile-label' }, TILE_LABELS[k]))))),
       h('section', { class: 'card' },
-        sectionHead('link', 'ショートカット'),
-        h('div', { class: 'shortcuts' }, shortcuts.map(shortcutTile)),
-        h('p', { class: 'muted small' }, '銀行のリンクは口座台帳の「関連リンク」から表示します。その他は設定画面で変更できます。'))));
+        sectionHead('link', 'ショートカット', null, ['口座・カードの台帳の「関連リンク」も表示します。その他は設定画面で変更できます。']),
+        h('div', { class: 'shortcuts' }, shortcuts.map(shortcutTile)))));
 
   push.currentSubscription().then((sub) => {
     if (!sub && push.pushSupported()) {
       pushHint.replaceChildren(h('section', { class: 'card notice' },
         h('p', { class: 'with-icon' }, icon('bell'), 'この端末ではまだ通知を受け取る設定をしていません。'),
-        h('a', { href: '#/settings', class: 'button' }, '通知を設定する')));
+        h('a', { href: '#/settings/account', class: 'button' }, '通知を設定する')));
     }
   }).catch((e) => console.error(`push status check failed: ${e.message}`));
 }
@@ -897,9 +960,9 @@ function mfImportBox() {
     }
     const { inScope, skipped, manual, unknown } = classifyMf(items, { accounts: state.data.accounts, cards: state.data.cards, sharedAccountId: sharedId });
     const hint = [
-      manual ? h('p', { class: 'muted small' }, `手入力の立替の記録（保有金融機関が「なし」）${manual}件は取り込みません（立替は共通口座の入金管理で扱います）。`) : null,
+      manual ? h('p', { class: 'meta' }, `手入力の記録 ${manual}件は対象外`) : null,
       unknown.length
-        ? h('p', { class: 'muted small' }, `対象外の金融機関: ${unknown.join('、')}。共通口座や、共通口座から引き落とされるカードなら、口座・カードの台帳で「マネーフォワードでの名前」にこの名前を入れてください。`)
+        ? h('p', { class: 'meta' }, `対象外の金融機関: ${unknown.join('、')}`, helpButton('対象外の金融機関', '共通口座や、共通口座から引き落とされるカードなら、口座・カードの台帳で「マネーフォワードでの名前」にこの名前を入れてください。'))
         : null,
     ].filter(Boolean);
     if (inScope.length === 0) {
@@ -936,12 +999,14 @@ function mfImportBox() {
       h('p', {}, `${dates[0]}〜${dates[dates.length - 1]}：追加 ${added}件（うち契約に自動でひも付け ${linked}件）、更新 ${rows.length - added}件、対象外 ${skipped + manual}件`),
       depositText ? h('p', {}, depositText) : null,
       ...hint,
-      h('p', { class: 'muted small' }, `${ymLabel(DEPOSIT_AUTO_FROM)}以降の明細から、ユーザーの「振込名義」で個人との入出金を見分けて記録します（入金 → その人の入金、個人への出金 → その人の臨時の費目「共通口座からの受け取り」）。依頼人名の部分は見ません。`),
       h('div', { class: 'actions' }, save)].filter(Boolean));
   }));
   return h('div', { class: 'mf-import' },
-    h('label', { class: 'button' }, 'マネーフォワードの CSV を選ぶ', input),
-    h('p', { class: 'muted small' }, 'マネーフォワード ME の入出金（家計簿データ）の CSV。共通口座と、共通口座から引き落とされるカードの明細だけを保存します。同じ期間を取り込み直しても重複しません。'),
+    h('div', { class: 'button-row' }, h('label', { class: 'button' }, 'マネーフォワードの CSV を選ぶ', input),
+      helpButton('マネーフォワードの取り込み',
+        'マネーフォワード ME の入出金（家計簿データ）の CSV を選びます。共通口座と、共通口座から引き落とされるカードの明細だけを保存します。同じ期間を取り込み直しても重複しません。',
+        `${ymLabel(DEPOSIT_AUTO_FROM)}以降の明細から、ユーザーの「振込名義」で個人との入出金を見分けて記録します（入金 → その人の入金、個人への出金 → その人の「共通口座からの受け取り」）。依頼人名の部分は見ません。`,
+        '手入力の立替の記録（保有金融機関が「なし」）は取り込みません。')),
     status);
 }
 
@@ -987,8 +1052,7 @@ function actualCard(ym) {
             h('td', { class: 'num' }, r.actual ? yen(r.actual) : '—'),
             h('td', { class: r.actual === 0 && r.plan > 0 ? 'warn-text' : '' }, state1(r)))))))] : null,
       sum.byCategory.size ? [h('h3', {}, '契約にない支出（大項目別）'), barChart([...sum.byCategory.entries()], '契約にない支出の大項目別の金額')] : null,
-      sum.unlinked.length ? [h('h3', {}, `契約にない明細（${sum.unlinked.length}件）`),
-        h('p', { class: 'muted small' }, '固定費なら、明細を開いて契約にひも付けると、次から自動で照合します。'),
+      sum.unlinked.length ? [h('h3', { class: 'with-icon' }, `契約にない明細（${sum.unlinked.length}件）`, helpButton('契約にない明細', '固定費なら、明細を開いて契約にひも付けると、次から自動で照合します。')),
         h('div', { class: 'list' }, sum.unlinked.map(txRow))] : null,
       txs.filter((t) => t.contract_id && t.counted && !t.transfer).length ? h('details', {}, h('summary', {}, '契約にひも付いた明細'),
         h('div', { class: 'list' }, txs.filter((t) => t.contract_id && t.counted && !t.transfer).map(txRow))) : null,
@@ -1051,11 +1115,14 @@ async function settlePersonal(memberId, lines) {
 function personalCard() {
   if (!sharedAccountId()) return null;
   const data = personalLines();
-  const head = h('h2', { class: 'with-icon' }, icon('user'), '個人負担の精算');
+  const head = h('h2', { class: 'with-icon' }, icon('user'), '個人負担の精算', helpButton('個人負担の精算',
+    '共通口座やカードで払ったもののうち本人が負担するものは、明細を開いて「負担」を「○○の個人負担」にすると、ここにまとまります。',
+    '「精算する」を押すと、合計を今月の臨時の費目（その人が共通口座へ追加で入れる額）として追加します。その臨時の費目を削除すると、精算待ちに戻ります。',
+    '「確認中」は誰の負担か確かめている明細です。決まるまでは共通の支出として数えます。'));
   if (!data) return h('section', { class: 'card' }, head, h('p', { class: 'muted' }, '読み込み中…'));
   if (data.pending.length === 0 && data.review.length === 0) {
     return h('section', { class: 'card' }, head,
-      h('p', { class: 'muted small' }, '共通口座やカードで払ったもののうち、本人が負担するものは、明細を開いて「負担」を変えると、ここにまとまります。'));
+      h('p', { class: 'muted' }, '精算待ちはありません。'));
   }
   const byMember = new Map();
   for (const t of data.pending) {
@@ -1071,9 +1138,8 @@ function personalCard() {
           : null),
       h('div', { class: 'list' }, lines.map(txRow)))),
     data.review.length ? [h('h3', {}, `確認中（${data.review.length}件）`),
-      h('p', { class: 'muted small' }, '誰の負担か確認中の明細です。決まるまでは共通の支出として数えます。明細を開いて「負担」を選んでください。'),
       h('div', { class: 'list' }, data.review.map(txRow))] : null,
-    h('p', { class: 'muted small' }, '「精算する」を押すと、合計を今月の臨時の費目（その人が共通口座へ追加で入れる額）として追加します。その臨時の費目を削除すると、精算待ちに戻ります。'));
+  );
 }
 
 async function relinkUnlinked() {
@@ -1091,19 +1157,19 @@ async function relinkUnlinked() {
 }
 
 function renderTx(id) {
-  const back = h('a', { class: 'back', href: '#/flow' }, '← お金');
-  setView('明細', back, h('p', { class: 'muted' }, '読み込み中…'));
+  const back = (title) => pageHead({ title, icon: 'flow', back: { href: '#/flow/ext', text: 'お金へ' } });
+  setView('明細', back('明細'), h('p', { class: 'muted' }, '読み込み中…'));
   db.selectWhere('transactions', `id=eq.${encodeURIComponent(id)}`).then((rows) => {
     const t = rows[0];
     if (!t) {
-      setView('見つかりません', back, h('p', {}, 'この明細は見つかりませんでした。'));
+      setView('見つかりません', back('明細'), h('p', {}, 'この明細は見つかりませんでした。'));
       return;
     }
     const contracts = [...state.data.contracts].sort(byName);
     const select = h('select', { id: 'f-contract' }, h('option', { value: '' }, '（ひも付けない）'),
       contracts.map((c) => h('option', { value: c.id, selected: c.id === t.contract_id }, c.name + (c.status === 'closed' ? '（解約済み）' : ''))));
     const remember = h('input', { type: 'checkbox', id: 'f-remember', checked: !t.contract_id });
-    const keyword = h('input', { type: 'text', id: 'f-keyword', maxlength: 50, value: t.description.replace(/[\s　]+/g, ' ').trim().slice(0, 20) });
+    const keyword = h('input', { type: 'text', id: 'f-keyword', maxlength: 50, value: t.description.replace(/[\s　]+/g, ' ').trim().slice(0, 20), placeholder: '例: 中部電力（毎回変わる部分は消す）' });
     const counted = h('input', { type: 'checkbox', id: 'f-counted', checked: t.counted && !t.transfer, disabled: t.transfer });
     const burdenNow = t.personal_member_id || (t.needs_review ? 'review' : '');
     const burden = h('select', { id: 'f-burden', disabled: Boolean(t.settled_entry_id) },
@@ -1143,7 +1209,7 @@ function renderTx(id) {
       toast(relinked ? `保存しました（ほかに ${relinked}件をひも付けました）。` : '保存しました。');
       location.hash = `#/flow/ext/${t.date.slice(0, 7)}`;
     }) }, '保存');
-    setView('明細', back, h('h1', {}, t.description || '明細'),
+    setView('明細', back(t.description || '明細'),
       h('section', { class: 'card' },
         h('dl', { class: 'shared-figures' },
           h('dt', {}, '日付'), h('dd', {}, t.date),
@@ -1151,17 +1217,17 @@ function renderTx(id) {
           h('dt', {}, '金融機関'), h('dd', {}, t.institution || ''),
           h('dt', {}, '分類'), h('dd', {}, [t.category, t.subcategory].filter(Boolean).join('・')),
           t.memo ? [h('dt', {}, 'メモ'), h('dd', {}, t.memo)] : null),
-        t.transfer ? h('p', { class: 'muted small' }, 'マネーフォワードで「振替」の明細です（カードの引き落としなど）。二重に数えないよう集計に含めません。') : null),
+        t.transfer ? h('p', {}, h('span', { class: 'tag' }, '振替'), helpButton('振替', 'マネーフォワードで「振替」の明細です（カードの引き落としなど）。二重に数えないよう集計に含めません。')) : null),
       h('section', { class: 'card form' },
         h('div', { class: 'field' }, h('label', { for: 'f-contract' }, '契約にひも付ける'), select),
         h('div', { class: 'field checkbox' }, remember, h('label', { for: 'f-remember' }, 'キーワードとして覚え、ほかの明細も照合する')),
         h('div', { class: 'field' }, h('label', { for: 'f-keyword' }, 'キーワード（明細の内容に含まれる語）'), keyword,
-          h('p', { class: 'muted small' }, '月や番号など毎回変わる部分は消してください（例: 「中部電力」）。')),
+),
         h('div', { class: 'field checkbox' }, counted, h('label', { for: 'f-counted' }, '集計に含める')),
-        h('div', { class: 'field' }, h('label', { for: 'f-burden' }, '負担'), burden,
-          h('p', { class: 'muted small' }, t.settled_entry_id
-            ? '精算済みです。変えるときは、精算の臨時の費目（共通口座の入金管理）を先に削除してください。'
-            : '共通口座で払ったが、本人が負担するもの（個人の買い物など）は「○○の個人負担」にします。共通の支出から外れ、「個人負担の精算」にまとまります。')),
+        h('div', { class: 'field' }, h('div', { class: 'label-row' }, h('label', { for: 'f-burden' }, '負担'), helpButton('負担',
+          '共通口座で払ったが本人が負担するもの（個人の買い物など）は「○○の個人負担」にします。共通の支出から外れ、「個人負担の精算」にまとまります。',
+          '精算済みの明細を変えるときは、精算の臨時の費目を先に削除してください。')), burden,
+          t.settled_entry_id ? h('span', { class: 'tag' }, '精算済み') : null),
         h('div', { class: 'actions' }, h('a', { class: 'button', href: `#/flow/ext/${t.date.slice(0, 7)}` }, 'キャンセル'), save)));
   }).catch(handleError);
 }
@@ -1233,16 +1299,12 @@ function renderMoney(tabParam, periodParam) {
   const period = moneyPeriod(periodParam) || state.money[tab] || current;
   state.money.tab = tab;
   state.money[tab] = period;
-  const tabs = h('nav', { class: 'tabs', 'aria-label': 'お金の表示' }, Object.entries(MONEY_TABS).map(([key, label]) => h('a', {
-    class: `tab${key === tab ? ' active' : ''}`,
-    href: `#/flow/${key}/${state.money[key] || current}`,
-    'aria-current': key === tab ? 'page' : null,
-  }, label)));
+  const tabs = Object.entries(MONEY_TABS).map(([key, label]) => ({ key, label, href: `#/flow/${key}/${state.money[key] || current}` }));
   const isYear = period.length === 4;
   const content = tab === 'ext' ? (isYear ? extYearView(period) : extMonthView(period))
     : tab === 'flow' ? flowView(period)
       : (isYear ? memberYearView(period) : memberMonthView(period));
-  setView('お金', h('h1', { class: 'with-icon' }, icon('flow'), 'お金'), tabs, periodNav(tab, period), ...[content].flat().filter(Boolean));
+  setView('お金', pageHead({ title: 'お金', icon: 'flow', tabs, tab, sub: periodNav(tab, period) }), ...[content].flat().filter(Boolean));
 }
 
 // ---- tab 3: 流れ図 (people -> shared account -> cards -> payees), the balance of the shared account
@@ -1255,23 +1317,24 @@ function flowView(period) {
   const hasFlow = lastCol.length > 0 || flow.columns.length === 4;
   const sharedAcc = flow.sharedId ? find('accounts', flow.sharedId) : null;
   const flowCard = h('section', { class: 'card' },
-    h('h2', {}, flow.columns.length === 4 ? `${flow.columns[0].map((p) => p.label).join('・')} → 口座 → カード → 支払先（${unit}）` : `口座 → カード → 支払先（${unit}）`),
+    h('h2', { class: 'with-icon' }, flow.columns.length === 4 ? `${flow.columns[0].map((p) => p.label).join('・')} → 口座 → カード → 支払先（${unit}）` : `口座 → カード → 支払先（${unit}）`,
+      helpButton('お金の流れ図', isYear
+        ? '左端はその年に共通口座へ入れる当月分の合計、右側は契約のその年の額（月払いは各月の額の合計、年払いは支払月の額）です。'
+        : '左端は共通口座へ入れる当月分、右側はその月の契約の額です（※ 年払いは12で割った額）。',
+      '帯の太さは金額です。カードの利用額（変動分）は含みません。名前を押すと詳細を開きます。')),
     hasFlow
       ? [flowChart(flow.columns, flow.links, { ariaLabel: `お金の流れ（${unit}）` }), flowLegend(flow)]
-      : h('p', { class: 'muted' }, '支払方法と金額が入った契約を登録すると、口座からの流れを表示します。'),
-    h('p', { class: 'muted small' }, isYear
-      ? '左端はその年に共通口座へ入れる当月分の合計、右側は契約のその年の額（月払いは各月の額の合計、年払いは支払月の額）。帯の太さは金額。カードの利用額（変動分）は含みません。名前を押すと詳細を開きます。'
-      : '左端は共通口座へ入れる当月分、右側はその月の契約の額（※ 年払いは12で割った額）。帯の太さは金額。カードの利用額（変動分）は含みません。名前を押すと詳細を開きます。'));
+      : h('p', { class: 'muted' }, '支払方法と金額が入った契約を登録すると、口座からの流れを表示します。'));
   const diff = flow.sharedIn - flow.sharedOut;
   const balanceCard = h('section', { class: 'card' },
-    h('h2', { class: 'with-icon' }, icon('bank'), sharedAcc ? `共通口座の収支（${sharedAcc.name}・${unit}）` : '共通口座の収支'),
+    h('h2', { class: 'with-icon' }, icon('bank'), sharedAcc ? `共通口座の収支（${sharedAcc.name}・${unit}）` : '共通口座の収支',
+      helpButton('共通口座の収支', '入る額は全員の当月分の合計です。', '出る額は、共通口座から直接、またはこの口座から引き落とされるカードで払う契約の額です（契約の登録が少ないと実際より小さくなります）。')),
     sharedAcc
       ? [h('div', { class: 'kpis kpis-3' },
         kpi('入る額', yen(flow.sharedIn).replace('円', ''), '円'),
         kpi('出る額', yen(flow.sharedOut).replace('円', ''), '円'),
         kpi(diff < 0 ? '差（不足）' : '差（余裕）', signedYen(diff).replace('円', ''), '円', diff < 0 ? 'kpi-alert' : '')),
-      diff < 0 ? h('p', { class: 'error with-icon' }, icon('alert'), '共通口座から出る固定費が、入る額より多くなっています。') : null,
-      h('p', { class: 'muted small' }, '入る額は全員の当月分の合計。出る額は、共通口座から直接、またはこの口座から引き落とされるカードで払う契約の額です（契約の登録が少ないと実際より小さくなります）。')]
+      diff < 0 ? h('p', { class: 'error with-icon' }, icon('alert'), '共通口座から出る固定費が、入る額より多くなっています。') : null]
       : [h('p', {}, '共通口座にする口座を選ぶと、入る額と出る額を比べられます。'), sharedAccountPicker()]);
   return [flowCard, balanceCard, accountTotalsCard(flow, unit)];
 }
@@ -1284,15 +1347,19 @@ function periodNav(tab, period) {
   const year = period.slice(0, 4);
   const now = isYear ? year === current.slice(0, 4) : period === current;
   const monthOfYear = year === current.slice(0, 4) ? current : `${year}-01`;
-  return h('div', { class: 'period-bar' },
-    h('div', { class: 'month-nav month-nav-page' },
+  return [
+    h('div', { class: 'month-nav' },
       h('a', { class: 'button small', href: link(isYear ? String(Number(year) - 1) : ymAdd(period, -1)), 'aria-label': isYear ? '前の年' : '前の月' }, '◀'),
-      h('h2', { class: 'month-label' }, isYear ? `${Number(year)}年` : ymLabel(period), now ? h('span', { class: 'badge badge-now' }, isYear ? '今年' : '今月') : null),
+      h('div', { class: 'month-label' },
+        h('h2', {}, isYear ? `${Number(year)}年` : ymLabel(period)),
+        now ? h('span', { class: 'badge badge-now' }, isYear ? '今年' : '今月')
+          : h('a', { class: 'badge badge-jump', href: link(isYear ? current.slice(0, 4) : current) }, isYear ? '今年へ' : '今月へ')),
       h('a', { class: 'button small', href: link(isYear ? String(Number(year) + 1) : ymAdd(period, 1)), 'aria-label': isYear ? '次の年' : '次の月' }, '▶')),
-    h('div', { class: 'button-row period-switch' },
-      h('a', { class: `button small${isYear ? '' : ' primary'}`, href: link(isYear ? monthOfYear : period), 'aria-current': isYear ? null : 'true' }, '月ごと'),
-      h('a', { class: `button small${isYear ? ' primary' : ''}`, href: link(year), 'aria-current': isYear ? 'true' : null }, '年間'),
-      now ? null : h('a', { class: 'button small', href: link(isYear ? current.slice(0, 4) : current) }, isYear ? '今年へ' : '今月へ')));
+    segmented([
+      { label: '月ごと', href: link(isYear ? monthOfYear : period), active: !isYear },
+      { label: '年間', href: link(year), active: isYear },
+    ], '月ごと・年間'),
+  ];
 }
 
 // ---- tab 1: 共通口座 ⇔ 外部
@@ -1325,7 +1392,8 @@ function clearTxCache() {
 
 function extYearView(year) {
   const sharedId = sharedAccountId();
-  const head = h('h2', { class: 'with-icon' }, icon('database'), `共通口座の明細（${Number(year)}年）`);
+  const head = h('h2', { class: 'with-icon' }, icon('database'), `共通口座の明細（${Number(year)}年）`,
+    helpButton('年間の明細', '入金・出金は外部とのお金だけです（個人との入出金・振替・個人負担は含みません）。', '月を押すとその月の詳細を開きます。'));
   if (!sharedId) return h('section', { class: 'card' }, head, h('p', { class: 'muted' }, '共通口座を設定すると、マネーフォワードの明細を取り込めます。'));
   const txs = yearTransactions(year);
   if (txs === null) return h('section', { class: 'card' }, head, h('p', { class: 'muted' }, '読み込み中…'));
@@ -1358,7 +1426,7 @@ function extYearView(year) {
             h('th', { scope: 'row' }, h('a', { href: `#/flow/ext/${r.ym}` }, `${Number(r.ym.slice(5))}月`)),
             numCell(r.inflow, r.has), numCell(r.outflow, r.has), h('td', { class: 'num' }, r.planned ? yen(r.planned) : '—'))),
           h('tr', { class: 'total' }, h('th', { scope: 'row' }, '合計'), numCell(total('inflow'), true), numCell(total('outflow'), true), numCell(total('planned'), true))))),
-      h('p', { class: 'muted small' }, '入金・出金は外部とのお金だけです（個人との入出金・振替・個人負担は含みません）。月を押すとその月の詳細を開きます。')),
+),
     contractRows.length ? h('section', { class: 'card' },
       h('h2', {}, '契約ごとの予定と実績（年間）'),
       h('div', { class: 'table-wrap' }, h('table', { class: 'table' },
@@ -1382,31 +1450,32 @@ function personalCostsCard() {
   const rows = state.data.contracts.map((c) => ({ c, d: contractDeduction(c, ctx).target })).filter((x) => x.d)
     .sort((a, b) => memberNick(a.d.member_id).localeCompare(memberNick(b.d.member_id), 'ja') || a.d.amount - b.d.amount);
   return h('section', { class: 'card' },
-    h('h2', { class: 'with-icon' }, icon('user'), '個人の口座から払っている共通の費用'),
+    h('h2', { class: 'with-icon' }, icon('user'), '個人の口座から払っている共通の費用', helpButton('個人の口座から払っている共通の費用',
+      '契約で「共通の費用」にし、支払元を個人の口座（またはその口座から引き落とされるカード）にすると、ここに出ます。',
+      '個人の口座の明細は取り込まないため、予定の額です。その人の当月分から差し引きます。')),
     rows.length === 0
-      ? h('p', { class: 'muted small' }, '契約で「共通の費用」にし、支払元を個人の口座（またはその口座から引き落とされるカード）にすると、ここに出ます。')
+      ? h('p', { class: 'muted' }, 'ありません。')
       : [h('div', { class: 'table-wrap' }, h('table', { class: 'table' },
         h('thead', {}, h('tr', {}, h('th', {}, '契約'), h('th', {}, '差し引く人'), h('th', {}, 'いつ'), h('th', { class: 'num' }, '金額（予定）'))),
         h('tbody', {}, rows.map(({ c, d }) => h('tr', {},
           h('td', {}, h('a', { href: `#/view/contracts/${c.id}` }, c.name)),
           h('td', {}, memberNick(d.member_id)),
           h('td', {}, d.month_of_year ? `毎年${d.month_of_year}月` : '毎月'),
-          h('td', { class: 'num' }, yen(-d.amount))))))),
-      h('p', { class: 'muted small' }, '個人の口座の明細は取り込まないため、予定の額です。その人の当月分から差し引きます。')]);
+          h('td', { class: 'num' }, yen(-d.amount)))))))]);
 }
 
 function memberIntroCard() {
   return h('section', { class: 'card' },
     h('h2', {}, '共通口座への入金'),
     h('p', {}, '共通口座への入金を、人ごとに管理します。まず「定例項目」（毎月の基本の額や、個人で払っている共通の費用）を登録してください。'),
-    isAdmin() ? h('a', { class: 'button primary', href: '#/shared-rule/new' }, '＋ 定例項目を追加') : h('p', { class: 'muted small' }, '定例項目は管理者が設定します。'));
+    isAdmin() ? h('a', { class: 'button primary', href: '#/shared-rule/new' }, '＋ 定例項目を追加') : null);
 }
 
 // 「立替を記録」: on one's own card (administrators: on every card).
 function advanceButton(memberId, ym) {
   const mine = me();
   if (!isAdmin() && !(mine && mine.id === memberId)) return null;
-  return h('div', { class: 'button-row' },
+  return h('div', { class: 'button-row equal' },
     h('a', { class: 'button primary', href: `#/shared-entry/new/advance:${memberId}:${ym}` }, '立替を記録'),
     h('a', { class: 'button', href: `#/deposit-report/new/${memberId}` }, '入金を報告'));
 }
@@ -1497,17 +1566,16 @@ function memberMonthView(ym) {
   });
   return [
     h('section', { class: 'month-panel', 'aria-label': `${ymLabel(ym)}の入金状況` },
-      h('h2', {}, '共通口座への入金状況'),
-      cards,
-      h('p', { class: 'muted small' }, '入金はマネーフォワードの明細から自動で記録します（取り込みは管理者）。')),
+      h('h2', { class: 'with-icon' }, '共通口座への入金状況', helpButton('共通口座への入金状況', '入金はマネーフォワードの明細から自動で記録します（取り込みは管理者）。', '立替は自分のカードの「立替を記録」、振り込んだら「入金を報告」から入れます。')),
+      cards),
     h('section', { class: 'card' },
-      h('h2', {}, `${ymLabel(ym)}の内訳`),
+      h('h2', { class: 'with-icon' }, `${ymLabel(ym)}の内訳`, helpButton('内訳',
+        'プラスは共通口座へ入れる額、マイナスは個人で払った共通の費用（入れる額から差し引き）です。',
+        '合計 = 前月繰越 + 当月分。共通口座から個人へ出たお金は「共通口座からの受け取り」（プラス）として自動で入ります。')),
       table,
-      h('p', { class: 'muted small' }, 'プラスは共通口座へ入れる額、マイナスは個人で払った共通の費用（入れる額から差し引き）です。合計 = 前月繰越 + 当月分。共通口座から個人へ出たお金は「共通口座からの受け取り」（プラス）として自動で入ります。'),
       h('h3', {}, 'この月の立替・入金など'),
-      h('p', { class: 'muted small' }, '立替は、上の自分のカードの「立替を記録」から入れます。入金はマネーフォワードの明細から自動で記録します。'),
       entryList,
-      isAdmin() ? h('div', { class: 'button-row' },
+      isAdmin() ? h('div', { class: 'button-row equal' },
         h('a', { class: 'button', href: `#/shared-entry/new/deposit::${ym}` }, '＋ 入金（管理者）'),
         h('a', { class: 'button', href: `#/shared-entry/new/charge::${ym}` }, '＋ 臨時の費目（管理者）')) : null),
     depositReportsCard(ym, sts),
@@ -1518,10 +1586,10 @@ function memberMonthView(ym) {
       lineChart(series, '人ごとの未入金の残高の推移'),
       legend),
     h('section', { class: 'card' },
-      h('div', { class: 'title-row' }, h('h2', {}, '定例項目'), isAdmin() ? h('a', { class: 'button', href: '#/shared-rule/new' }, '＋ 追加') : null),
-      h('p', { class: 'muted small' }, isAdmin()
-        ? '毎月自動で計上されます。金額が変わるときは、今の項目に終了月を入れ、新しい金額で追加します。'
-        : '毎月自動で計上されます。定例項目は管理者が設定します。'),
+      cardHead(null, '定例項目', {
+        help: ['毎月自動で計上されます。', isAdmin() ? '金額が変わるときは、今の項目に終了月を入れ、新しい金額で追加します。' : '定例項目は管理者が設定します。'],
+        action: isAdmin() ? h('a', { class: 'button small', href: '#/shared-rule/new' }, '＋ 追加') : null,
+      }),
       rulesByMember),
   ];
 }
@@ -1552,7 +1620,7 @@ function memberYearView(year) {
             h('td', { class: 'num' }, r.deposit ? yen(r.deposit) : '—'),
             h('td', { class: `num${r.balance > 0 ? ' due' : ''}` }, signedYen(r.balance)))),
           h('tr', { class: 'total' }, h('th', { scope: 'row' }, '合計'), h('td', { class: 'num' }, signedYen(charges)), h('td', { class: 'num' }, yen(deposit)), h('td', { class: 'num' }, signedYen(last.balance)))))),
-      h('p', { class: 'muted small' }, `前年からの繰越: ${signedYen(rows[0].carry)}。月を押すとその月の内訳を開きます。`));
+      h('p', { class: 'meta' }, `前年からの繰越 ${signedYen(rows[0].carry)}`));
   });
   return [...cards, personalCostsCard()];
 }
@@ -1628,7 +1696,7 @@ function sharedForm({ title, back, fields, extra, onSave, onDelete }) {
   summary, extra.before || null, fields.map((i) => i.el), extra.after || null,
   h('div', { class: 'actions' }, h('a', { class: 'button', href: back }, 'キャンセル'), submit));
   const del = onDelete ? h('button', { type: 'button', class: 'danger', onclick: (ev) => busy(ev.currentTarget, onDelete) }, '削除') : null;
-  setView(title, h('h1', {}, title), form, del ? h('div', { class: 'actions' }, del) : null);
+  setView(title, pageHead({ title, icon: 'flow', back: { href: back, text: '戻る' } }), form, del ? h('div', { class: 'actions' }, del) : null);
 }
 
 // Who may change a record of the shared account ledger (the database enforces the same rule):
@@ -1679,8 +1747,9 @@ function attachmentBox(kind, parentId, title, onRead = null) {
       return h('figure', { class: 'photo' }, img,
         h('button', { type: 'button', class: 'small', onclick: () => { pending.splice(i, 1); URL.revokeObjectURL(url); draw(); } }, '外す'));
     });
-    box.replaceChildren(
-      h('label', { for: `attach-${kind}` }, title),
+    box.replaceChildren(...[
+      h('div', { class: 'label-row' }, h('span', { class: 'label' }, `${title}（${saved().length + pending.length}/${MAX_ATTACHMENTS}）`),
+        helpButton(title, `${MAX_ATTACHMENTS}枚まで。縮小してから保存します。`, 'カード番号の全桁などが写っていないか確認してください。', onRead ? '「画像から読む」で金額・日付などの候補を入れます。保存前に確認してください。' : null)),
       saved().length ? attachmentThumbs(saved(), async (p) => {
         if (!window.confirm('この画像を削除しますか？')) return;
         await removeAttachments([p]);
@@ -1691,8 +1760,7 @@ function attachmentBox(kind, parentId, title, onRead = null) {
         saved().length + pending.length < MAX_ATTACHMENTS ? h('label', { for: `attach-${kind}`, class: 'button' }, '画像を追加（撮影・選択）') : null,
         onRead && (pending.length || saved().length) ? h('button', { type: 'button', onclick: (ev) => busy(ev.currentTarget, () => readFirstImage()) }, '画像から読む（OCR）') : null),
       input,
-      h('p', { class: 'muted small' }, `${MAX_ATTACHMENTS}枚まで。縮小してから保存します。カード番号の全桁などが写っていないか確認してください。`),
-      status);
+      status].filter(Boolean));
   };
   // OCR of the first image (the one just added, or the first saved one); onRead gets the parsed values
   const readFirstImage = async () => {
@@ -1811,7 +1879,7 @@ function renderSharedEntry(id, preset) {
   const name = deposit ? '入金' : advance ? '立替' : '臨時の費目';
   const files = deposit ? [] : attachmentsOf('entry', e.id);
   if (!isNew && !canWriteEntry(e)) {
-    setView(name, h('a', { class: 'back', href: back }, '← お金'), h('h1', {}, `${memberNick(e.member_id)}の${name}`),
+    setView(name, pageHead({ title: `${memberNick(e.member_id)}の${name}`, icon: 'flow', back: { href: back, text: 'お金へ' } }),
       h('section', { class: 'card' },
         h('dl', { class: 'shared-figures' },
           h('dt', {}, '人'), h('dd', {}, memberNick(e.member_id)),
@@ -1820,9 +1888,8 @@ function renderSharedEntry(id, preset) {
           h('dt', {}, '金額'), h('dd', { class: 'num' }, deposit ? yen(e.amount) : signedYen(e.amount)),
           e.memo ? [h('dt', {}, 'メモ'), h('dd', {}, e.memo)] : null),
         files.length ? attachmentThumbs(files) : null,
-        h('p', { class: 'muted small' }, deposit
-          ? '入金はマネーフォワードの明細から自動で記録しています。直すときは管理者に連絡してください。'
-          : '自分の記録だけ変更できます。直すときは本人か管理者に連絡してください。')));
+        h('p', { class: 'meta with-icon' }, deposit ? '明細から自動で記録' : '本人と管理者だけが変更できます',
+          helpButton('変更できる人', deposit ? '入金はマネーフォワードの明細から自動で記録しています。直すときは管理者に連絡してください。' : '自分の記録だけ変更できます。直すときは本人か管理者に連絡してください。'))));
     return;
   }
   const fixedMember = !isAdmin();
@@ -1899,14 +1966,14 @@ function renderDepositReport(id, memberParam) {
   }
   const back = `#/flow/member/${String(r.paid_on).slice(0, 7)}`;
   if (!isNew && !canWriteReport(r)) {
-    setView('入金報告', h('a', { class: 'back', href: back }, '← お金'), h('h1', {}, `${memberNick(r.member_id)}の入金報告`),
+    setView('入金報告', pageHead({ title: `${memberNick(r.member_id)}の入金報告`, icon: 'flow', back: { href: back, text: 'お金へ' } }),
       h('section', { class: 'card' },
         h('dl', { class: 'shared-figures' },
           h('dt', {}, '振込日'), h('dd', {}, dateText(r.paid_on)),
           h('dt', {}, '金額'), h('dd', { class: 'num' }, yen(r.amount)),
           r.memo ? [h('dt', {}, 'メモ'), h('dd', {}, r.memo)] : null),
         attachmentsOf('report', r.id).length ? attachmentThumbs(attachmentsOf('report', r.id)) : null,
-        h('p', { class: 'muted small' }, '入金報告は本人だけが変更できます。')));
+        h('p', { class: 'meta' }, '本人と管理者だけが変更できます')));
     return;
   }
   const fixedMember = !isAdmin();
@@ -1921,7 +1988,7 @@ function renderDepositReport(id, memberParam) {
     back,
     fields,
     extra: {
-      before: [memberField, h('p', { class: 'muted small' }, '報告は記録として残すだけで、計算には使いません（入金の実績はマネーフォワードの明細から自動で記録します）。')],
+      before: memberField,
       after: attach.el,
       values: () => ({ member_id: fixedMember ? r.member_id : member.value }),
     },
@@ -1947,7 +2014,9 @@ function renderDepositReport(id, memberParam) {
 function depositReportsCard(ym, sts) {
   const reports = state.depositReports.filter((r) => String(r.paid_on).startsWith(ym));
   return h('section', { class: 'card' },
-    h('h2', {}, `入金報告（${ymLabel(ym)}）`),
+    h('h2', { class: 'with-icon' }, `入金報告（${ymLabel(ym)}）`, helpButton('入金報告',
+      '報告は記録として残すだけで、計算には使いません（入金の実績はマネーフォワードの明細から自動で記録します）。',
+      '報告は振込日の月で数えます。明細の取り込みが遅れると差が出ます。')),
     h('div', { class: 'table-wrap' }, h('table', { class: 'table' },
       h('thead', {}, h('tr', {}, h('th', {}, '人'), h('th', { class: 'num' }, '報告の合計'), h('th', { class: 'num' }, '明細からの入金'), h('th', { class: 'num' }, '差'))),
       h('tbody', {}, sts.map(({ m, st }) => {
@@ -1965,7 +2034,7 @@ function depositReportsCard(ym, sts) {
         r.memo ? h('div', { class: 'muted small' }, r.memo) : null),
       h('span', { class: 'num' }, yen(r.amount)),
       icon('chevron', 'ic ic-sm list-chevron')))) : h('p', { class: 'muted' }, 'この月の入金報告はありません。'),
-    h('p', { class: 'muted small' }, '報告は振込日の月で数えます。明細からの入金は、マネーフォワードの取り込みで記録した額です（明細の取り込みが遅れると差が出ます）。'));
+  );
 }
 
 const SHARED_RULE_FIELDS = [
@@ -1987,7 +2056,7 @@ function renderSharedRule(id) {
   if (r.contract_id) {
     // kept by the app from the contract: change the contract instead
     const c = find('contracts', r.contract_id);
-    setView(`${r.label}（定例）`, h('h1', {}, `${r.label}（定例）`),
+    setView(`${r.label}（定例）`, pageHead({ title: `${r.label}（定例）`, icon: 'flow', back: { href: '#/flow/member', text: 'お金へ' } }),
       h('section', { class: 'card' },
         h('dl', { class: 'shared-figures' },
           h('dt', {}, '人'), h('dd', {}, memberNick(r.member_id)),
@@ -2004,14 +2073,14 @@ function renderSharedRule(id) {
       location.hash = '#/flow/member';
       return;
     }
-    setView(`${r.label}（定例）`, h('a', { class: 'back', href: '#/flow/member' }, '← お金'), h('h1', {}, `${r.label}（定例）`),
+    setView(`${r.label}（定例）`, pageHead({ title: `${r.label}（定例）`, icon: 'flow', back: { href: '#/flow/member', text: 'お金へ' } }),
       h('section', { class: 'card' },
         h('dl', { class: 'shared-figures' },
           h('dt', {}, '人'), h('dd', {}, memberNick(r.member_id)),
           h('dt', {}, '金額'), h('dd', { class: 'num' }, signedYen(r.amount)),
           h('dt', {}, '期間'), h('dd', {}, ruleSchedule(r)),
           r.memo ? [h('dt', {}, 'メモ'), h('dd', {}, r.memo)] : null),
-        h('p', { class: 'muted small' }, '定例項目は管理者が設定します。')));
+        h('p', { class: 'meta' }, '管理者だけが変更できます')));
     return;
   }
   const member = sharedMemberSelect('f-member', r.member_id);
@@ -2072,14 +2141,14 @@ function depositReportsCSV() {
 // ---------------------------------------------------------------- ledgers / list
 
 function renderLedgers() {
-  setView('台帳', h('h1', {}, '台帳'), h('div', { class: 'tiles tiles-wide' }, LEDGER_ORDER.map((k) => {
+  setView('台帳', pageHead({ title: '台帳', icon: 'ledgers' }), h('div', { class: 'tiles tiles-wide' }, LEDGER_ORDER.map((k) => {
     const rows = state.data[k];
     const active = rows.filter((r) => r.status !== 'closed').length;
     return h('a', { class: 'tile', href: `#/list/${k}` },
       ledgerIcon(k),
       h('div', { class: 'tile-count num' }, String(active), h('small', {}, ' 件')),
       h('div', { class: 'tile-label' }, LEDGERS[k].label),
-      h('div', { class: 'muted small' }, `全${rows.length}件（解約済みを含む）`));
+      rows.length > active ? h('div', { class: 'meta' }, `解約済み ${rows.length - active}件`) : null);
   })));
 }
 
@@ -2138,7 +2207,7 @@ function renderList(ledger) {
       ledgerIcon(ledger, 'icbox-sm'),
       h('div', { class: 'list-body' },
         h('div', { class: 'list-title' }, r.name, r.status === 'closed' ? h('span', { class: 'badge badge-past' }, '解約済み') : null),
-        h('div', { class: 'muted small' }, summaryLine(ledger, r)),
+        h('div', { class: 'meta' }, summaryLine(ledger, r)),
         r.tags && r.tags.length ? h('div', { class: 'tags' }, r.tags.map((t) => h('span', { class: 'tag' }, t))) : null),
       icon('chevron', 'ic ic-sm list-chevron'))));
   };
@@ -2146,7 +2215,7 @@ function renderList(ledger) {
   status.addEventListener('change', update);
   update();
   setView(def.label,
-    h('div', { class: 'title-row' }, h('h1', { class: 'with-icon' }, ledgerIcon(ledger), def.label), h('a', { class: 'button primary', href: `#/edit/${ledger}/new` }, '＋ 追加')),
+    pageHead({ title: def.label, icon: ledger, back: { href: '#/ledgers', text: '台帳へ' }, action: h('a', { class: 'button primary', href: `#/edit/${ledger}/new` }, '＋ 追加') }),
     h('div', { class: 'filters' }, q, status),
     list);
 }
@@ -2225,11 +2294,11 @@ function relations(ledger, r) {
   if (ledger === 'contracts') {
     const prices = sortedHistory(r.price_history);
     return [
-      prices.length ? h('section', { class: 'card' }, h('h2', {}, '金額の履歴'),
+      prices.length ? h('section', { class: 'card' }, h('h2', { class: 'with-icon' }, '金額の履歴', helpButton('金額の履歴', '金額を変えるときは「編集」で金額と適用開始月を入れます。', '予定と実績の比較では、その月の金額を使います。')),
         h('table', { class: 'table' },
           h('thead', {}, h('tr', {}, h('th', {}, '期間'), h('th', { class: 'num' }, '金額'))),
           h('tbody', {}, prices.slice().reverse().map((p) => h('tr', {}, h('td', {}, periodText(p) + (p.to ? '' : '（今）')), h('td', { class: 'num' }, yen(p.amount)))))),
-        h('p', { class: 'muted small' }, '金額を変えるときは「編集」で金額と適用開始月を入れます。予定と実績の比較では、その月の金額を使います。')) : null,
+) : null,
       r.shared_cost ? h('section', { class: 'card' }, h('h2', {}, '共通口座への入金との関係'), h('p', {}, deductionText(r)),
         h('a', { href: '#/flow' }, 'お金の流れ（共通口座）を見る')) : null,
     ];
@@ -2286,8 +2355,7 @@ function renderView(ledger, id) {
   const delBtn = h('button', { type: 'button', class: 'danger', onclick: (ev) => busy(ev.currentTarget, () => deleteRecord(ledger, r)) }, '削除');
 
   setView(r.name,
-    h('p', {}, h('a', { href: `#/list/${ledger}` }, `← ${def.label}の一覧`)),
-    h('div', { class: 'title-row' }, h('h1', { class: 'with-icon' }, ledgerIcon(ledger), r.name), h('a', { class: 'button primary', href: `#/edit/${ledger}/${r.id}` }, '編集')),
+    pageHead({ title: r.name, icon: ledger, back: { href: `#/list/${ledger}`, text: `${def.label}の一覧へ` }, action: h('a', { class: 'button primary', href: `#/edit/${ledger}/${r.id}` }, '編集') }),
     heroes.length ? h('div', { class: 'hero-grid' }, heroes) : null,
     h('section', { class: 'card' }, h('dl', { class: 'fields' }, [...rows, ...notifyRows].map(([k, v]) => [h('dt', {}, k), h('dd', {}, v)]))),
     def.photos ? photoSection(r) : null,
@@ -2359,10 +2427,10 @@ function historySection(table, record, fields) {
       console.error(e.detail || e);
       box.replaceChildren(h('p', { class: 'error' }, '変更履歴を読み込めませんでした。'));
     });
-  return h('section', { class: 'card' }, h('h2', {}, '変更履歴'),
+  return h('section', { class: 'card' }, h('h2', { class: 'with-icon' }, '変更履歴', helpButton('変更履歴', `新しい順に最大${HISTORY_LIMIT}件を表示します。`, '口座番号は伏せ字で記録しています。')),
     stamps.length ? h('div', { class: 'muted small stamps' }, stamps.map((t) => h('div', {}, t))) : null,
     box,
-    h('p', { class: 'muted small' }, `新しい順に最大${HISTORY_LIMIT}件。口座番号は伏せ字で記録しています。`));
+  );
 }
 
 // ---------------------------------------------------------------- photos
@@ -2446,8 +2514,7 @@ function photoSection(item) {
     h('p', { class: 'notice-text small' }, '⚠ カード番号の全桁・暗証番号などが写り込んでいないか確認してから追加してください。'),
     grid,
     h('label', { for: 'photo-input', class: 'button' }, '写真を追加（撮影・選択）'), input,
-    status,
-    h('p', { class: 'muted small' }, '写真は縮小・圧縮してから保存します。'));
+    status);
 }
 
 // ---------------------------------------------------------------- edit form
@@ -2457,9 +2524,8 @@ function fieldInput(field, r, ledger) {
   const v = r ? r[field.key] : undefined;
   const wrap = (input, getter, help) => ({
     el: h('div', { class: 'field', 'data-key': field.key },
-      field.type === 'bool' ? null : h('label', { for: id }, field.label, field.required ? h('span', { class: 'req' }, ' *') : null),
+      field.type === 'bool' ? null : h('div', { class: 'label-row' }, h('label', { for: id }, field.label, field.required ? h('span', { class: 'req' }, ' *') : null), help ? helpButton(field.label, help) : null),
       input,
-      help ? h('p', { class: 'muted small' }, help) : null,
       h('p', { class: 'error small field-error' })),
     get: getter,
   });
@@ -2564,8 +2630,7 @@ function notifyInput(type, r) {
   return {
     type,
     el: h('div', { class: 'field', 'data-key': `notify_${type}` },
-      h('label', { for: id }, `通知: ${EVENT_TYPES[type].label}（何日前）`), el,
-      h('p', { class: 'muted small' }, '例: 「30 7」で30日前と7日前。「なし」で通知しない。'),
+      h('div', { class: 'label-row' }, h('label', { for: id }, `通知: ${EVENT_TYPES[type].label}（何日前）`), helpButton('通知のタイミング', '例: 「30 7」で30日前と7日前。「なし」で通知しない。空欄は初期設定。')), el,
       h('p', { class: 'error small field-error' })),
     get: () => el.value,
   };
@@ -2636,23 +2701,24 @@ function renderEdit(ledger, id) {
     const candidates = !isAdmin() ? [] : isNew || !state.sharedRules.some((x) => x.contract_id === r.id) ? adoptableRules() : [];
     adopt = candidates.length ? h('select', { id: 'f-adopt' }, h('option', { value: '' }, '（引き継がない・今月から差し引く）'),
       candidates.map((x) => h('option', { value: x.id }, `${memberNick(x.member_id)}：${x.label} ${signedYen(x.amount)}（${ruleSchedule(x)}）`))) : null;
-    const adoptBox = adopt ? h('div', { class: 'field', 'data-key': 'adopt' }, h('label', { for: 'f-adopt' }, '既存の定例項目に引き継ぐ'), adopt,
-      h('p', { class: 'muted small' }, '共通口座の定例項目で同じ支払いを管理していた場合に選びます。過去の月の記録をそのまま引き継ぎ、二重に差し引きません。')) : null;
+    const adoptBox = adopt ? h('div', { class: 'field', 'data-key': 'adopt' }, h('div', { class: 'label-row' }, h('label', { for: 'f-adopt' }, '既存の定例項目に引き継ぐ'), helpButton('既存の定例項目に引き継ぐ', '共通口座の定例項目で同じ支払いを管理していた場合に選びます。過去の月の記録をそのまま引き継ぎ、二重に差し引きません。')), adopt) : null;
     const update = () => {
       const raw = Object.fromEntries(inputs.map((i) => [i.field.key, i.get()]));
       const v = { ...(r || {}), ...buildValues(def, raw, null).values, name: raw.name || '（名前未入力）' };
-      preview.textContent = v.shared_cost ? deductionText(v) : '個人の口座から払っている家の費用なら印を付けます。その人が共通口座へ入れる額（当月分）から自動で差し引きます。';
+      preview.textContent = v.shared_cost ? deductionText(v) : '';
+      preview.hidden = !v.shared_cost;
       if (adoptBox) adoptBox.hidden = !v.shared_cost;
     };
     // the form is built from inputs[].el later, so wrap the checkbox with its explanation here
-    shared.el = h('div', { class: 'shared-cost-box' }, shared.el, preview, adoptBox);
+    shared.el = h('div', { class: 'shared-cost-box' },
+      h('div', { class: 'label-row' }, shared.el, helpButton('共通の費用', '個人の口座から払っている家の費用なら印を付けます。', 'その人が共通口座へ入れる額（当月分）から自動で差し引きます。')),
+      preview, adoptBox);
     // amount by period: when the amount of an existing contract changes, ask from which month
     if (!isNew && r.amount !== null && r.amount !== undefined) {
       const amountInput = inputs.find((i) => i.field.key === 'amount');
       priceFrom = h('input', { type: 'month', id: 'f-price-from', value: thisYM() });
       const box = h('div', { class: 'field', 'data-key': 'price_from', hidden: true },
-        h('label', { for: 'f-price-from' }, '新しい金額の適用開始月'), priceFrom,
-        h('p', { class: 'muted small' }, `今の金額（${yen(r.amount)}）はその前の月までになり、金額の履歴に残ります。過去の月の予定額は変わりません。`),
+        h('div', { class: 'label-row' }, h('label', { for: 'f-price-from' }, '新しい金額の適用開始月'), helpButton('新しい金額の適用開始月', `今の金額（${yen(r.amount)}）はその前の月までになり、金額の履歴に残ります。過去の月の予定額は変わりません。`)), priceFrom,
         h('p', { class: 'error small field-error' }));
       const toggle = () => { box.hidden = String(amountInput.get()).replace(/[,円\s]/g, '') === String(r.amount); };
       amountInput.el.addEventListener('input', toggle);
@@ -2711,12 +2777,12 @@ function renderEdit(ledger, id) {
   summary,
   inputs.map((i) => i.el),
   notifyInputs.length ? h('fieldset', {}, h('legend', {}, '通知のタイミング'), notifyInputs.map((n) => n.el)) : null,
-  def.photos && isNew ? h('p', { class: 'muted small' }, '写真は保存した後の詳細画面から追加できます。') : null,
   h('div', { class: 'actions' },
     h('a', { class: 'button', href: isNew ? `#/list/${ledger}` : `#/view/${ledger}/${id}` }, 'キャンセル'),
     submit));
 
-  setView(isNew ? `${def.label}を追加` : `${r.name}を編集`, h('h1', {}, isNew ? `${def.label}を追加` : `${r.name}を編集`), form);
+  setView(isNew ? `${def.label}を追加` : `${r.name}を編集`,
+    pageHead({ title: isNew ? `${def.label}を追加` : `${r.name}を編集`, icon: ledger, back: { href: isNew ? `#/list/${ledger}` : `#/view/${ledger}/${r.id}`, text: '戻る' } }), form);
 }
 
 // ---------------------------------------------------------------- CSV
@@ -2921,20 +2987,18 @@ function importSection() {
 
   return h('section', { class: 'card' },
     h('h2', {}, 'CSV の取り込み・書き出し'),
-    h('h3', {}, 'テンプレート'),
-    h('p', { class: 'muted small' }, '見出し行だけのCSVです。Excel などで2行目から入力して保存し、下の「取り込み」で読み込みます。'),
+    h('h3', { class: 'with-icon' }, 'テンプレート', helpButton('テンプレート', '見出し行だけのCSVです。Excel などで2行目から入力して保存し、「取り込み」で読み込みます。')),
     h('div', { class: 'button-row' }, LEDGER_ORDER.map((k) => h('button', { type: 'button', class: 'small', onclick: () => download(`テンプレート_${LEDGERS[k].csvName}.csv`, ledgerCSV(k, false), 'text/csv') }, LEDGERS[k].label))),
-    isAdmin() ? [h('h3', {}, '取り込み'),
-    h('ul', { class: 'muted small' },
-      h('li', {}, '順番: 口座 → カード → 契約・固定費／ポイントカード・会員情報（引き落とし口座などは名前で結びつけるため）。'),
-      h('li', {}, 'ID が空欄の行は追加、書き出したCSVの ID が入った行はその内容で更新します。'),
-      h('li', {}, 'はい/いいえ、日付は 2026-01-31、年月は 2027-05、リンクは1行に「名前|URL」、タグは空白区切り。'),
-      h('li', {}, 'エラーが1件でもあると何も取り込みません。'),
-      h('li', {}, '口座は、口座マスタの見出し（摘要・支店名・預金科目・口座番号・口座名義）のままでも取り込めます。表題の行が上にあっても構いません。')),
+    isAdmin() ? [h('h3', { class: 'with-icon' }, '取り込み', helpButton('CSV の取り込み',
+      '順番: 口座 → カード → 契約・固定費／ポイントカード・会員情報（引き落とし口座などは名前で結びつけるため）。',
+      'ID が空欄の行は追加、書き出したCSVの ID が入った行はその内容で更新します。',
+      'はい/いいえ、日付は 2026-01-31、年月は 2027-05、リンクは1行に「名前|URL」、タグは空白区切り。',
+      'エラーが1件でもあると何も取り込みません。',
+      '口座は、口座マスタの見出し（摘要・支店名・預金科目・口座番号・口座名義）のままでも取り込めます。表題の行が上にあっても構いません。')),
     h('label', { for: 'import-ledger' }, '取り込む台帳'), ledgerSel,
     h('label', { for: 'import-file' }, 'CSVファイル（UTF-8 または Excel の CSV）'), file,
     h('div', { class: 'actions' }, run),
-    result] : h('p', { class: 'muted small' }, 'CSV の取り込みは管理者だけが行えます。'),
+    result] : null,
     h('h3', {}, '書き出し'),
     h('div', { class: 'button-row' }, LEDGER_ORDER.map((k) => h('button', { type: 'button', class: 'small', onclick: () => download(`${LEDGERS[k].csvName}_${todayJST()}.csv`, ledgerCSV(k), 'text/csv') }, LEDGERS[k].label))));
 }
@@ -2981,9 +3045,8 @@ function backupSection() {
   const status = h('p', { class: 'small', role: 'status' });
   const last = state.settings.last_backup_at;
   return h('section', { class: 'card' },
-    h('h2', {}, 'バックアップ'),
+    h('h2', { class: 'with-icon' }, 'バックアップ', helpButton('バックアップ', '全台帳のCSVと写真・添付画像を1つのZIPファイルにまとめてダウンロードします。', `Supabase の無料プランには自動バックアップが無いため、月1回程度の実行をおすすめします（${BACKUP_REMIND_DAYS}日たつとホーム画面でお知らせします）。`, '写真が多い場合はPCでの実行をおすすめします。')),
     h('p', {}, `最後のバックアップ: ${last ? new Date(last).toLocaleString('ja-JP') : 'まだありません'}`),
-    h('p', { class: 'muted small' }, `全台帳のCSVと写真を1つのZIPファイルにまとめてダウンロードします。Supabase の無料プランには自動バックアップが無いため、月1回程度の実行をおすすめします（${BACKUP_REMIND_DAYS}日たつとホーム画面でお知らせします）。写真が多い場合はPCでの実行をおすすめします。`),
     h('button', { type: 'button', class: 'primary', onclick: (ev) => busy(ev.currentTarget, () => fullBackup(status).catch((e) => { status.textContent = ''; throw e; })) }, '全データを書き出す（ZIP）'),
     status);
 }
@@ -3008,7 +3071,7 @@ function usageSection() {
     box.replaceChildren(
       meter('データベース', Number(u.db_bytes), FREE_DB_BYTES),
       meter(`写真（${u.photo_count}枚）`, Number(u.storage_bytes), FREE_STORAGE_BYTES),
-      h('p', { class: 'muted small' }, '上限は Supabase 無料プランの値です（2026-10-31 時点の調査。公式ページでは未確認）。データベースの値には Supabase 自体の管理用データも含まれます。'));
+    );
   }).catch((e) => {
     console.error(e.detail || e);
     box.replaceChildren(h('p', { class: 'error' }, '使用量を取得できませんでした。'));
@@ -3055,7 +3118,6 @@ function notifySection() {
       } else {
         nodes.push(h('button', { type: 'button', onclick: (ev) => busy(ev.currentTarget, async () => { await push.unsubscribe(); toast('この端末の通知を止めました。'); draw(); }) }, 'この端末の通知を止める'));
       }
-      nodes.push(h('p', { class: 'muted small' }, 'テスト通知: GitHub のリポジトリ → Actions →「毎朝の通知」→ Run workflow で「テスト通知」を選んで実行します。'));
       nodes.push(h('details', {}, h('summary', {}, '通知の鍵を作り直す'),
         h('p', { class: 'small' }, '鍵が漏れた・GitHub に登録した秘密の値を無くした場合のみ使います。作り直すと、すべての端末で通知の設定をやり直す必要があります。'),
         h('button', { type: 'button', class: 'danger small', onclick: (ev) => busy(ev.currentTarget, () => createKeys(true)) }, '作り直す')));
@@ -3088,7 +3150,7 @@ function notifySection() {
           toast('コピーできませんでした。値を長押しして選択・コピーしてください。', 'error');
         }
       } }, 'コピー'),
-      h('p', { class: 'muted small' }, '秘密の値は他人に見せないでください。チャットやメールに貼り付けないでください。'));
+      h('p', { class: 'notice-text small' }, '⚠ 秘密の値は他人に見せない・チャットやメールに貼らない'));
   };
 
   draw().catch(handleError);
@@ -3104,7 +3166,7 @@ function membersSection() {
       h('a', { href: `#/member/${m.id}` }, nick(m)),
       m.nickname ? h('span', { class: 'muted small' }, `（${m.name}）`) : null,
       h('span', { class: 'muted small' }, ` ${optionLabel(ROLE_FIELD, m.role)}・${m.email ? 'ログインあり' : 'ログインなし'}${m.active ? '' : '・無効'}`)))),
-    h('p', { class: 'muted small' }, '各台帳の「名義人」は、ここに登録した人から選びます。ログイン用メールアドレスを入れた人は、管理者が Supabase で同じメールアドレスのユーザーを作るとログインできます（新規登録は止めてあります）。'));
+  );
 }
 
 // Problems with keeping at least one active administrator who can log in (checked again by the database).
@@ -3119,15 +3181,15 @@ function renderMember(id) {
   const isNew = id === 'new';
   const m = isNew ? null : memberById(id);
   if ((!isNew && !m) || (isNew && !isAdmin())) {
-    location.hash = '#/settings';
+    location.hash = '#/settings/users';
     return;
   }
-  const back = h('p', {}, h('a', { href: '#/settings' }, '← 設定'));
+  const back = (title) => pageHead({ title, icon: 'settings', back: { href: '#/settings/users', text: '設定へ' } });
   if (!isAdmin()) {
     const rows = MEMBER_DEF.fields.filter((f) => f.key !== 'name').map((f) => [f.label, fieldValueNodes(f, m) ?? '（なし）']);
-    setView(m.name, back, h('h1', {}, m.name),
+    setView(m.name, back(m.name),
       h('section', { class: 'card' }, h('dl', { class: 'fields' }, rows.map(([k, v]) => [h('dt', {}, k), h('dd', {}, v)]))),
-      h('p', { class: 'muted small' }, 'ユーザーの変更は管理者だけが行えます。'),
+      h('p', { class: 'meta' }, '管理者だけが変更できます'),
       historySection('members', m, MEMBER_DEF.fields));
     return;
   }
@@ -3158,14 +3220,13 @@ function renderMember(id) {
         else await db.updateRow('members', id, values);
         state.members = await db.selectAll('members');
         toast('ユーザーを保存しました。');
-        location.hash = '#/settings';
+        location.hash = '#/settings/users';
       });
     },
   },
   summary,
   inputs.map((i) => i.el),
-  h('p', { class: 'muted small' }, 'メールアドレスは、その人が Supabase でログインに使うものと同じにします。無効にした人はログインしてもデータを見られません。'),
-  h('div', { class: 'actions' }, h('a', { class: 'button', href: '#/settings' }, 'キャンセル'), submit));
+  h('div', { class: 'actions' }, h('a', { class: 'button', href: '#/settings/users' }, 'キャンセル'), submit));
 
   const del = isNew ? null : h('button', { type: 'button', class: 'danger', onclick: (ev) => busy(ev.currentTarget, async () => {
     const problem = lastAdminProblem(m, null);
@@ -3185,11 +3246,10 @@ function renderMember(id) {
     state.members = await db.selectAll('members');
     await Promise.all(LEDGER_ORDER.map((k) => reloadLedger(k)));
     toast('ユーザーを削除しました。');
-    location.hash = '#/settings';
+    location.hash = '#/settings/users';
   }) }, '削除');
 
-  setView(isNew ? 'ユーザーを追加' : `${m.name}を編集`, back,
-    h('h1', {}, isNew ? 'ユーザーを追加' : `${m.name}を編集`), form,
+  setView(isNew ? 'ユーザーを追加' : `${m.name}を編集`, back(isNew ? 'ユーザーを追加' : `${m.name}を編集`), form,
     m ? historySection('members', m, MEMBER_DEF.fields) : null,
     del ? h('div', { class: 'actions' }, del) : null);
 }
@@ -3206,12 +3266,12 @@ function shortcutSection() {
     await saveSetting('shortcuts', res.value);
     toast('ショートカットを保存しました。');
   }) }, '保存');
-  return h('section', { class: 'card' }, h('h2', {}, 'ショートカット'), input.el,
-    h('p', { class: 'muted small' }, '銀行のリンクは口座台帳の「関連リンク」から自動で表示されます。'), h('div', { class: 'actions' }, save));
+  return h('section', { class: 'card' }, h('h2', { class: 'with-icon' }, 'ショートカット', helpButton('ショートカット', '口座・カードの台帳の「関連リンク」は自動で表示されます。ここではそれ以外のリンクを設定します。')), input.el,
+    h('div', { class: 'actions' }, save));
 }
 
 function accountSection() {
-  return h('section', { class: 'card' }, h('h2', {}, 'アカウント'),
+  return h('section', { class: 'card' }, h('h2', { class: 'with-icon' }, 'アカウント', helpButton('端末をなくしたとき', '「このアカウントのすべての端末からログアウト」を押してから、パスワードを変更してください。')),
     h('p', {}, `ログイン中: ${nick(me())}（${optionLabel(ROLE_FIELD, me().role)}）`),
     h('p', { class: 'muted small' }, db.currentEmail() || ''),
     h('div', { class: 'button-row' },
@@ -3223,19 +3283,32 @@ function accountSection() {
         render();
       }) }, 'このアカウントのすべての端末からログアウト')),
     h('div', { class: 'button-row' }, h('a', { class: 'button', href: '#/password' }, 'パスワードを変更')),
-    h('p', { class: 'muted small' }, '端末をなくしたときは、「すべての端末からログアウト」を押してから、パスワードを変更してください。'));
+  );
 }
 
 function sharedAccountSection() {
   if (!isAdmin()) return null;
   const acc = sharedAccountId() ? find('accounts', sharedAccountId()) : null;
-  return h('section', { class: 'card' }, h('h2', {}, '共通口座'),
-    h('p', { class: 'muted small' }, `今の設定: ${acc ? accountLabel(acc) : '未設定'}。お金の流れの図で、個人からの入金を受ける口座です。`),
+  return h('section', { class: 'card' }, h('h2', { class: 'with-icon' }, '共通口座', helpButton('共通口座', '個人からの入金を受け、共通の費用を払う口座です。お金のページで使います。')),
+    h('p', {}, `今の設定: ${acc ? accountLabel(acc) : '未設定'}`),
     sharedAccountPicker());
 }
 
-function renderSettings() {
-  setView('設定', h('h1', {}, '設定'), notifySection(), membersSection(), sharedAccountSection(), backupSection(), importSection(), shortcutSection(), usageSection(), accountSection());
+const SETTINGS_TABS = { account: 'アカウント', users: 'ユーザー', data: 'データ', other: 'その他' };
+
+function renderSettings(tabParam) {
+  // その他 (shared account, shortcuts) is for administrators only
+  const keys = Object.keys(SETTINGS_TABS).filter((k) => k !== 'other' || isAdmin());
+  const tab = keys.includes(tabParam) ? tabParam : (keys.includes(state.settingsTab) ? state.settingsTab : 'account');
+  state.settingsTab = tab;
+  const tabs = keys.map((key) => ({ key, label: SETTINGS_TABS[key], href: `#/settings/${key}` }));
+  const content = {
+    account: () => [accountSection(), notifySection()],
+    users: () => [membersSection()],
+    data: () => [backupSection(), importSection(), usageSection()],
+    other: () => [sharedAccountSection(), shortcutSection()],
+  }[tab]();
+  setView('設定', pageHead({ title: '設定', icon: 'settings', tabs, tab }), ...content);
 }
 
 // ---------------------------------------------------------------- chores (plan, workload, today)
@@ -3249,7 +3322,7 @@ const CHORE_FIELDS = [
   { key: 'schedule', label: 'やる日', type: 'schedule' },
   { key: 'times', label: '回数（サイクルあたり）', type: 'decimal', min: 0.1, max: 1000 },
   { key: 'minutes', label: '1回の時間（分）', type: 'decimal', min: 0, max: 10000 },
-  { key: 'adjust', label: '調整係数', type: 'decimal', min: 0.1, max: 5 },
+  { key: 'adjust', label: '調整係数', type: 'decimal', min: 0.1, max: 5, help: '大変さの重み（標準 1.0。今の表では 0.8〜1.1）。' },
   { key: 'points_override', label: '点数/月（随時のみ）', type: 'decimal', min: 0, max: 1000000 },
   { key: 'assignee', label: '担当', type: 'assignee' },
   { key: 'status', label: '状態', type: 'status', options: [['active', '利用中'], ['closed', '停止']] },
@@ -3300,7 +3373,7 @@ function todayChores() {
 function todayChoresCard() {
   const list = todayChores();
   return h('section', { class: 'card' },
-    sectionHead('chore', '今日の家事', { href: '#/chores', text: '家事へ' }),
+    sectionHead('chore', '今日の家事', { href: '#/chores/today', text: '家事へ' }),
     list.length === 0
       ? h('p', { class: 'muted' }, '今日の家事はありません（やる日を決めた家事だけ表示します）。')
       : h('ul', { class: 'today-chores' }, list.map(({ chore, mine }) => h('li', { class: mine ? 'mine' : '' },
@@ -3315,7 +3388,7 @@ function workloadSection() {
   const diff = sorted.length >= 2 ? sorted[0].points - sorted[sorted.length - 1].points : 0;
   const categories = [...new Set(rows.flatMap((r) => Object.keys(r.byCategory)))].sort((a, b) => CATEGORIES.indexOf(a) - CATEGORIES.indexOf(b));
   return h('section', { class: 'card' },
-    h('h2', { class: 'with-icon' }, icon('user'), '分担（月あたりの負担）'),
+    h('h2', { class: 'with-icon' }, icon('user'), '分担（月あたりの負担）', helpButton('分担の点数', '点数＝月の時間×1000×調整係数（随時は入力した点数×調整係数）。', '「全員」の家事は、担当のある人で等分しています。担当が未定の家事は合計に含めません。')),
     barChart(rows.map((r) => [nick(r.member), r.points]), '担当ごとの月の負担（調整後の点数）', points),
     sorted.length >= 2
       ? h('p', { class: 'balance' }, diff < 0.5 ? '負担は同じです。' : `${nick(sorted[0].member)} が ${nick(sorted[sorted.length - 1].member)} より ${points(diff)} 多い`)
@@ -3326,11 +3399,12 @@ function workloadSection() {
         categories.map((cat) => h('tr', {}, h('td', {}, cat), rows.map((r) => h('td', { class: 'num' }, points(r.byCategory[cat] || 0))))),
         h('tr', { class: 'total' }, h('td', {}, '合計'), rows.map((r) => h('td', { class: 'num' }, points(r.points)))),
         h('tr', {}, h('td', {}, '時間/月'), rows.map((r) => h('td', { class: 'num' }, hours(r.hours)))))),
-    tbd.count > 0 ? h('p', { class: 'muted small' }, `担当が未定: ${points(tbd.points)}（${Math.round(tbd.count)}件）。合計には含めていません。`) : null,
-    h('p', { class: 'muted small' }, '点数＝月の時間×1000×調整係数（随時は入力した点数×調整係数）。「全員」の家事は、担当のある人で等分しています。'));
+    tbd.count > 0 ? h('p', { class: 'meta' }, `担当が未定 ${points(tbd.points)}（${Math.round(tbd.count)}件・合計に含めない）`) : null);
 }
 
-function renderChores() {
+const CHORE_TABS = { today: '今日', load: '負担の割合', list: '一覧' };
+
+function renderChores(tabParam) {
   const who = h('select', { 'aria-label': '担当で絞り込み' }, h('option', { value: '' }, '担当: すべて'),
     choreSharers(state.chores, state.members).map((m) => h('option', { value: `member:${m.id}` }, nick(m))),
     h('option', { value: 'all' }, '全員'), h('option', { value: 'tbd' }, '未定'));
@@ -3347,13 +3421,14 @@ function renderChores() {
   who.addEventListener('change', update);
   cat.addEventListener('change', update);
   update();
+  const tab = CHORE_TABS[tabParam] ? tabParam : (state.choresTab || 'today');
+  state.choresTab = tab;
+  const tabs = Object.entries(CHORE_TABS).map(([key, label]) => ({ key, label, href: `#/chores/${key}` }));
   setView('家事',
-    h('div', { class: 'title-row' }, h('h1', { class: 'with-icon' }, h('span', { class: 'icbox lg-chores' }, icon('chore')), '家事'),
-      h('a', { class: 'button primary', href: '#/chore-edit/new' }, '＋ 追加')),
-    todayChoresCard(),
-    workloadSection(),
-    h('div', { class: 'filters filters-2' }, who, cat),
-    list);
+    pageHead({ title: '家事', icon: 'chores', tabs, tab, action: h('a', { class: 'button primary', href: '#/chore-edit/new' }, '＋ 追加') }),
+    tab === 'today' ? todayChoresCard() : null,
+    tab === 'load' ? workloadSection() : null,
+    tab === 'list' ? [h('div', { class: 'filters filters-2' }, who, cat), list] : null);
 }
 
 function renderChore(id) {
@@ -3375,12 +3450,10 @@ function renderChore(id) {
     await db.deleteWhere('chores', 'id', c.id);
     state.chores = await db.selectAll('chores');
     toast('削除しました。');
-    location.hash = '#/chores';
+    location.hash = '#/chores/list';
   }) }, '削除');
   setView(c.name,
-    h('p', {}, h('a', { href: '#/chores' }, '← 家事の一覧')),
-    h('div', { class: 'title-row' }, h('h1', { class: 'with-icon' }, h('span', { class: 'icbox lg-chores' }, icon('chore')), c.name),
-      h('a', { class: 'button primary', href: `#/chore-edit/${c.id}` }, '編集')),
+    pageHead({ title: c.name, icon: 'chores', back: { href: '#/chores/list', text: '家事の一覧へ' }, action: h('a', { class: 'button primary', href: `#/chore-edit/${c.id}` }, '編集') }),
     h('section', { class: 'card' },
       h('div', { class: 'kpis kpis-2' },
         h('div', { class: 'kpi kpi-main' }, h('div', { class: 'kpi-label' }, '点数 / 月'), h('div', { class: 'kpi-value num' }, Math.round(adjustedPoints(c)).toLocaleString('ja-JP'), h('small', {}, '点'))),
@@ -3500,10 +3573,10 @@ function renderChoreEdit(id) {
   h('div', { class: 'field', 'data-key': 'assignee' }, h('label', { for: 'f-assignee' }, '担当'), assignee, h('p', { class: 'error small field-error' })),
   input.status.el, input.memo.el,
   preview,
-  h('p', { class: 'muted small' }, '調整係数は大変さの重み（標準 1.0。今の表では 0.8〜1.1）。'),
-  h('div', { class: 'actions' }, h('a', { class: 'button', href: isNew ? '#/chores' : `#/chore/${id}` }, 'キャンセル'), submit));
+  h('div', { class: 'actions' }, h('a', { class: 'button', href: isNew ? '#/chores/list' : `#/chore/${id}` }, 'キャンセル'), submit));
   draw();
-  setView(isNew ? '家事を追加' : `${c.name}を編集`, h('h1', {}, isNew ? '家事を追加' : `${c.name}を編集`), form);
+  setView(isNew ? '家事を追加' : `${c.name}を編集`,
+    pageHead({ title: isNew ? '家事を追加' : `${c.name}を編集`, icon: 'chores', back: { href: isNew ? '#/chores/list' : `#/chore/${c.id}`, text: '戻る' } }), form);
 }
 
 function choresCSV() {
