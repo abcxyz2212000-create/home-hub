@@ -21,7 +21,8 @@ export function ymLabel(ym) {
 }
 
 export function ruleApplies(rule, ym) {
-  return rule.start_ym <= ym && (!rule.end_ym || ym <= rule.end_ym);
+  return rule.start_ym <= ym && (!rule.end_ym || ym <= rule.end_ym)
+    && (!rule.month_of_year || Number(ym.slice(5)) === rule.month_of_year);
 }
 
 // Order of rows in a month: positive rules first (基本), then the larger offsets (家賃 before dアニ).
@@ -79,4 +80,61 @@ export function statement(rules, entries, memberId, ym) {
   const p = monthParts(rules, entries, memberId, ym);
   const total = carry + p.charges;
   return { ym, carry, items: p.items, deposits: p.deposits, charges: p.charges, total, deposit: p.deposit, balance: total - p.deposit };
+}
+
+// ---------------------------------------------------------------- contracts paid from a personal account
+//
+// A contract marked "shared cost" (共通の費用) and paid from a personal account is deducted from the
+// account holder's monthly amount. The app keeps one recurring rule per contract (contract_id) so
+// that the history stays correct when the contract changes.
+
+// The deduction a contract implies now: { target: { member_id, label, amount, month_of_year } } or
+// { target: null, reason } (reason is shown to the user, in Japanese).
+// ctx: { accounts, cards, sharedAccountId }
+export function contractDeduction(contract, ctx) {
+  if (!contract.shared_cost) return { target: null, reason: null };
+  if (contract.status === 'closed') return { target: null, reason: '解約済みのため差し引きません。' };
+  if (!(contract.amount > 0)) return { target: null, reason: '金額が未入力のため差し引けません。' };
+  const card = contract.pay_card_id ? ctx.cards.find((c) => c.id === contract.pay_card_id) : null;
+  const accountId = card ? card.debit_account_id : contract.pay_account_id;
+  const account = accountId ? ctx.accounts.find((a) => a.id === accountId) : null;
+  if (!account) return { target: null, reason: card ? 'カードの引き落とし口座が未設定のため差し引けません。' : '支払元の口座が未設定のため差し引けません。' };
+  if (account.id === ctx.sharedAccountId) return { target: null, reason: '共通口座から払うため、差し引きはありません。' };
+  if (!account.holder_id) return { target: null, reason: `支払元の口座「${account.name}」に名義人がないため差し引けません。` };
+  let month = null;
+  if (contract.cycle === 'yearly') {
+    if (!contract.renewal_date) return { target: null, reason: '年払いは、払う月を決めるために更新日を入力してください。' };
+    month = Number(contract.renewal_date.slice(5, 7));
+  }
+  return { target: { member_id: account.holder_id, label: contract.name.slice(0, 50), amount: -contract.amount, month_of_year: month } };
+}
+
+// What to change in the rules linked to one contract so that from month `ym` on they match `target`
+// (null = no deduction). Past months are never changed: rules are ended at the previous month, and
+// only rules that start this month or later are removed.
+// Returns { end: [{ id, end_ym }], remove: [id], update: [{ id, label }], create: [rule] }.
+export function planRuleSync(contractId, target, rules, ym) {
+  const plan = { end: [], remove: [], update: [], create: [] };
+  const active = rules.filter((r) => r.contract_id === contractId && (!r.end_ym || r.end_ym >= ym))
+    .sort((a, b) => b.start_ym.localeCompare(a.start_ym));
+  const same = (r) => target && r.member_id === target.member_id && r.amount === target.amount
+    && (r.month_of_year || null) === (target.month_of_year || null);
+  const keep = active.find(same);
+  for (const r of active) {
+    if (r === keep) continue;
+    if (r.start_ym >= ym) plan.remove.push(r.id);
+    else plan.end.push({ id: r.id, end_ym: ymAdd(ym, -1) });
+  }
+  if (keep) {
+    if (keep.end_ym) plan.end.push({ id: keep.id, end_ym: null });
+    if (keep.label !== target.label) plan.update.push({ id: keep.id, label: target.label });
+  } else if (target) {
+    plan.create.push({ ...target, contract_id: contractId, start_ym: ym });
+  }
+  return plan;
+}
+
+export function ruleSchedule(rule) {
+  const period = `${ymLabel(rule.start_ym)}〜${rule.end_ym ? ymLabel(rule.end_ym) : ''}`;
+  return rule.month_of_year ? `毎年${rule.month_of_year}月・${period}` : period;
 }

@@ -446,6 +446,44 @@ try {
   for (const t of ['はなこ', '生活費口座（共通）', '入 66,500円 / 出 7,000円', 'メインカード', '火災保険']) assert.ok(flow4.includes(t), `4-column flow shows ${t}`);
   assert.match(money, /共通口座への入金状況/);
   await page.screenshot({ path: join(OUT, 'money.png'), fullPage: true });
+
+  step('a contract paid from a personal account (共通の費用) takes over the manual rule and keeps its history');
+  await page.goto(`${appUrl}#/edit/accounts/new`);
+  await fill('名称 *', 'はなこの口座');
+  await page.getByLabel('名義人', { exact: true }).selectOption({ label: '山田 花子（はなこ）' });
+  await save();
+  await page.getByRole('heading', { name: 'はなこの口座' }).waitFor();
+  await page.goto(`${appUrl}#/edit/contracts/new`);
+  await fill('契約名 *', 'dアニ');
+  await fill('金額（円）', '500');
+  await page.getByLabel('周期', { exact: true }).selectOption({ label: '月払い' });
+  await page.getByLabel('支払方法', { exact: true }).selectOption({ label: 'はなこの口座' });
+  assert.equal(await page.getByLabel('既存の定例項目に引き継ぐ').isVisible(), false, 'shown only for shared costs');
+  await page.getByLabel('共通の費用', { exact: true }).check();
+  await page.getByText('→ はなこの当月分から毎月 500円を差し引きます。').waitFor();
+  const dRule = mock.db.shared_rules.find((x) => x.label === 'dアニ');
+  await page.getByLabel('既存の定例項目に引き継ぐ').selectOption(dRule.id);
+  await save();
+  await page.getByRole('heading', { name: '共通口座への入金との関係' }).waitFor();
+  const dContract = mock.db.contracts.find((c) => c.name === 'dアニ');
+  assert.equal(dContract.shared_cost, true);
+  assert.deepEqual(mock.db.shared_rules.filter((x) => x.label === 'dアニ').map((x) => [x.id, x.contract_id, x.amount, x.start_ym, x.end_ym]),
+    [[dRule.id, dContract.id, -500, ymPrev, null]], 'taken over, not added twice');
+  // the price goes up: last month keeps -500, this month uses -550
+  await page.goto(`${appUrl}#/edit/contracts/${dContract.id}`);
+  await fill('金額（円）', '550');
+  await save();
+  await page.getByRole('heading', { name: '共通口座への入金との関係' }).waitFor();
+  assert.deepEqual(mock.db.shared_rules.filter((x) => x.contract_id === dContract.id).map((x) => [x.amount, x.start_ym, x.end_ym]).sort(),
+    [[-500, ymPrev, ymPrev], [-550, ymNow, null]].sort());
+  await page.goto(`${appUrl}#/shared/${ymNow}`);
+  assert.match(await page.locator('.shared-card').innerText(), /当月分\s+66,450円/, '70,000 - 550 - 3,000');
+  await page.goto(`${appUrl}#/shared/${ymPrev}`);
+  await page.getByRole('heading', { name: ymLabel(ymPrev), exact: true }).waitFor();
+  assert.match(await page.locator('.shared-card').innerText(), /当月分\s+69,500円/, 'last month unchanged');
+  const linkedRule = mock.db.shared_rules.find((x) => x.contract_id === dContract.id && !x.end_ym);
+  await page.goto(`${appUrl}#/shared-rule/${linkedRule.id}`);
+  await page.getByRole('link', { name: '契約「dアニ」を開く' }).waitFor();
   await page.goto(`${appUrl}#/settings`);
   await page.getByRole('heading', { name: '設定', exact: true }).waitFor();
 

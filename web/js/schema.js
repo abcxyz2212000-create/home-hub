@@ -83,6 +83,7 @@ export const LEDGERS = {
       { key: 'amount', label: '金額（円）', type: 'int', max: 100000000 },
       { key: 'cycle', label: '周期', type: 'select', options: [['monthly', '月払い'], ['yearly', '年払い']] },
       { key: 'payment', label: '支払方法', type: 'payment' },
+      { key: 'shared_cost', label: '共通の費用', type: 'bool' },
       { key: 'contract_date', label: '契約日', type: 'date' },
       { key: 'renewal_date', label: '更新日', type: 'date' },
       { key: 'auto_renew', label: '自動更新', type: 'bool' },

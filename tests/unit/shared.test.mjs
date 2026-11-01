@@ -74,3 +74,67 @@ test('signed yen input', () => {
   assert.ok(parseField(f, '').error);
   assert.ok(parseField({ ...f, min: 1 }, '-5').error);
 });
+
+// ---- contracts paid from a personal account (共通の費用)
+import { contractDeduction, planRuleSync, ruleSchedule } from '../../web/js/shared.js';
+
+const ctx = {
+  sharedAccountId: 'acc-shared',
+  accounts: [
+    { id: 'acc-shared', name: '共通', holder_id: null },
+    { id: 'acc-a', name: 'Aの口座', holder_id: A },
+    { id: 'acc-none', name: '名義なし', holder_id: null },
+  ],
+  cards: [{ id: 'card-a', debit_account_id: 'acc-a' }, { id: 'card-x', debit_account_id: null }],
+};
+const rent = { id: 'k-rent', name: '家賃', shared_cost: true, status: 'active', amount: 80000, cycle: 'monthly', pay_account_id: 'acc-a', pay_card_id: null };
+
+test('deduction: only shared costs paid from a personal account with a holder', () => {
+  assert.deepEqual(contractDeduction(rent, ctx).target, { member_id: A, label: '家賃', amount: -80000, month_of_year: null });
+  assert.equal(contractDeduction({ ...rent, shared_cost: false }, ctx).target, null);
+  assert.match(contractDeduction({ ...rent, pay_account_id: 'acc-shared' }, ctx).reason, /共通口座から払う/);
+  assert.match(contractDeduction({ ...rent, pay_account_id: 'acc-none' }, ctx).reason, /名義人がない/);
+  assert.match(contractDeduction({ ...rent, pay_account_id: null }, ctx).reason, /支払元の口座が未設定/);
+  assert.match(contractDeduction({ ...rent, status: 'closed' }, ctx).reason, /解約済み/);
+  assert.match(contractDeduction({ ...rent, amount: null }, ctx).reason, /金額が未入力/);
+  // paid by card: the card's debit account decides
+  assert.equal(contractDeduction({ ...rent, pay_account_id: null, pay_card_id: 'card-a' }, ctx).target.member_id, A);
+  assert.match(contractDeduction({ ...rent, pay_account_id: null, pay_card_id: 'card-x' }, ctx).reason, /カードの引き落とし口座/);
+  // yearly: once a year in the month of the renewal date
+  const ins = { ...rent, name: '家財保険', cycle: 'yearly', amount: 20000, renewal_date: '2027-05-10' };
+  assert.deepEqual(contractDeduction(ins, ctx).target, { member_id: A, label: '家財保険', amount: -20000, month_of_year: 5 });
+  assert.match(contractDeduction({ ...ins, renewal_date: null }, ctx).reason, /更新日/);
+});
+
+test('rule sync keeps past months: end at the previous month, then a new rule', () => {
+  const target = { member_id: A, label: '家賃', amount: -80000, month_of_year: null };
+  // no rule yet -> create from this month
+  assert.deepEqual(planRuleSync('k-rent', target, [], '2026-11'),
+    { end: [], remove: [], update: [], create: [{ ...target, contract_id: 'k-rent', start_ym: '2026-11' }] });
+  // adopted manual rule with the same amount -> nothing to do (history kept)
+  const old = { id: 'r-old', member_id: A, label: '家賃', amount: -80000, start_ym: '2022-01', end_ym: null, contract_id: 'k-rent' };
+  assert.deepEqual(planRuleSync('k-rent', target, [old], '2026-11'), { end: [], remove: [], update: [], create: [] });
+  // rent goes up -> old rule ends in October, new one from November
+  const up = { ...target, amount: -85000 };
+  assert.deepEqual(planRuleSync('k-rent', up, [old], '2026-11'),
+    { end: [{ id: 'r-old', end_ym: '2026-10' }], remove: [], update: [], create: [{ ...up, contract_id: 'k-rent', start_ym: '2026-11' }] });
+  // changed again in the same month -> the rule made this month is replaced, not kept
+  const made = { id: 'r-new', member_id: A, label: '家賃', amount: -85000, start_ym: '2026-11', end_ym: null, contract_id: 'k-rent' };
+  const ended = { ...old, end_ym: '2026-10' };
+  assert.deepEqual(planRuleSync('k-rent', { ...target, amount: -86000 }, [ended, made], '2026-11'),
+    { end: [], remove: ['r-new'], update: [], create: [{ ...target, amount: -86000, contract_id: 'k-rent', start_ym: '2026-11' }] });
+  // no longer a deduction (unmarked / closed / paid from the shared account)
+  assert.deepEqual(planRuleSync('k-rent', null, [old], '2026-11'), { end: [{ id: 'r-old', end_ym: '2026-10' }], remove: [], update: [], create: [] });
+  // renamed contract -> label follows, history kept
+  assert.deepEqual(planRuleSync('k-rent', { ...target, label: '家賃（A棟）' }, [old], '2026-11'),
+    { end: [], remove: [], update: [{ id: 'r-old', label: '家賃（A棟）' }], create: [] });
+  // other contracts' rules are untouched
+  assert.deepEqual(planRuleSync('k-other', null, [old], '2026-11'), { end: [], remove: [], update: [], create: [] });
+});
+
+test('yearly rules count only in their month', () => {
+  const yearly = [{ id: 'y', member_id: A, label: '家財保険', amount: -20000, start_ym: '2026-01', end_ym: null, month_of_year: 5 }];
+  assert.deepEqual(history(yearly, [], A, '2026-06').map((r) => r.charges), [0, 0, 0, 0, -20000, 0]);
+  assert.equal(ruleSchedule(yearly[0]), '毎年5月・2026年1月〜');
+  assert.equal(ruleSchedule({ start_ym: '2022-01', end_ym: '2022-12' }), '2022年1月〜2022年12月');
+});
