@@ -484,6 +484,74 @@ try {
   const linkedRule = mock.db.shared_rules.find((x) => x.contract_id === dContract.id && !x.end_ym);
   await page.goto(`${appUrl}#/shared-rule/${linkedRule.id}`);
   await page.getByRole('link', { name: '契約「dアニ」を開く' }).waitFor();
+
+  step('MoneyForward CSV (Shift_JIS): shared account + its cards only, plan vs actual, link and remember a keyword');
+  const salaryAcc = mock.db.accounts.find((x) => x.name === '生活費口座');
+  const mainCard = mock.db.cards.find((x) => x.name === 'メインカード');
+  const net = mock.db.contracts.find((x) => x.name === 'インターネット');
+  await page.goto(`${appUrl}#/edit/accounts/${salaryAcc.id}`);
+  await fill('マネーフォワードでの名前', '共用口座');
+  await save();
+  await page.getByRole('heading', { name: '生活費口座', exact: true }).waitFor();
+  await page.goto(`${appUrl}#/edit/cards/${mainCard.id}`);
+  await fill('マネーフォワードでの名前', 'カードA');
+  await save();
+  await page.getByRole('heading', { name: 'メインカード', exact: true }).waitFor();
+  await page.goto(`${appUrl}#/edit/contracts/${net.id}`);
+  await fill('明細の照合キーワード', 'ネット回線');
+  await save();
+  await page.getByRole('heading', { name: 'インターネット', exact: true }).waitFor();
+  await page.goto(`${appUrl}#/edit/contracts/new`);
+  await fill('契約名 *', '電気代');
+  await fill('金額（円）', '8000');
+  await page.getByLabel('周期', { exact: true }).selectOption({ label: '月払い' });
+  await page.getByLabel('支払方法', { exact: true }).selectOption({ label: 'メインカード' });
+  await save();
+  await page.getByRole('heading', { name: '電気代', exact: true }).waitFor();
+  const d = `${ymNow.replace('-', '/')}/05`;
+  const mfCsv = [
+    '"計算対象","日付","内容","金額（円）","保有金融機関","大項目","中項目","メモ","振替","ID"',
+    `"1","${d}","ネット回線１０月分","-5000","共用口座","通信費","インターネット","","0","mf-a"`,
+    `"1","${d}","サンプル電力　１０月１２３","-8000","カードＡ","水道・光熱費","電気代","","0","mf-b"`,
+    `"1","${d}","スーパーマーケット","-3000","カードA","食費","食料品","","0","mf-c"`,
+    `"0","${d}","(カ)カードエー","-11000","共用口座","現金・カード","カード引き落とし","","1","mf-d"`,
+    `"1","${d}","コンビニ","-500","個人の銀行","食費","食費","","0","mf-e"`,
+  ].join('\n') + '\n';
+  const sjis = execFileSync('python3', ['-I', '-c', 'import sys; sys.stdout.buffer.write(sys.stdin.read().encode("cp932"))'], { input: mfCsv });
+  const mfFile = { name: 'mf.csv', mimeType: 'text/csv', buffer: sjis };
+  await page.goto(`${appUrl}#/shared/${ymNow}`);
+  await page.getByRole('heading', { name: '共通口座の明細（実績）' }).waitFor();
+  await page.getByLabel('マネーフォワードの CSV ファイル').setInputFiles(mfFile);
+  await page.getByText('追加 4件（うち契約に自動でひも付け 1件）、更新 0件、対象外 1件').waitFor();
+  assert.match(await page.locator('.import-status').innerText(), /対象外の金融機関: 個人の銀行/);
+  await page.getByRole('button', { name: '取り込む' }).click();
+  await page.getByText('取り込みました（追加 4件、更新 0件）。').waitFor();
+  assert.equal(mock.db.transactions.length, 4);
+  assert.equal(mock.db.transactions.find((t) => t.mf_id === 'mf-a').contract_id, net.id);
+  assert.equal(mock.db.transactions.find((t) => t.mf_id === 'mf-b').card_id, mainCard.id);
+  await page.getByText('契約ごとの予定と実績').waitFor();
+  const actual = await page.locator('#view').innerText();
+  assert.match(actual, /出金（実績）\s*16,000円/, 'card lines counted, the card payment (transfer) is not');
+  assert.match(actual, /インターネット\s+5,000円\s+5,000円\s+一致/);
+  assert.match(actual, /電気代\s+8,000円\s+—\s+未確認/);
+  assert.match(actual, /契約にない明細（2件）/);
+  await page.getByRole('link', { name: /サンプル電力/ }).click();
+  await page.getByLabel('契約にひも付ける').selectOption({ label: '電気代' });
+  await page.getByLabel('キーワード（明細の内容に含まれる語）').fill('サンプル電力');
+  await page.getByRole('button', { name: '保存' }).click();
+  await page.getByText('契約ごとの予定と実績').waitFor();
+  const elec = mock.db.contracts.find((x) => x.name === '電気代');
+  assert.equal(elec.match_keywords, 'サンプル電力');
+  assert.equal(mock.db.transactions.find((t) => t.mf_id === 'mf-b').contract_id, elec.id);
+  assert.match(await page.locator('#view').innerText(), /電気代\s+8,000円\s+8,000円\s+一致/);
+  // importing the same file again updates, keeps the manual link and adds nothing
+  await page.getByLabel('マネーフォワードの CSV ファイル').setInputFiles(mfFile);
+  await page.getByText('追加 0件（うち契約に自動でひも付け 0件）、更新 4件、対象外 1件').waitFor();
+  await page.getByRole('button', { name: '取り込む' }).click();
+  await page.getByText('取り込みました（追加 0件、更新 4件）。').waitFor();
+  assert.equal(mock.db.transactions.length, 4);
+  assert.equal(mock.db.transactions.find((t) => t.mf_id === 'mf-b').contract_id, elec.id);
+  await page.screenshot({ path: join(OUT, 'actual.png'), fullPage: true });
   await page.goto(`${appUrl}#/settings`);
   await page.getByRole('heading', { name: '設定', exact: true }).waitFor();
 
@@ -492,7 +560,7 @@ try {
   const zipPath = join(OUT, 'backup.zip');
   writeFileSync(zipPath, readFileSync(await zipDl.path()));
   const listing = execFileSync('python3', ['-I', '-c', 'import sys,zipfile; z=zipfile.ZipFile(sys.argv[1]); assert z.testzip() is None; print("\\n".join(z.namelist()))', zipPath]).toString();
-  for (const name of ['口座.csv', 'カード.csv', '契約・固定費.csv', '書類・家電.csv', 'ポイントカード・会員情報.csv', '写真一覧.csv', '共通口座_定例項目.csv', '共通口座_臨時の費目と入金.csv']) assert.ok(listing.includes(name), name);
+  for (const name of ['口座.csv', 'カード.csv', '契約・固定費.csv', '書類・家電.csv', 'ポイントカード・会員情報.csv', '写真一覧.csv', '共通口座_定例項目.csv', '共通口座_臨時の費目と入金.csv', '共通口座_明細（マネーフォワード）.csv']) assert.ok(listing.includes(name), name);
   assert.match(listing, /photos\/.+\.jpg/);
   const accountsCsv = execFileSync('python3', ['-I', '-c', 'import sys,zipfile; print(zipfile.ZipFile(sys.argv[1]).read("口座.csv").decode("utf-8-sig"))', zipPath]).toString();
   assert.match(accountsCsv, /7654321/, 'backup keeps the full account number');
