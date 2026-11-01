@@ -631,9 +631,9 @@ function sharedHomeCard() {
   if (!mine || !participantIds(state.sharedRules, state.sharedEntries).includes(mine.id)) return null;
   const st = statement(state.sharedRules, state.sharedEntries, mine.id, thisYM());
   return h('section', { class: 'card' },
-    sectionHead('bank', '共通口座への入金', { href: '#/shared', text: '詳しく' }),
+    sectionHead('bank', `共通口座への入金（${Number(thisYM().slice(5))}月）`, { href: '#/shared', text: '詳しく' }),
     h('div', { class: 'kpis kpis-2' },
-      kpi(`${Number(thisYM().slice(5))}月分`, signedYen(st.charges).replace('円', ''), '円'),
+      kpi('当月分', signedYen(st.charges).replace('円', ''), '円'),
       kpi('未入金の残高', signedYen(st.balance).replace('円', ''), '円', st.balance > 0 ? 'kpi-alert' : '')));
 }
 
@@ -652,30 +652,41 @@ function renderShared(ymParam) {
     return;
   }
   const sts = members.map((m) => ({ m, st: statement(rules, entries, m.id, ym) }));
-  const mon = `${Number(ym.slice(5))}月`;
 
   // per-member cards
   const cards = h('div', { class: 'shared-cards' }, sts.map(({ m, st }) => h('section', { class: 'card shared-card' },
-    h('h2', { class: 'with-icon' }, icon('user'), nick(m)),
+    h('h3', { class: 'with-icon' }, icon('user'), nick(m)),
     h('dl', { class: 'shared-figures' },
-      h('dt', {}, `${mon}分`), h('dd', { class: 'num' }, signedYen(st.charges)),
-      h('dt', {}, `${mon}の入金`), h('dd', { class: 'num' }, yen(st.deposit)),
+      h('dt', {}, '当月分'), h('dd', { class: 'num' }, signedYen(st.charges)),
+      h('dt', {}, '入金済み'), h('dd', { class: 'num' }, yen(st.deposit)),
       h('dt', {}, '未入金の残高'), h('dd', { class: `num big${st.balance > 0 ? ' due' : ''}` }, signedYen(st.balance))),
     h('a', { class: 'button primary', href: `#/shared-entry/new/deposit:${m.id}:${ym}` }, '入金を記録'))));
 
   // the month as in the former spreadsheet
-  const labels = [];
-  for (const { st } of sts) for (const i of st.items) if (!labels.includes(i.label)) labels.push(i.label);
-  const cell = (st, label) => {
-    const sum = st.items.filter((i) => i.label === label).reduce((n, i) => n + i.amount, 0);
-    return h('td', { class: 'num' }, st.items.some((i) => i.label === label) ? signedYen(sum) : '—');
+  // recurring items (定例) and one-off items (臨時) are shown as separate groups
+  const isRule = (i) => Boolean(i.rule);
+  const labelsOf = (pick) => {
+    const out = [];
+    for (const { st } of sts) for (const i of st.items) if (pick(i) && !out.includes(i.label)) out.push(i.label);
+    return out;
+  };
+  const ruleLabels = labelsOf(isRule);
+  const tempLabels = labelsOf((i) => !isRule(i));
+  const cell = (st, label, rule) => {
+    const hits = st.items.filter((i) => i.label === label && isRule(i) === rule);
+    return h('td', { class: 'num' }, hits.length ? signedYen(hits.reduce((n, i) => n + i.amount, 0)) : '—');
   };
   const row = (label, f, cls) => h('tr', { class: cls }, h('th', { scope: 'row' }, label), sts.map(({ st }) => f(st)));
+  const group = (title, labels, rule) => (labels.length === 0 ? null : [
+    h('tr', { class: 'group' }, h('th', { scope: 'rowgroup', colspan: String(sts.length + 1) }, title)),
+    labels.map((l) => row(l, (st) => cell(st, l, rule), 'item')),
+  ]);
   const table = h('div', { class: 'table-wrap' }, h('table', { class: 'table shared-table' },
     h('thead', {}, h('tr', {}, h('th', {}, '費目'), sts.map(({ m }) => h('th', { class: 'num' }, nick(m))))),
     h('tbody', {},
       row('前月繰越', (st) => h('td', { class: 'num' }, signedYen(st.carry)), 'sub'),
-      labels.map((l) => row(l, (st) => cell(st, l))),
+      group('定例（毎月）', ruleLabels, true),
+      group('臨時（この月だけ）', tempLabels, false),
       row('当月分（小計）', (st) => h('td', { class: 'num' }, signedYen(st.charges)), 'subtotal'),
       row('合計', (st) => h('td', { class: 'num' }, signedYen(st.total)), 'total'),
       row('入金', (st) => h('td', { class: 'num' }, st.deposit ? yen(st.deposit) : '—')),
@@ -684,7 +695,7 @@ function renderShared(ymParam) {
   const monthEntries = entries.filter((e) => e.ym === ym)
     .sort((a, b) => (a.kind === b.kind ? 0 : a.kind === 'charge' ? -1 : 1) || String(a.created_at || '').localeCompare(String(b.created_at || '')));
   const entryList = monthEntries.length === 0
-    ? h('p', { class: 'muted' }, 'この月の明細・入金はありません（定例項目だけです）。')
+    ? h('p', { class: 'muted' }, 'この月の臨時の費目・入金はありません（定例だけです）。')
     : h('div', { class: 'list' }, monthEntries.map((e) => h('a', { class: 'list-item', href: `#/shared-entry/${e.id}` },
       h('div', { class: 'list-body' },
         h('div', { class: 'list-title' }, `${memberNick(e.member_id)}：${e.kind === 'deposit' ? '入金' : e.label}`),
@@ -719,20 +730,22 @@ function renderShared(ymParam) {
   });
 
   setView('共通口座', head, moneyTabs('shared'),
-    h('div', { class: 'month-nav' },
-      h('a', { class: 'button small', href: `#/shared/${ymAdd(ym, -1)}`, 'aria-label': '前の月' }, '◀'),
-      h('h2', { class: 'month-label' }, ymLabel(ym)),
-      h('a', { class: 'button small', href: `#/shared/${ymAdd(ym, 1)}`, 'aria-label': '次の月' }, '▶'),
-      ym === current ? null : h('a', { class: 'button small', href: '#/shared' }, '今月')),
-    cards,
+    h('section', { class: 'month-panel', 'aria-label': `${ymLabel(ym)}の入金状況` },
+      h('div', { class: 'month-nav' },
+        h('a', { class: 'button small', href: `#/shared/${ymAdd(ym, -1)}`, 'aria-label': '前の月' }, '◀'),
+        h('h2', { class: 'month-label' }, `${ymLabel(ym)}の入金状況`, ym === current ? h('span', { class: 'badge badge-now' }, '今月') : null),
+        h('a', { class: 'button small', href: `#/shared/${ymAdd(ym, 1)}`, 'aria-label': '次の月' }, '▶'),
+        ym === current ? null : h('a', { class: 'button small', href: '#/shared' }, '今月へ')),
+      cards),
     h('section', { class: 'card' },
       h('h2', {}, `${ymLabel(ym)}の内訳`),
       table,
       h('p', { class: 'muted small' }, 'プラスは共通口座へ入れる額、マイナスは個人で払った共通の費用（入れる額から差し引き）です。合計 = 前月繰越 + 当月分。'),
-      h('h3', {}, 'この月の明細・入金'),
+      h('h3', {}, 'この月の臨時の費目・入金'),
+      h('p', { class: 'muted small' }, '臨時の費目は、管理費・家賃更新料・立替・精算など、定例以外でその月だけ発生するものです。'),
       entryList,
       h('div', { class: 'button-row' },
-        h('a', { class: 'button', href: `#/shared-entry/new/charge::${ym}` }, '＋ 明細を追加'),
+        h('a', { class: 'button', href: `#/shared-entry/new/charge::${ym}` }, '＋ 臨時の費目を追加'),
         h('a', { class: 'button', href: `#/shared-entry/new/deposit::${ym}` }, '＋ 入金を追加'))),
     h('section', { class: 'card' },
       h('h2', {}, '未入金の残高の推移'),
@@ -806,7 +819,7 @@ function renderSharedEntry(id, preset) {
   const isNew = id === 'new';
   let e = isNew ? null : state.sharedEntries.find((x) => x.id === id);
   if (!isNew && !e) {
-    setView('見つかりません', h('p', {}, 'この明細は見つかりませんでした。'), h('a', { href: '#/shared' }, '共通口座へ戻る'));
+    setView('見つかりません', h('p', {}, 'この記録は見つかりませんでした。'), h('a', { href: '#/shared' }, '共通口座へ戻る'));
     return;
   }
   if (isNew) {
@@ -828,7 +841,7 @@ function renderSharedEntry(id, preset) {
     : [fieldInput(f.ym, e), fieldInput(f.label, e), fieldInput(f.amount, e), fieldInput(f.memo, e)].map((x, i) => ({ ...x, field: [f.ym, f.label, f.amount, f.memo][i] }));
   if (!deposit) fields[1].el.querySelector('input').setAttribute('list', 'shared-labels');
   const back = `#/shared/${e.ym}`;
-  const name = deposit ? '入金' : '明細';
+  const name = deposit ? '入金' : '臨時の費目';
   sharedForm({
     title: isNew ? `${name}を追加` : `${name}を編集`,
     back,
@@ -910,7 +923,7 @@ function sharedRulesCSV() {
 
 function sharedEntriesCSV() {
   const head = ['ID', '月', '人', '種類', '費目', '金額（円）', 'メモ'];
-  const rows = state.sharedEntries.map((e) => [e.id, e.ym, memberNick(e.member_id), e.kind === 'deposit' ? '入金' : '明細', e.label, e.amount, e.memo || '']);
+  const rows = state.sharedEntries.map((e) => [e.id, e.ym, memberNick(e.member_id), e.kind === 'deposit' ? '入金' : '臨時', e.label, e.amount, e.memo || '']);
   return toCSV([head, ...rows]);
 }
 
@@ -1725,7 +1738,7 @@ async function fullBackup(status) {
   await loadAll();
   const files = LEDGER_ORDER.map((k) => ({ name: `${LEDGERS[k].csvName}.csv`, data: ledgerCSV(k) }));
   files.push({ name: '家事.csv', data: choresCSV() });
-  files.push({ name: '共通口座_定例項目.csv', data: sharedRulesCSV() }, { name: '共通口座_明細.csv', data: sharedEntriesCSV() });
+  files.push({ name: '共通口座_定例項目.csv', data: sharedRulesCSV() }, { name: '共通口座_臨時の費目と入金.csv', data: sharedEntriesCSV() });
   const photoRows = [['写真ID', '品名', '品ID', 'ファイル', '登録日時']];
   let i = 0;
   for (const p of state.photos) {

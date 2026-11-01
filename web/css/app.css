@@ -503,8 +503,13 @@ details summary { cursor: pointer; margin-top: 1rem; }
 .tabs { display: flex; gap: 0.25rem; border-bottom: 1px solid var(--line); margin: 0 0 0.9rem; }
 .tabs .tab { padding: 0.5rem 0.9rem; text-decoration: none; color: var(--muted); border-bottom: 3px solid transparent; font-weight: 600; }
 .tabs .tab.active { color: var(--ink); border-bottom-color: var(--series-1); }
-.month-nav { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.9rem; }
-.month-nav .month-label { margin: 0; min-width: 7.5em; text-align: center; }
+.month-nav { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.75rem; }
+.month-panel { border: 1px solid var(--line); border-radius: 10px; padding: 0.75rem; margin-bottom: 0.9rem; background: var(--surface-2); }
+.month-panel .shared-cards .card { margin-bottom: 0; }
+.month-nav .month-label { margin: 0; flex: 1; text-align: center; display: flex; align-items: center; justify-content: center; gap: 0.4rem; flex-wrap: wrap; }
+.badge-now { background: var(--accent-soft); color: var(--accent); border-radius: 999px; padding: 0.1rem 0.55rem; font-size: 0.75rem; font-weight: 700; }
+.shared-table tr.group th { font-size: 0.8rem; color: var(--accent); background: var(--accent-soft); font-weight: 700; padding-top: 0.35rem; padding-bottom: 0.35rem; }
+.shared-table tr.item th { padding-left: 1.2rem; font-weight: 400; }
 .shared-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 0.6rem; }
 .shared-figures { display: grid; grid-template-columns: auto 1fr; gap: 0.25rem 0.75rem; margin: 0.5rem 0 0.75rem; align-items: baseline; }
 .shared-figures dt { color: var(--muted); font-size: 0.9rem; }
