@@ -2,7 +2,7 @@
 // Usage: node tests/e2e/run.mjs   (needs Playwright + Chromium installed globally; not part of `npm test`)
 import { createRequire } from 'node:module';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import assert from 'node:assert/strict';
@@ -149,7 +149,7 @@ try {
   assert.ok(await page.getByRole('img', { name: /今日から60日先までの期限/ }).isVisible(), 'deadline timeline');
   assert.ok(await page.getByRole('img', { name: '固定費の種類別の月額' }).isVisible(), 'fixed cost bars');
   assert.ok(await page.getByRole('img', { name: /お金の流れ/ }).isVisible(), 'money flow (compact)');
-  assert.match(await page.locator('.dash-head').innerText(), /こんにちは、共通（管理者）さん/);
+  assert.match(await page.locator('.page-head h1').innerText(), /\d+月\d+日（.）/);
   assert.match(await page.locator('.kpis').innerText(), /固定費 \/ 月\n7,000円[\s\S]*期限 30日以内\n\d+件/);
   const home = await page.locator('#view').innerText();
   assert.match(home, /あと7日[\s\S]*火災保険/);
@@ -158,7 +158,7 @@ try {
   await page.screenshot({ path: join(OUT, 'home.png'), fullPage: true });
 
   step('user master: an administrator adds members; holder is chosen from them');
-  await page.goto(`${appUrl}#/settings`);
+  await page.goto(`${appUrl}#/settings/users`);
   await page.getByRole('link', { name: '＋ ユーザーを追加' }).click();
   await fill('本名 *', '山田 太郎');
   await save();
@@ -294,10 +294,11 @@ try {
   await save();
   await page.getByRole('heading', { name: '各種支払い' }).waitFor();
   await page.getByRole('link', { name: '家事' }).first().click();
+  await page.getByRole('link', { name: '今日', exact: true }).click();
+  assert.match(await page.locator('#view').innerText(), /今日の家事[\s\S]*ゴミ出し/);
+  await page.getByRole('link', { name: '負担の割合', exact: true }).click();
   await page.getByRole('img', { name: '担当ごとの月の負担（調整後の点数）' }).waitFor();
-  const choresText = await page.locator('#view').innerText();
-  assert.match(choresText, /今日の家事[\s\S]*ゴミ出し/);
-  assert.match(choresText, /合計\s+1,033点/, 'only はなこ has chores, so the "all" chore is hers: 733 + 300');
+  assert.match(await page.locator('#view').innerText(), /合計\s+1,033点/, 'only はなこ has chores, so the "all" chore is hers: 733 + 300');
   mock.db.chores.push({ id: 'ch-taro', name: '風呂掃除', status: 'active', cycle: 'month', schedule: [], times: 1, minutes: 60, adjust: 1,
     assignee_type: 'member', assignee_id: taro.id, category: '住', created_at: now, updated_at: now });
   await page.reload();
@@ -306,7 +307,7 @@ try {
   assert.match(split, /合計\s+883点\s+1,150点|合計\s+1,150点\s+883点/, 'はなこ 733+150, 太郎 1000+150');
   assert.match(await page.locator('.balance').innerText(), /山田 太郎 が はなこ より 267点 多い/);
   await page.goto(appUrl);
-  await page.locator('.dash-head').waitFor();
+  await page.locator('.page-head').first().waitFor();
   assert.match(await page.locator('#view').innerText(), /今日の家事\n[\s\S]*ゴミ出し/);
 
   step('item with photo upload');
@@ -324,12 +325,13 @@ try {
   await page.screenshot({ path: join(OUT, 'item.png'), fullPage: true });
 
   step('settings: VAPID keys and usage');
-  await page.goto(`${appUrl}#/settings`);
+  await page.goto(`${appUrl}#/settings/account`);
   await page.getByRole('button', { name: '通知の鍵を作成' }).click();
   await page.getByText('鍵を作成しました').waitFor();
   const secret = await page.getByLabel('秘密の値', { exact: true }).inputValue();
   assert.equal(Buffer.from(secret, 'base64url').length, 32);
   assert.equal(Buffer.from(mock.db.settings.find((s) => s.key === 'vapid_public_key').value, 'base64url').length, 65);
+  await page.getByRole('link', { name: 'データ', exact: true }).click();
   await page.getByText(/写真（1枚）/).waitFor();
 
   step('CSV export and import');
@@ -353,7 +355,7 @@ try {
   assert.equal(sub.debit_account_id, mock.db.accounts[0].id);
 
   step('CSV: holder must be in the user master; codes are padded');
-  await page.goto(`${appUrl}#/settings`);
+  await page.goto(`${appUrl}#/settings/data`);
   await page.getByLabel('取り込む台帳').selectOption({ label: '口座' });
   await page.getByLabel(/CSVファイル/).setInputFiles(csv('名称,金融機関コード,支店番号,名義人\r\n貯蓄口座,36,225,佐藤 一郎\r\n長すぎ口座,00369,1,山田 太郎\r\n'));
   await page.getByRole('button', { name: '取り込む' }).click();
@@ -440,11 +442,11 @@ try {
   await page.getByRole('link', { name: '流れ図', exact: true }).click();
   await page.getByRole('heading', { name: '口座 → カード → 支払先（月額）' }).waitFor();
   assert.match(await page.locator('#view').innerText(), /共通口座にする口座を選ぶと/);
-  await page.goto(`${appUrl}#/settings`);
+  await page.goto(`${appUrl}#/settings/other`);
   await page.getByLabel('共通口座にする口座').selectOption({ label: '生活費口座（さくら支店・普通・下4桁 1234）' });
   await page.getByRole('button', { name: '共通口座にする' }).click();
   await page.getByText('共通口座を設定しました。').waitFor();
-  await page.getByText('今の設定: 生活費口座（さくら支店・普通・下4桁 1234）。', { exact: false }).waitFor();
+  await page.getByText('今の設定: 生活費口座（さくら支店・普通・下4桁 1234）').waitFor();
   assert.equal(mock.db.settings.find((x) => x.key === 'shared_account_id').value, mock.db.accounts.find((a) => a.name === '生活費口座').id);
   await page.goto(`${appUrl}#/flow/flow/${ymNow}`);
   await page.getByRole('heading', { name: 'はなこ → 口座 → カード → 支払先（月額）' }).waitFor();
@@ -471,11 +473,11 @@ try {
   await fill('金額（円）', '500');
   await page.getByLabel('周期', { exact: true }).selectOption({ label: '月払い' });
   await page.getByLabel('支払方法', { exact: true }).selectOption({ label: 'はなこの口座' });
-  assert.equal(await page.getByLabel('既存の定例項目に引き継ぐ').isVisible(), false, 'shown only for shared costs');
+  assert.equal(await page.getByLabel('既存の定例項目に引き継ぐ', { exact: true }).isVisible(), false, 'shown only for shared costs');
   await page.getByLabel('共通の費用', { exact: true }).check();
   await page.getByText('→ はなこの当月分から毎月 500円を差し引きます。').waitFor();
   const dRule = mock.db.shared_rules.find((x) => x.label === 'dアニ');
-  await page.getByLabel('既存の定例項目に引き継ぐ').selectOption(dRule.id);
+  await page.getByLabel('既存の定例項目に引き継ぐ', { exact: true }).selectOption(dRule.id);
   await save();
   await page.getByRole('heading', { name: '共通口座への入金との関係' }).waitFor();
   const dContract = mock.db.contracts.find((c) => c.name === 'dアニ');
@@ -544,9 +546,9 @@ try {
   await page.getByText('追加 5件（うち契約に自動でひも付け 1件）、更新 0件、対象外 2件').waitFor();
   const importStatus = await page.locator('.import-status').innerText();
   assert.match(importStatus, /入金として記録: 1件（はなこ 1件）/);
-  assert.match(importStatus, /対象外の金融機関: 個人の銀行。/);
-  assert.match(importStatus, /手入力の立替の記録（保有金融機関が「なし」）1件は取り込みません/);
-  assert.doesNotMatch(importStatus, /対象外の金融機関:[^。]*なし/, '"なし" is not offered as a name to register');
+  assert.match(importStatus, /対象外の金融機関: 個人の銀行\s*\?/);
+  assert.match(importStatus, /手入力の記録 1件は対象外/);
+  assert.doesNotMatch(importStatus, /対象外の金融機関:[^\n?]*なし/, '"なし" is not offered as a name to register');
   await page.getByRole('button', { name: '取り込む' }).click();
   await page.getByText('取り込みました（追加 5件、更新 0件、個人との入出金の記録 1件）。').waitFor();
   assert.equal(mock.db.transactions.length, 5);
@@ -607,7 +609,7 @@ try {
   assert.match(settle.memo, /スーパーマーケット 3,000円/);
   assert.equal(mock.db.transactions.find((t) => t.mf_id === 'mf-c').settled_entry_id, settle.id);
   await page.goto(`${appUrl}#/tx/${mock.db.transactions.find((t) => t.mf_id === 'mf-c').id}`);
-  await page.getByText('精算済みです。').waitFor();
+  await page.locator('.tag', { hasText: '精算済み' }).waitFor();
   assert.equal(await page.getByLabel('負担', { exact: true }).isDisabled(), true, 'settled lines cannot be changed');
   await page.goto(`${appUrl}#/shared-entry/${settle.id}`);
   await page.getByRole('button', { name: '削除' }).click();
@@ -649,9 +651,9 @@ try {
 
   step('contract amount by period: a new amount from this month, the old one kept for past months');
   await page.goto(`${appUrl}#/edit/contracts/${net.id}`);
-  assert.equal(await page.getByLabel('新しい金額の適用開始月').isVisible(), false, 'asked only when the amount changes');
+  assert.equal(await page.getByLabel('新しい金額の適用開始月', { exact: true }).isVisible(), false, 'asked only when the amount changes');
   await fill('金額（円）', '5500');
-  await page.getByLabel('新しい金額の適用開始月').fill(ymNow);
+  await page.getByLabel('新しい金額の適用開始月', { exact: true }).fill(ymNow);
   await save();
   await page.getByRole('heading', { name: '金額の履歴' }).waitFor();
   const netNow = mock.db.contracts.find((c) => c.id === net.id);
@@ -660,7 +662,7 @@ try {
   await page.goto(`${appUrl}#/flow/ext/${ymNow}`);
   await page.getByText('契約ごとの予定と実績').waitFor();
   assert.match(await page.locator('#view').innerText(), /インターネット\s+5,500円\s+5,000円\s+差 −500円/);
-  await page.goto(`${appUrl}#/settings`);
+  await page.goto(`${appUrl}#/settings/data`);
   await page.getByRole('heading', { name: '設定', exact: true }).waitFor();
 
   step('full backup ZIP');
@@ -672,6 +674,7 @@ try {
   assert.match(listing, /photos\/.+\.jpg/);
   const accountsCsv = execFileSync('python3', ['-I', '-c', 'import sys,zipfile; print(zipfile.ZipFile(sys.argv[1]).read("口座.csv").decode("utf-8-sig"))', zipPath]).toString();
   assert.match(accountsCsv, /7654321/, 'backup keeps the full account number');
+  await page.getByText(/バックアップを書き出しました/).waitFor(); // the time is saved after the download
   assert.ok(mock.db.settings.some((s) => s.key === 'last_backup_at'));
 
   step('delete account (references are cleared)');
@@ -697,16 +700,18 @@ try {
   const mp = await memberCtx.newPage();
   await login(mp, MEMBER);
   await mp.getByRole('heading', { name: '期限が近い予定' }).waitFor();
-  await mp.goto(`${appUrl}#/settings`);
-  await mp.getByRole('heading', { name: 'ユーザー', exact: true }).waitFor();
-  const memberSettings = await mp.locator('#view').innerText();
-  assert.ok(memberSettings.includes('CSV の取り込みは管理者だけが行えます。'));
-  assert.ok(memberSettings.includes('ログイン中: はなこ（一般）'), 'the nickname is shown');
-  assert.equal(await mp.getByRole('link', { name: '＋ ユーザーを追加' }).count(), 0);
-  assert.equal(await mp.getByRole('heading', { name: 'ショートカット' }).count(), 0);
+  await mp.goto(`${appUrl}#/settings/account`);
+  await mp.getByText('ログイン中: はなこ（一般）').waitFor(); // the nickname is shown
+  await mp.getByRole('link', { name: 'データ', exact: true }).click();
+  await mp.getByRole('heading', { name: /バックアップ/ }).waitFor();
   assert.equal(await mp.getByRole('button', { name: '取り込む' }).count(), 0);
+  assert.equal(await mp.getByRole('heading', { name: /^取り込み/ }).count(), 0);
+  assert.equal(await mp.getByRole('link', { name: 'その他', exact: true }).count(), 0, 'shared account and shortcut settings are for administrators');
+  await mp.getByRole('link', { name: 'ユーザー', exact: true }).click();
+  await mp.getByRole('heading', { name: 'ユーザー', exact: true }).waitFor();
+  assert.equal(await mp.getByRole('link', { name: '＋ ユーザーを追加' }).count(), 0);
   await mp.getByRole('link', { name: '山田 太郎' }).click();
-  await mp.getByText('ユーザーの変更は管理者だけが行えます。').waitFor();
+  await mp.getByText('管理者だけが変更できます').waitFor();
 
   step('a regular member records only their own 立替 (deposits come from the statement)');
   await mp.goto(`${appUrl}#/`);
@@ -774,16 +779,16 @@ try {
   assert.equal(mock.db.shared_entries.filter((e) => e.kind === 'deposit' && e.ym === ymNow).length, 2, 'a report is not a deposit record');
   const otherEntry = mock.db.shared_entries.find((e) => e.kind === 'deposit');
   await mp.goto(`${appUrl}#/shared-entry/${otherEntry.id}`);
-  await mp.getByText('入金はマネーフォワードの明細から自動で記録しています。').waitFor();
+  await mp.locator('.meta', { hasText: '明細から自動で記録' }).waitFor();
   assert.equal(await mp.getByRole('button', { name: '保存' }).count(), 0, 'read only');
   await mp.goto(`${appUrl}#/shared-entry/new/deposit:${hanako.id}:${ymNow}`);
   await mp.getByLabel('立て替えた額（円） *').waitFor(); // a deposit cannot be recorded by hand
   const manualRule = mock.db.shared_rules.find((r) => !r.contract_id);
   await mp.goto(`${appUrl}#/shared-rule/${manualRule.id}`);
-  await mp.getByText('定例項目は管理者が設定します。').waitFor();
+  await mp.getByText('管理者だけが変更できます').waitFor();
 
   step('password: change it in the settings, forgot -> e-mail link -> set a new one');
-  await mp.goto(`${appUrl}#/settings`);
+  await mp.goto(`${appUrl}#/settings/account`);
   await mp.getByRole('link', { name: 'パスワードを変更' }).click();
   await mp.getByLabel('今のパスワード').fill('wrong-password');
   await mp.getByLabel('新しいパスワード', { exact: true }).fill('short');
@@ -837,8 +842,37 @@ try {
   assert.equal(await sp.locator('#nav').isHidden(), true);
   await strangerCtx.close();
 
+  step('layout audit: every main page at phone width (full page + scrolled, to check the fixed page head)');
+  mkdirSync(join(OUT, 'audit'), { recursive: true });
+  const yearNow = ymNow.slice(0, 4);
+  const auditRoutes = [
+    ['home', '#/'], ['ledgers', '#/ledgers'], ['list-accounts', '#/list/accounts'], [`view-account`, `#/view/accounts/${mock.db.accounts[0].id}`],
+    ['edit-contract', '#/edit/contracts/new'], ['chores-today', '#/chores/today'], ['chores-load', '#/chores/load'], ['chores-list', '#/chores/list'],
+    ['money-member-month', `#/flow/member/${ymNow}`], ['money-member-year', `#/flow/member/${yearNow}`], ['money-ext-month', `#/flow/ext/${ymNow}`],
+    ['money-ext-year', `#/flow/ext/${yearNow}`], ['money-flow-month', `#/flow/flow/${ymNow}`], ['money-flow-year', `#/flow/flow/${yearNow}`],
+    ['advance-new', `#/shared-entry/new/advance:${hanako.id}:${ymNow}`], ['report-new', `#/deposit-report/new/${hanako.id}`],
+    ['settings-account', '#/settings/account'], ['settings-users', '#/settings/users'], ['settings-data', '#/settings/data'], ['settings-other', '#/settings/other'],
+  ];
+  for (const [name, route] of auditRoutes) {
+    await page.goto(`${appUrl}${route}`);
+    await page.locator('.page-head').first().waitFor();
+    await page.waitForTimeout(300);
+    await page.screenshot({ path: join(OUT, 'audit', `${name}.png`), fullPage: true });
+    await page.evaluate(() => window.scrollTo(0, 700));
+    await page.waitForTimeout(150);
+    const headTop = await page.locator('.page-head').first().evaluate((el) => Math.round(el.getBoundingClientRect().top));
+    const barH = await page.locator('.app-header').evaluate((el) => Math.round(el.getBoundingClientRect().height));
+    if (await page.evaluate(() => document.documentElement.scrollHeight > window.innerHeight + 700)) {
+      assert.equal(headTop, barH, `${name}: the page head stays right below the app bar`);
+      await page.screenshot({ path: join(OUT, 'audit', `${name}-scrolled.png`) });
+    }
+    // nothing wider than the screen
+    const overflow = await page.evaluate(() => [...document.querySelectorAll('#view *')].filter((el) => el.getBoundingClientRect().right > window.innerWidth + 1 && !el.closest('.table-wrap, .tabs, svg')).map((el) => el.className || el.tagName).slice(0, 5));
+    assert.deepEqual(overflow, [], `${name}: no element sticks out of the screen`);
+  }
+
   step('logout');
-  await page.goto(`${appUrl}#/settings`);
+  await page.goto(`${appUrl}#/settings/account`);
   await page.getByRole('button', { name: 'ログアウト', exact: true }).click();
   await page.getByRole('button', { name: 'ログイン' }).waitFor();
 
@@ -849,7 +883,7 @@ try {
   await desk.getByLabel('パスワード', { exact: true }).fill(OWNER.password);
   await desk.getByRole('button', { name: 'ログイン' }).click();
   await desk.getByText(/円$/).first().waitFor();
-  await desk.goto(`${appUrl}#/settings`);
+  await desk.goto(`${appUrl}#/settings/data`);
   await desk.getByText(/写真（1枚）/).waitFor();
   await desk.screenshot({ path: join(OUT, 'settings-dark.png'), fullPage: true });
 

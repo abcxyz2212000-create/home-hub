@@ -573,3 +573,48 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 0.9rem; }
 
 .tag-attach { margin-left: 0.4rem; font-size: 0.7rem; vertical-align: middle; background: var(--accent-soft); color: var(--accent); }
 .attach-box .photos { margin: 0.4rem 0; }
+
+/* ---------------------------------------------------------------- page frame (2026-11-01) */
+.page-head {
+  position: sticky;
+  top: var(--page-head-top, 44px);
+  z-index: 8;
+  background: var(--bg);
+  margin: -1rem -1rem 0.9rem;
+  padding: 0.6rem 1rem 0;
+  border-bottom: 1px solid var(--line);
+}
+.page-title { display: flex; align-items: center; gap: 0.5rem; min-height: 44px; padding-bottom: 0.6rem; }
+.page-title h1 { margin: 0; font-size: 1.2rem; line-height: 1.3; min-width: 0; overflow-wrap: anywhere; flex: 0 1 auto; }
+.page-action { margin-left: auto; display: flex; gap: 0.4rem; flex: none; }
+.page-action .button, .page-action button { white-space: nowrap; }
+.back-btn { display: inline-grid; place-items: center; width: 36px; height: 36px; border-radius: 8px; text-decoration: none; color: var(--ink); font-size: 1.6rem; line-height: 1; flex: none; margin-left: -0.35rem; }
+.back-btn:hover, .back-btn:focus-visible { background: var(--accent-soft); }
+.page-head .tabs { margin: 0; border-bottom: 0; }
+.page-sub { display: flex; align-items: center; gap: 0.5rem; padding: 0.45rem 0; flex-wrap: nowrap; }
+.page-sub .month-nav { margin: 0; flex: 1; min-width: 0; }
+.page-sub .month-nav .month-label { font-size: 1rem; }
+.segmented { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; flex: none; }
+.segmented a { padding: 0.35rem 0.7rem; font-size: 0.85rem; font-weight: 600; color: var(--ink-2); text-decoration: none; background: var(--surface); }
+.segmented a + a { border-left: 1px solid var(--line); }
+.segmented a.active { background: var(--accent); color: var(--accent-ink); }
+.help-btn { display: inline-grid; place-items: center; width: 22px; height: 22px; min-height: 0; padding: 0; border-radius: 50%; border: 1px solid var(--line); background: var(--surface); color: var(--muted); font-size: 0.8rem; font-weight: 700; line-height: 1; flex: none; cursor: pointer; }
+.help-btn:hover, .help-btn:focus-visible { color: var(--accent); border-color: var(--accent); }
+.help-dialog { max-width: min(92vw, 480px); border: 0; border-radius: 12px; padding: 1.1rem 1.2rem; background: var(--surface); color: var(--ink); box-shadow: 0 12px 40px rgba(0, 0, 0, 0.3); }
+.help-dialog::backdrop { background: rgba(0, 0, 0, 0.45); }
+.help-dialog h2 { margin-top: 0; font-size: 1.05rem; }
+.help-dialog p { line-height: 1.7; margin: 0.5rem 0; }
+.card-head { display: flex; align-items: center; justify-content: space-between; gap: 0.6rem; margin-bottom: 0.6rem; }
+.card-head h2 { margin: 0; }
+.lg-home, .lg-ledgers, .lg-flow, .lg-settings { background: var(--accent-soft); color: var(--accent); }
+.button-row.equal { display: grid; grid-template-columns: 1fr 1fr; }
+.button-row.equal > * { text-align: center; justify-content: center; }
+.meta { color: var(--muted); font-size: 0.8rem; }
+@media (min-width: 900px) { .page-head { margin-left: 0; margin-right: 0; padding-left: 0; padding-right: 0; } }
+.badge-jump { background: var(--surface); border: 1px solid var(--line); color: var(--accent); border-radius: 999px; padding: 0.05rem 0.5rem; font-size: 0.72rem; font-weight: 700; text-decoration: none; }
+.label-row { display: flex; align-items: center; gap: 0.4rem; margin: 0.75rem 0 0.25rem; }
+.label-row label, .label-row .label { margin: 0; }
+.month-label h2 { margin: 0; font-size: 1rem; }
+.label-row .field.checkbox { margin: 0; }
+.shared-cost-box .label-row { margin-bottom: 0; }
+.list + .button-row, .list + .button-row.equal { margin-top: 0.6rem; }
