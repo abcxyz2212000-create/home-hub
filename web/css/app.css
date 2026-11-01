@@ -528,3 +528,7 @@ details summary { cursor: pointer; margin-top: 1rem; }
 .inline-form { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; }
 .inline-form select { flex: 1; min-width: 12rem; }
 .month-panel > h2 { margin: 0 0 0.6rem; }
+.tag-contract { margin-left: 0.4rem; font-size: 0.7rem; vertical-align: middle; }
+.shared-cost-box { margin-bottom: 0.9rem; }
+.shared-cost-box .field.checkbox { margin-bottom: 0.2rem; }
+.deduction { margin: 0 0 0.6rem; color: var(--accent); }

@@ -148,6 +148,7 @@ create table if not exists public.contracts (
   contract_date date,
   renewal_date date,
   auto_renew boolean not null default false,
+  shared_cost boolean not null default false,
   cancel_method text check (char_length(cancel_method) <= 2000),
   contract_no text check (char_length(contract_no) <= 100),
   doc_location text check (char_length(doc_location) <= 200),
@@ -278,6 +279,8 @@ create table if not exists public.shared_rules (
   amount integer not null check (amount between -10000000 and 10000000 and amount <> 0),
   start_ym text not null check (start_ym ~ '^[0-9]{4}-(0[1-9]|1[0-2])$'),
   end_ym text check (end_ym ~ '^[0-9]{4}-(0[1-9]|1[0-2])$'),
+  month_of_year smallint check (month_of_year between 1 and 12),
+  contract_id uuid references public.contracts (id) on delete set null,
   memo text check (char_length(memo) <= 2000),
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
@@ -317,6 +320,12 @@ alter table public.members add column if not exists nickname text check (char_le
 create unique index if not exists members_nickname_key on public.members (nickname) where nickname is not null;
 -- Card type (credit / debit / ...). Added 2026-11-01 when the ledger was renamed to "カード".
 alter table public.cards add column if not exists kind text check (kind in ('クレジット', 'デビット', 'キャッシュ', 'プリペイド', 'その他'));
+-- Contracts paid from a personal account for the household (共通の費用) are deducted from the holder's
+-- monthly amount for the shared account through a recurring rule kept by the app. Added 2026-11-01.
+alter table public.contracts add column if not exists shared_cost boolean not null default false;
+alter table public.shared_rules add column if not exists month_of_year smallint check (month_of_year between 1 and 12);
+alter table public.shared_rules add column if not exists contract_id uuid references public.contracts (id) on delete set null;
+create index if not exists shared_rules_contract_id_idx on public.shared_rules (contract_id);
 
 do $$
 declare

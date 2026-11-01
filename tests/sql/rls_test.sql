@@ -187,7 +187,22 @@ select pg_temp.login('stranger@example.com');
 do $$ begin
   if (select count(*) from public.shared_entries) <> 0 then raise exception 'stranger can read the shared account'; end if;
 end $$;
+-- a rule kept for a contract: yearly month, link cleared (history kept) when the contract is deleted
 select pg_temp.login('member@example.com');
+insert into public.contracts (name, amount, cycle, shared_cost) values ('テスト保険', 20000, 'yearly', true);
+insert into public.shared_rules (member_id, label, amount, start_ym, month_of_year, contract_id)
+  select (select id from public.members where name = '佐藤 春子'), 'テスト保険', -20000, '2026-01', 5, id from public.contracts where name = 'テスト保険';
+do $$ begin
+  if not (select shared_cost from public.contracts where name = 'テスト保険') then raise exception 'shared_cost not stored'; end if;
+  begin insert into public.shared_rules (member_id, label, amount, start_ym, month_of_year) select id, 'x', -1, '2026-01', 13 from public.members limit 1;
+    raise exception 'bad month_of_year accepted'; exception when check_violation then null; end;
+end $$;
+delete from public.contracts where name = 'テスト保険';
+do $$ begin
+  if (select count(*) from public.shared_rules where label = 'テスト保険' and contract_id is null) <> 1 then
+    raise exception 'rule lost or still linked after the contract was deleted';
+  end if;
+end $$;
 delete from public.shared_entries;
 delete from public.shared_rules;
 

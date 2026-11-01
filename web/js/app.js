@@ -12,7 +12,9 @@ import { compressImage } from './image.js';
 import * as push from './push.js';
 import { icon, LEDGER_ICONS } from './icons.js';
 import { timelineChart, barChart, flowChart, lineChart, urgency } from './charts.js';
-import { ymAdd, ymLabel, participantIds, firstYM, history, statement, YM_RE } from './shared.js';
+import {
+  ymAdd, ymLabel, participantIds, firstYM, history, statement, YM_RE, contractDeduction, planRuleSync, ruleSchedule,
+} from './shared.js';
 import {
   CATEGORIES, GROUPS, CYCLES, WEEKDAYS, monthlyHours, basePoints, adjustedPoints, timesPerCycle, workload, choreSharers, isDueOn, scheduleText,
 } from './chores.js';
@@ -522,6 +524,56 @@ function sharedAccountId() {
   return typeof id === 'string' && find('accounts', id) ? id : null;
 }
 
+// ---- contracts paid from a personal account (共通の費用) -> recurring rules kept by the app
+
+function deductionContext() {
+  return { accounts: state.data.accounts, cards: state.data.cards, sharedAccountId: sharedAccountId() };
+}
+
+function deductionText(contract) {
+  const { target, reason } = contractDeduction(contract, deductionContext());
+  if (!target) return reason;
+  return `→ ${memberNick(target.member_id)}の当月分から${target.month_of_year ? `毎年${target.month_of_year}月に` : '毎月'} ${yen(-target.amount)}を差し引きます。`;
+}
+
+async function applyRulePlan(plan) {
+  for (const e of plan.end) await db.updateRow('shared_rules', e.id, { end_ym: e.end_ym });
+  for (const u of plan.update) await db.updateRow('shared_rules', u.id, { label: u.label });
+  for (const id of plan.remove) await db.deleteWhere('shared_rules', 'id', id);
+  if (plan.create.length) await db.insertRows('shared_rules', plan.create);
+  return plan.end.length + plan.update.length + plan.remove.length + plan.create.length;
+}
+
+// Keep the rule of one contract in line with it from this month on (adoptRuleId: an existing
+// manual rule that becomes this contract's rule, so that its history is kept).
+async function syncContractRules(contract, adoptRuleId = null) {
+  if (adoptRuleId) {
+    await db.updateRow('shared_rules', adoptRuleId, { contract_id: contract.id });
+    await reloadShared();
+  }
+  const { target } = contract.deleted ? { target: null } : contractDeduction(contract, deductionContext());
+  const changed = await applyRulePlan(planRuleSync(contract.id, target, state.sharedRules, thisYM()));
+  if (changed) await reloadShared();
+}
+
+// After accounts, cards or the shared account change, every contract may deduct differently.
+async function syncAllContractRules() {
+  const linked = new Set(state.sharedRules.filter((r) => r.contract_id).map((r) => r.contract_id));
+  let changed = 0;
+  for (const c of state.data.contracts) {
+    if (!c.shared_cost && !linked.has(c.id)) continue;
+    const { target } = contractDeduction(c, deductionContext());
+    changed += await applyRulePlan(planRuleSync(c.id, target, state.sharedRules, thisYM()));
+  }
+  if (changed) await reloadShared();
+}
+
+// Manual rules that an existing contract can take over (offsets that are still running).
+function adoptableRules() {
+  const current = thisYM();
+  return state.sharedRules.filter((r) => !r.contract_id && r.amount < 0 && (!r.end_ym || r.end_ym >= current));
+}
+
 // [(people ->) accounts -> cards -> contracts] for one month. Contracts are monthly amounts of active
 // contracts; people are the "当月分" each member puts into the shared account that month.
 function flowModel(ym = thisYM()) {
@@ -658,6 +710,7 @@ function sharedAccountPicker() {
       return;
     }
     await saveSetting('shared_account_id', select.value);
+    await syncAllContractRules();
     toast('共通口座を設定しました。');
     render();
   }) }, '共通口座にする');
@@ -784,8 +837,8 @@ function renderMoney(ymParam) {
       .sort((a, b) => (a.end_ym && a.end_ym < current) - (b.end_ym && b.end_ym < current) || b.start_ym.localeCompare(a.start_ym));
     return h('div', {}, h('h3', {}, nick(m)), h('div', { class: 'list' }, list.map((r) => h('a', { class: `list-item${r.end_ym && r.end_ym < current ? ' ended' : ''}`, href: `#/shared-rule/${r.id}` },
       h('div', { class: 'list-body' },
-        h('div', { class: 'list-title' }, r.label),
-        h('div', { class: 'muted small' }, `${ymLabel(r.start_ym)}〜${r.end_ym ? ymLabel(r.end_ym) : ''}`)),
+        h('div', { class: 'list-title' }, r.label, r.contract_id ? h('span', { class: 'tag tag-contract' }, '契約') : null),
+        h('div', { class: 'muted small' }, ruleSchedule(r))),
       h('span', { class: 'num' }, signedYen(r.amount)),
       icon('chevron', 'ic ic-sm list-chevron')))));
   });
@@ -956,6 +1009,21 @@ function renderSharedRule(id) {
     setView('見つかりません', h('p', {}, 'この定例項目は見つかりませんでした。'), h('a', { href: '#/shared' }, '共通口座へ戻る'));
     return;
   }
+  if (r.contract_id) {
+    // kept by the app from the contract: change the contract instead
+    const c = find('contracts', r.contract_id);
+    setView(`${r.label}（定例）`, h('h1', {}, `${r.label}（定例）`),
+      h('section', { class: 'card' },
+        h('dl', { class: 'shared-figures' },
+          h('dt', {}, '人'), h('dd', {}, memberNick(r.member_id)),
+          h('dt', {}, '金額'), h('dd', { class: 'num' }, signedYen(r.amount)),
+          h('dt', {}, '期間'), h('dd', {}, ruleSchedule(r))),
+        h('p', {}, 'この定例項目は契約から自動で管理しています。金額・支払元・解約などは契約の画面で変更してください（過去の月の計算は変わりません）。'),
+        h('div', { class: 'button-row' },
+          c ? h('a', { class: 'button primary', href: `#/view/contracts/${c.id}` }, `契約「${c.name}」を開く`) : h('p', { class: 'muted' }, '元の契約は削除されています。'),
+          h('a', { class: 'button', href: '#/shared' }, '戻る'))));
+    return;
+  }
   const member = sharedMemberSelect('f-member', r.member_id);
   const memberField = h('div', { class: 'field', 'data-key': 'member_id' }, h('label', { for: 'f-member' }, '人'), member, h('p', { class: 'error small field-error' }));
   const fields = SHARED_RULE_FIELDS.map((field) => ({ field, ...fieldInput(field, r) }));
@@ -988,8 +1056,9 @@ function renderSharedRule(id) {
 }
 
 function sharedRulesCSV() {
-  const head = ['ID', '人', '費目', '金額（円/月）', '開始月', '終了月', 'メモ'];
-  const rows = state.sharedRules.map((r) => [r.id, memberNick(r.member_id), r.label, r.amount, r.start_ym, r.end_ym || '', r.memo || '']);
+  const head = ['ID', '人', '費目', '金額（円/月）', '開始月', '終了月', '年1回の月', '元の契約', 'メモ'];
+  const rows = state.sharedRules.map((r) => [r.id, memberNick(r.member_id), r.label, r.amount, r.start_ym, r.end_ym || '',
+    r.month_of_year || '', r.contract_id ? (find('contracts', r.contract_id) || { name: '（削除済み）' }).name : '', r.memo || '']);
   return toCSV([head, ...rows]);
 }
 
@@ -1152,6 +1221,10 @@ function relations(ledger, r) {
       relationSection('上記カード経由で支払っている契約', 'contracts', d.contracts.filter((c) => cardIds.has(c.pay_card_id))),
     ];
   }
+  if (ledger === 'contracts' && r.shared_cost) {
+    return [h('section', { class: 'card' }, h('h2', {}, '共通口座への入金との関係'), h('p', {}, deductionText(r)),
+      h('a', { href: '#/flow' }, 'お金の流れ（共通口座）を見る'))];
+  }
   if (ledger === 'cards') {
     return [
       relationSection('このカードで支払っている契約', 'contracts', d.contracts.filter((c) => c.pay_card_id === r.id)),
@@ -1175,11 +1248,13 @@ async function deleteRecord(ledger, r) {
   if (refs > 0) msg += `\n\nこのデータは他の${refs}件から参照されています。削除すると、それらの支払方法・紐づけの設定が外れます。解約しただけなら、削除せず状態を「解約済み」にするのがおすすめです。`;
   if (photos.length > 0) msg += `\n\n添付写真${photos.length}枚も削除されます。`;
   if (!window.confirm(msg)) return;
+  if (ledger === 'contracts') await syncContractRules({ ...r, deleted: true });
   await db.removePhotos(photos.flatMap((p) => [p.path, p.thumb_path]));
   await db.deleteWhere(ledger, 'id', r.id);
   state.photos = state.photos.filter((p) => p.item_id !== r.id);
   await Promise.all([reloadLedger(ledger), ...(ledger === 'accounts' ? [reloadLedger('cards'), reloadLedger('contracts')] : []),
     ...(ledger === 'cards' ? [reloadLedger('contracts'), reloadLedger('memberships')] : [])]);
+  if (ledger === 'accounts' || ledger === 'cards') await syncAllContractRules();
   toast('削除しました。');
   location.hash = `#/list/${ledger}`;
 }
@@ -1542,6 +1617,28 @@ function renderEdit(ledger, id) {
   }
   const inputs = def.fields.map((f) => ({ field: f, ...fieldInput(f, r, ledger) }));
   const notifyInputs = (def.events || []).map((t) => notifyInput(t, r));
+  // contracts: what "共通の費用" means for this contract, and taking over an existing manual rule
+  let adopt = null;
+  if (ledger === 'contracts') {
+    const shared = inputs.find((i) => i.field.key === 'shared_cost');
+    const preview = h('p', { class: 'deduction small', 'aria-live': 'polite' });
+    const candidates = isNew || !state.sharedRules.some((x) => x.contract_id === r.id) ? adoptableRules() : [];
+    adopt = candidates.length ? h('select', { id: 'f-adopt' }, h('option', { value: '' }, '（引き継がない・今月から差し引く）'),
+      candidates.map((x) => h('option', { value: x.id }, `${memberNick(x.member_id)}：${x.label} ${signedYen(x.amount)}（${ruleSchedule(x)}）`))) : null;
+    const adoptBox = adopt ? h('div', { class: 'field', 'data-key': 'adopt' }, h('label', { for: 'f-adopt' }, '既存の定例項目に引き継ぐ'), adopt,
+      h('p', { class: 'muted small' }, '共通口座の定例項目で同じ支払いを管理していた場合に選びます。過去の月の記録をそのまま引き継ぎ、二重に差し引きません。')) : null;
+    const update = () => {
+      const raw = Object.fromEntries(inputs.map((i) => [i.field.key, i.get()]));
+      const v = { ...(r || {}), ...buildValues(def, raw, null).values, name: raw.name || '（名前未入力）' };
+      preview.textContent = v.shared_cost ? deductionText(v) : '個人の口座から払っている家の費用なら印を付けます。その人が共通口座へ入れる額（当月分）から自動で差し引きます。';
+      if (adoptBox) adoptBox.hidden = !v.shared_cost;
+    };
+    // the form is built from inputs[].el later, so wrap the checkbox with its explanation here
+    shared.el = h('div', { class: 'shared-cost-box' }, shared.el, preview, adoptBox);
+    setTimeout(update, 0);
+    for (const i of inputs) i.el.addEventListener('input', update);
+    for (const i of inputs) i.el.addEventListener('change', update);
+  }
   const summary = h('div', { class: 'error', role: 'alert' });
   const submit = h('button', { type: 'submit', class: 'primary' }, '保存');
 
@@ -1568,6 +1665,8 @@ function renderEdit(ledger, id) {
         if (cardNumberSuspects(values) && !window.confirm('カード番号の全桁と思われる数字が含まれています。カード番号・暗証番号は保存しない方針です。このまま保存しますか？')) return;
         const saved = isNew ? (await db.insertRows(ledger, [values]))[0] : await db.updateRow(ledger, id, values);
         await reloadLedger(ledger);
+        if (ledger === 'contracts') await syncContractRules(saved, adopt && !adopt.closest('[hidden]') ? adopt.value || null : null);
+        if (ledger === 'accounts' || ledger === 'cards') await syncAllContractRules();
         toast('保存しました。');
         location.hash = `#/view/${ledger}/${saved.id}`;
       });

@@ -15,6 +15,10 @@ do $$ begin
   if not exists (select 1 from information_schema.columns where table_name = 'cards' and column_name = 'kind') then
     raise exception 'cards.kind missing after the upgrade';
   end if;
+  if (select count(*) from information_schema.columns where (table_name, column_name) in
+      (('contracts', 'shared_cost'), ('shared_rules', 'month_of_year'), ('shared_rules', 'contract_id'))) <> 3 then
+    raise exception 'shared cost columns missing after the upgrade';
+  end if;
   if (select count(*) from pg_policies where tablename in ('shared_rules', 'shared_entries') and policyname = 'member_all') <> 2 then
     raise exception 'shared account tables missing after the upgrade';
   end if;
