@@ -735,12 +735,15 @@ function mfImportBox() {
       status.replaceChildren(h('p', { class: 'error' }, '先に共通口座を設定してください（このページの「共通口座の収支」または設定画面）。'));
       return;
     }
-    const { inScope, skipped, unknown } = classifyMf(items, { accounts: state.data.accounts, cards: state.data.cards, sharedAccountId: sharedId });
-    const hint = unknown.length
-      ? h('p', { class: 'muted small' }, `対象外の金融機関: ${unknown.join('、')}。共通口座や、共通口座から引き落とされるカードなら、口座・カードの台帳で「マネーフォワードでの名前」にこの名前を入れてください。`)
-      : null;
+    const { inScope, skipped, manual, unknown } = classifyMf(items, { accounts: state.data.accounts, cards: state.data.cards, sharedAccountId: sharedId });
+    const hint = [
+      manual ? h('p', { class: 'muted small' }, `手入力の立替の記録（保有金融機関が「なし」）${manual}件は取り込みません（立替は共通口座の入金管理で扱います）。`) : null,
+      unknown.length
+        ? h('p', { class: 'muted small' }, `対象外の金融機関: ${unknown.join('、')}。共通口座や、共通口座から引き落とされるカードなら、口座・カードの台帳で「マネーフォワードでの名前」にこの名前を入れてください。`)
+        : null,
+    ].filter(Boolean);
     if (inScope.length === 0) {
-      status.replaceChildren(h('p', { class: 'error' }, '共通口座の明細が見つかりませんでした。'), hint);
+      status.replaceChildren(h('p', { class: 'error' }, '共通口座の明細が見つかりませんでした。'), ...hint);
       return;
     }
     const dates = inScope.map((t) => t.date).sort();
@@ -758,8 +761,8 @@ function mfImportBox() {
       render();
     }) }, '取り込む');
     status.replaceChildren(
-      h('p', {}, `${dates[0]}〜${dates[dates.length - 1]}：追加 ${added}件（うち契約に自動でひも付け ${linked}件）、更新 ${rows.length - added}件、対象外 ${skipped}件`),
-      hint,
+      h('p', {}, `${dates[0]}〜${dates[dates.length - 1]}：追加 ${added}件（うち契約に自動でひも付け ${linked}件）、更新 ${rows.length - added}件、対象外 ${skipped + manual}件`),
+      ...hint,
       h('div', { class: 'actions' }, save));
   }));
   return h('div', { class: 'mf-import' },

@@ -516,14 +516,18 @@ try {
     `"1","${d}","スーパーマーケット","-3000","カードA","食費","食料品","","0","mf-c"`,
     `"0","${d}","(カ)カードエー","-11000","共用口座","現金・カード","カード引き落とし","","1","mf-d"`,
     `"1","${d}","コンビニ","-500","個人の銀行","食費","食費","","0","mf-e"`,
+    `"1","${d}","家賃","-80000","なし","住宅","家賃・地代","済","0","mf-f"`,
   ].join('\n') + '\n';
   const sjis = execFileSync('python3', ['-I', '-c', 'import sys; sys.stdout.buffer.write(sys.stdin.read().encode("cp932"))'], { input: mfCsv });
   const mfFile = { name: 'mf.csv', mimeType: 'text/csv', buffer: sjis };
   await page.goto(`${appUrl}#/shared/${ymNow}`);
   await page.getByRole('heading', { name: '共通口座の明細（実績）' }).waitFor();
   await page.getByLabel('マネーフォワードの CSV ファイル').setInputFiles(mfFile);
-  await page.getByText('追加 4件（うち契約に自動でひも付け 1件）、更新 0件、対象外 1件').waitFor();
-  assert.match(await page.locator('.import-status').innerText(), /対象外の金融機関: 個人の銀行/);
+  await page.getByText('追加 4件（うち契約に自動でひも付け 1件）、更新 0件、対象外 2件').waitFor();
+  const importStatus = await page.locator('.import-status').innerText();
+  assert.match(importStatus, /対象外の金融機関: 個人の銀行。/);
+  assert.match(importStatus, /手入力の立替の記録（保有金融機関が「なし」）1件は取り込みません/);
+  assert.doesNotMatch(importStatus, /対象外の金融機関:[^。]*なし/, '"なし" is not offered as a name to register');
   await page.getByRole('button', { name: '取り込む' }).click();
   await page.getByText('取り込みました（追加 4件、更新 0件）。').waitFor();
   assert.equal(mock.db.transactions.length, 4);
@@ -546,7 +550,7 @@ try {
   assert.match(await page.locator('#view').innerText(), /電気代\s+8,000円\s+8,000円\s+一致/);
   // importing the same file again updates, keeps the manual link and adds nothing
   await page.getByLabel('マネーフォワードの CSV ファイル').setInputFiles(mfFile);
-  await page.getByText('追加 0件（うち契約に自動でひも付け 0件）、更新 4件、対象外 1件').waitFor();
+  await page.getByText('追加 0件（うち契約に自動でひも付け 0件）、更新 4件、対象外 2件').waitFor();
   await page.getByRole('button', { name: '取り込む' }).click();
   await page.getByText('取り込みました（追加 0件、更新 4件）。').waitFor();
   assert.equal(mock.db.transactions.length, 4);
