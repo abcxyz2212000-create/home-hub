@@ -18,11 +18,13 @@ const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '
 const DEFAULTS = {
   status: 'active', links: [], tags: [], notify_days: {}, mf_linked: false, family_card: false, etc_card: false, auto_renew: false,
 };
-const TABLES = ['accounts', 'cards', 'contracts', 'items', 'memberships', 'item_photos', 'settings', 'push_subscriptions', 'notification_log', 'members', 'audit_log', 'chores'];
+const TABLES = ['accounts', 'cards', 'contracts', 'items', 'memberships', 'item_photos', 'settings', 'push_subscriptions', 'notification_log', 'members', 'audit_log', 'chores', 'shared_rules', 'shared_entries'];
 const TABLE_DEFAULTS = {
   members: { role: 'member', active: true, email: null, nickname: null },
   settings: {}, notification_log: {}, push_subscriptions: {}, audit_log: {},
   chores: { status: 'active', schedule: [], adjust: 1, assignee_type: 'member', assignee_id: null },
+  shared_rules: { end_ym: null, memo: null },
+  shared_entries: { memo: null },
 };
 const SET_NULL = {
   accounts: [['cards', 'debit_account_id'], ['contracts', 'pay_account_id']],

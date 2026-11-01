@@ -498,3 +498,25 @@ details summary { cursor: pointer; margin-top: 1rem; }
 .day-picker .day input:checked + span { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
 .day-picker .day input:focus-visible + span { outline: 3px solid var(--accent); outline-offset: 2px; }
 [hidden] { display: none !important; }
+
+/* ---------------------------------------------------------------- shared account (共通口座) */
+.tabs { display: flex; gap: 0.25rem; border-bottom: 1px solid var(--line); margin: 0 0 0.9rem; }
+.tabs .tab { padding: 0.5rem 0.9rem; text-decoration: none; color: var(--muted); border-bottom: 3px solid transparent; font-weight: 600; }
+.tabs .tab.active { color: var(--ink); border-bottom-color: var(--series-1); }
+.month-nav { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.9rem; }
+.month-nav .month-label { margin: 0; min-width: 7.5em; text-align: center; }
+.shared-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 0.6rem; }
+.shared-figures { display: grid; grid-template-columns: auto 1fr; gap: 0.25rem 0.75rem; margin: 0.5rem 0 0.75rem; align-items: baseline; }
+.shared-figures dt { color: var(--muted); font-size: 0.9rem; }
+.shared-figures dd { margin: 0; text-align: right; }
+.shared-figures dd.big { font-size: 1.4rem; font-weight: 700; }
+.shared-figures dd.due { color: var(--critical-ink); }
+.table-wrap { overflow-x: auto; }
+.shared-table tr.total th, .shared-table tr.total td { font-weight: 700; border-top: 2px solid var(--line); }
+.shared-table tr.sub th, .shared-table tr.sub td { color: var(--muted); }
+.list-item.ended { opacity: 0.6; }
+.kpis.kpis-2 { grid-template-columns: 1fr 1fr; margin: 0.5rem 0 0; }
+.line-grid { stroke: var(--line); stroke-width: 1; }
+.line-zero { stroke: var(--muted); stroke-width: 1; }
+.line-tick { font-size: 10px; fill: var(--muted); }
+.line-path { fill: none; stroke-width: 2.2; stroke-linejoin: round; stroke-linecap: round; }

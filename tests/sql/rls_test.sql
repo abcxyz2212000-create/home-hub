@@ -156,6 +156,41 @@ do $$ begin
   exception when insufficient_privilege then null; end;
 end $$;
 
+-- shared account: members record rules/entries; values are checked; members with records cannot be deleted
+select pg_temp.login('member@example.com');
+insert into public.shared_rules (member_id, label, amount, start_ym)
+  select id, '基本', 80000, '2026-01' from public.members where name = '佐藤 春子';
+insert into public.shared_entries (member_id, ym, kind, label, amount)
+  select id, '2026-02', 'deposit', '入金', 150000 from public.members where name = '佐藤 春子';
+do $$ begin
+  if (select count(*) from public.shared_rules) <> 1 or (select count(*) from public.shared_entries) <> 1 then
+    raise exception 'member cannot record the shared account';
+  end if;
+  if (select record_name from public.audit_log where table_name = 'shared_rules' and action = 'insert') <> '基本' then
+    raise exception 'shared rule history has no label';
+  end if;
+  begin insert into public.shared_entries (member_id, ym, kind, label, amount) select id, '2026-02', 'deposit', '入金', -1 from public.members limit 1;
+    raise exception 'negative deposit accepted'; exception when check_violation then null; end;
+  begin insert into public.shared_entries (member_id, ym, kind, label, amount) select id, '2026-13', 'charge', 'x', 1 from public.members limit 1;
+    raise exception 'bad month accepted'; exception when check_violation then null; end;
+  begin insert into public.shared_rules (member_id, label, amount, start_ym, end_ym) select id, 'x', 1, '2026-05', '2026-04' from public.members limit 1;
+    raise exception 'end before start accepted'; exception when check_violation then null; end;
+  begin insert into public.shared_rules (member_id, label, amount, start_ym) select id, 'x', 0, '2026-05' from public.members limit 1;
+    raise exception 'zero amount accepted'; exception when check_violation then null; end;
+end $$;
+select pg_temp.login('owner@example.com');
+do $$ begin
+  begin delete from public.members where name = '佐藤 春子'; raise exception 'member with shared records deleted';
+  exception when foreign_key_violation then null; end;
+end $$;
+select pg_temp.login('stranger@example.com');
+do $$ begin
+  if (select count(*) from public.shared_entries) <> 0 then raise exception 'stranger can read the shared account'; end if;
+end $$;
+select pg_temp.login('member@example.com');
+delete from public.shared_entries;
+delete from public.shared_rules;
+
 -- card type: only the listed values
 select pg_temp.login('member@example.com');
 insert into public.cards (name, kind, brand, last4) values ('テストデビット', 'デビット', 'VISA', '0001');

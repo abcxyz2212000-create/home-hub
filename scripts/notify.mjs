@@ -6,12 +6,15 @@
 //   NOTIFY_TEST=1              send a test notification to every device instead of the daily check
 //   SUPABASE_URL               optional, defaults to web/js/config.js
 //   VAPID_SUBJECT              optional, defaults to the GitHub Pages URL of this repository
+//   NOTIFY_DATE                optional YYYY-MM-DD, overrides today (tests only)
 import { CONFIG } from '../web/js/config.js';
 import { collectEvents, dueNotifications, notificationText, todayJST } from '../web/js/events.js';
 import { dueFor } from '../web/js/chores.js';
+import { participantIds, statement } from '../web/js/shared.js';
 import { loadVapidKeys, sendPush } from './webpush.mjs';
 
 const LOG_RETENTION_DAYS = 400;
+const SHARED_REMIND_DAY = 25; // monthly shared account reminder from this day of the month (sent once per month)
 
 function env(name, required = true) {
   const v = (process.env[name] || '').trim();
@@ -97,7 +100,8 @@ async function main() {
     return;
   }
 
-  const today = todayJST();
+  const today = env('NOTIFY_DATE', false) || todayJST();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(today)) throw new Error('NOTIFY_DATE must be YYYY-MM-DD');
   const [cards, contracts, items, log] = await Promise.all([
     db.select('cards', '&status=eq.active'),
     db.select('contracts', '&status=eq.active'),
@@ -136,6 +140,28 @@ async function main() {
     const delivered = await sendTo(devices, { title: `今日の家事（${list.length}件）`, body, url: '#/chores', tag: key });
     if (delivered > 0) await db.insert('notification_log', [{ key }]);
     console.log(`- chores: ${list.length} task(s) for a member, delivered to ${delivered} device(s)`);
+  }
+
+  // Shared account: from the 25th, once a month, the amount for this month and the unpaid balance
+  // go to each participant's own devices. Amounts and names never go to the log.
+  if (Number(today.slice(8, 10)) >= SHARED_REMIND_DAY) {
+    const [rules, entries] = await Promise.all([db.select('shared_rules'), db.select('shared_entries')]);
+    const ym = today.slice(0, 7);
+    const yen = (n) => `${n < 0 ? '−' : ''}${Math.abs(Math.round(n)).toLocaleString('ja-JP')}円`;
+    for (const memberId of participantIds(rules, entries)) {
+      const devices = devicesByMember.get(memberId) || [];
+      const key = `shared:${ym}:${memberId}`;
+      if (devices.length === 0 || sent.has(key)) continue;
+      const st = statement(rules, entries, memberId, ym);
+      const delivered = await sendTo(devices, {
+        title: `共通口座への入金（${Number(ym.slice(5))}月）`,
+        body: `今月 ${yen(st.charges)}／未入金の残高 ${yen(st.balance)}`,
+        url: `#/shared/${ym}`,
+        tag: key,
+      });
+      if (delivered > 0) await db.insert('notification_log', [{ key }]);
+      console.log(`- shared account reminder for a member: delivered to ${delivered} device(s)`);
+    }
   }
 
   const cutoff = new Date(Date.now() - LOG_RETENTION_DAYS * 86400000).toISOString();
