@@ -212,6 +212,18 @@ do $$ begin
   begin insert into public.shared_rules (member_id, label, amount, start_ym) select id, 'x', 0, '2026-05' from public.members limit 1;
     raise exception 'zero amount accepted'; exception when check_violation then null; end;
 end $$;
+-- account balances: administrators import, everyone reads
+select pg_temp.login('owner@example.com');
+insert into public.account_balances (account_id, date, balance) select id, '2026-10-23', 26130 from public.accounts limit 1;
+select pg_temp.login('adv@example.com');
+do $$ begin
+  if (select count(*) from public.account_balances) <> 1 then raise exception 'member cannot read balances'; end if;
+  begin insert into public.account_balances (account_id, date, balance) select id, '2026-10-24', 1 from public.accounts limit 1;
+    raise exception 'member imported a balance'; exception when insufficient_privilege then null; end;
+end $$;
+select pg_temp.login('owner@example.com');
+delete from public.account_balances;
+
 -- each person sets only their own notification hour
 select pg_temp.login('adv@example.com');
 select public.set_my_notify_hour(21);
