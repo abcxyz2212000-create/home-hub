@@ -7,7 +7,10 @@ import {
   parseField, parseTags, validateLinks, parseLinksCell, linksCell, parseNotifyDays, notifyDaysText, findCardNumberLike, safeUrl,
 } from './validate.js';
 import { parseCSV, toCSV, decodeCSVBytes, unescapeFormula } from './csv.js';
-import { parseMfRows, classifyMf, matchContract, normalizeText, summarizeMonth, plannedInMonth, personalTotal, settlementMemo } from './mf.js';
+import { sortedHistory, applyPriceChange, periodText } from './prices.js';
+import {
+  parseMfRows, classifyMf, matchContract, normalizeText, summarizeMonth, plannedInMonth, personalTotal, settlementMemo, depositCandidates, depositEntryFor, DEPOSIT_AUTO_FROM,
+} from './mf.js';
 import { createZip } from './zip.js';
 import { compressImage } from './image.js';
 import * as push from './push.js';
@@ -552,13 +555,13 @@ async function applyRulePlan(plan) {
 
 // Keep the rule of one contract in line with it from this month on (adoptRuleId: an existing
 // manual rule that becomes this contract's rule, so that its history is kept).
-async function syncContractRules(contract, adoptRuleId = null) {
+async function syncContractRules(contract, adoptRuleId = null, fromYm = thisYM()) {
   if (adoptRuleId) {
     await db.updateRow('shared_rules', adoptRuleId, { contract_id: contract.id });
     await reloadShared();
   }
   const { target } = contract.deleted ? { target: null } : contractDeduction(contract, deductionContext());
-  const changed = await applyRulePlan(planRuleSync(contract.id, target, state.sharedRules, thisYM()));
+  const changed = await applyRulePlan(planRuleSync(contract.id, target, state.sharedRules, fromYm));
   if (changed) await reloadShared();
 }
 
@@ -749,23 +752,33 @@ function mfImportBox() {
       return;
     }
     const dates = inScope.map((t) => t.date).sort();
-    const existing = await fetchAllPaged('transactions', `date=gte.${dates[0]}&date=lte.${dates[dates.length - 1]}&select=mf_id,contract_id`);
+    const existing = await fetchAllPaged('transactions', `date=gte.${dates[0]}&date=lte.${dates[dates.length - 1]}&select=mf_id,contract_id,deposit_entry_id,deposit_ignored`);
     const known = new Map(existing.map((t) => [t.mf_id, t.contract_id]));
+    const prior = new Map(existing.map((t) => [t.mf_id, t]));
     const contracts = state.data.contracts;
     const rows = inScope.map((t) => ({ ...t, contract_id: known.has(t.mf_id) ? known.get(t.mf_id) : matchContract(t.description, contracts) }));
     const added = rows.filter((t) => !known.has(t.mf_id)).length;
     const linked = rows.filter((t) => !known.has(t.mf_id) && t.contract_id).length;
+    // deposits by members (振込名義), recorded in the shared account ledger after saving
+    const deposits = depositCandidates(rows.map((t) => ({ ...t, ...(prior.has(t.mf_id) ? { deposit_entry_id: prior.get(t.mf_id).deposit_entry_id, deposit_ignored: prior.get(t.mf_id).deposit_ignored } : {}) })), state.members);
+    const depositText = deposits.length
+      ? `入金として記録: ${deposits.length}件（${[...new Set(deposits.map((d) => d.member_id))].map((id) => `${memberNick(id)} ${deposits.filter((d) => d.member_id === id).length}件`).join('・')}）`
+      : null;
     const save = h('button', { type: 'button', class: 'primary', onclick: (ev) => busy(ev.currentTarget, async () => {
-      for (let i = 0; i < rows.length; i += 500) await db.upsertRows('transactions', rows.slice(i, i + 500), 'mf_id');
+      const saved = [];
+      for (let i = 0; i < rows.length; i += 500) saved.push(...await db.upsertRows('transactions', rows.slice(i, i + 500), 'mf_id'));
+      const recorded = await recordDeposits(depositCandidates(saved, state.members));
       state.tx.clear();
-      toast(`取り込みました（追加 ${added}件、更新 ${rows.length - added}件）。`);
+      toast(`取り込みました（追加 ${added}件、更新 ${rows.length - added}件${recorded ? `、入金の記録 ${recorded}件` : ''}）。`);
       input.value = '';
       render();
     }) }, '取り込む');
-    status.replaceChildren(
+    status.replaceChildren(...[
       h('p', {}, `${dates[0]}〜${dates[dates.length - 1]}：追加 ${added}件（うち契約に自動でひも付け ${linked}件）、更新 ${rows.length - added}件、対象外 ${skipped + manual}件`),
+      depositText ? h('p', {}, depositText) : null,
       ...hint,
-      h('div', { class: 'actions' }, save));
+      h('p', { class: 'muted small' }, `入金は${ymLabel(DEPOSIT_AUTO_FROM)}以降の明細から、ユーザーの「振込名義」で見分けて共通口座の入金管理に記録します。`),
+      h('div', { class: 'actions' }, save)].filter(Boolean));
   }));
   return h('div', { class: 'mf-import' },
     h('label', { class: 'button' }, 'マネーフォワードの CSV を選ぶ', input),
@@ -778,7 +791,8 @@ function txRow(t) {
     h('div', { class: 'list-body' },
       h('div', { class: 'list-title' }, t.description || '（内容なし）',
         t.personal_member_id ? h('span', { class: 'tag tag-personal' }, `${memberNick(t.personal_member_id)}の負担${t.settled_entry_id ? '・精算済み' : ''}`) : null,
-        t.needs_review ? h('span', { class: 'tag tag-review' }, '確認中') : null),
+        t.needs_review ? h('span', { class: 'tag tag-review' }, '確認中') : null,
+        t.deposit_entry_id ? h('span', { class: 'tag tag-deposit' }, '入金として記録済み') : null),
       h('div', { class: 'muted small' }, [t.date.slice(5).replace('-', '/'), t.institution, t.category && `${t.category}${t.subcategory ? `・${t.subcategory}` : ''}`].filter(Boolean).join('　'))),
     h('span', { class: 'num' }, signedYen(t.amount)),
     icon('chevron', 'ic ic-sm list-chevron'));
@@ -825,6 +839,16 @@ function actualCard(ym) {
         h('div', { class: 'list' }, sum.excluded.map(txRow))) : null,
     ],
     mfImportBox());
+}
+
+// Record deposits found in the statement and link each line to its record (no double records).
+async function recordDeposits(candidates) {
+  for (const c of candidates) {
+    const [entry] = await db.insertRows('shared_entries', [depositEntryFor(c)]);
+    await db.updateRow('transactions', c.tx.id, { deposit_entry_id: entry.id });
+  }
+  if (candidates.length) await reloadShared();
+  return candidates.length;
 }
 
 function personalLines() {
@@ -1294,6 +1318,8 @@ function renderSharedEntry(id, preset) {
     },
     onDelete: isNew ? null : async () => {
       if (!window.confirm(`この${name}を削除します。元に戻せません。よろしいですか？`)) return;
+      const fromStatement = await db.selectWhere('transactions', `deposit_entry_id=eq.${encodeURIComponent(id)}&select=id`);
+      for (const t of fromStatement) await db.updateRow('transactions', t.id, { deposit_ignored: true });
       await db.deleteWhere('shared_entries', 'id', id);
       state.tx.clear();
       state.personal = null;
@@ -1538,9 +1564,17 @@ function relations(ledger, r) {
       relationSection('上記カード経由で支払っている契約', 'contracts', d.contracts.filter((c) => cardIds.has(c.pay_card_id))),
     ];
   }
-  if (ledger === 'contracts' && r.shared_cost) {
-    return [h('section', { class: 'card' }, h('h2', {}, '共通口座への入金との関係'), h('p', {}, deductionText(r)),
-      h('a', { href: '#/flow' }, 'お金の流れ（共通口座）を見る'))];
+  if (ledger === 'contracts') {
+    const prices = sortedHistory(r.price_history);
+    return [
+      prices.length ? h('section', { class: 'card' }, h('h2', {}, '金額の履歴'),
+        h('table', { class: 'table' },
+          h('thead', {}, h('tr', {}, h('th', {}, '期間'), h('th', { class: 'num' }, '金額'))),
+          h('tbody', {}, prices.slice().reverse().map((p) => h('tr', {}, h('td', {}, periodText(p) + (p.to ? '' : '（今）')), h('td', { class: 'num' }, yen(p.amount)))))),
+        h('p', { class: 'muted small' }, '金額を変えるときは「編集」で金額と適用開始月を入れます。予定と実績の比較では、その月の金額を使います。')) : null,
+      r.shared_cost ? h('section', { class: 'card' }, h('h2', {}, '共通口座への入金との関係'), h('p', {}, deductionText(r)),
+        h('a', { href: '#/flow' }, 'お金の流れ（共通口座）を見る')) : null,
+    ];
   }
   if (ledger === 'cards') {
     return [
@@ -1607,7 +1641,7 @@ function renderView(ledger, id) {
 // ---------------------------------------------------------------- change history
 
 const HISTORY_LIMIT = 50;
-const EXTRA_LABELS = { pay_card_id: '支払カード', pay_account_id: '支払口座', notify_days: '通知のタイミング' };
+const EXTRA_LABELS = { pay_card_id: '支払カード', pay_account_id: '支払口座', notify_days: '通知のタイミング', price_history: '金額の履歴' };
 
 function formatTime(iso) {
   return iso ? new Date(iso).toLocaleString('ja-JP', { dateStyle: 'short', timeStyle: 'short' }) : '';
@@ -1617,6 +1651,7 @@ function historyValue(field, key, v) {
   if (v === null || v === undefined || v === '' || (Array.isArray(v) && v.length === 0)) return '（なし）';
   if (key === 'pay_card_id') return (find('cards', v) || { name: '（削除済み）' }).name;
   if (key === 'pay_account_id') return (find('accounts', v) || { name: '（削除済み）' }).name;
+  if (key === 'price_history') return sortedHistory(v).map((p) => `${periodText(p)} ${yen(p.amount)}`).join('、') || '（なし）';
   if (key === 'notify_days') {
     const parts = Object.entries(v).map(([t, days]) => `${EVENT_TYPES[t] ? EVENT_TYPES[t].label : t}: ${days.length ? `${days.join('・')}日前` : '通知しない'}`);
     return parts.length ? parts.join('、') : '初期設定';
@@ -1936,6 +1971,7 @@ function renderEdit(ledger, id) {
   const notifyInputs = (def.events || []).map((t) => notifyInput(t, r));
   // contracts: what "共通の費用" means for this contract, and taking over an existing manual rule
   let adopt = null;
+  let priceFrom = null;
   if (ledger === 'contracts') {
     const shared = inputs.find((i) => i.field.key === 'shared_cost');
     const preview = h('p', { class: 'deduction small', 'aria-live': 'polite' });
@@ -1952,6 +1988,18 @@ function renderEdit(ledger, id) {
     };
     // the form is built from inputs[].el later, so wrap the checkbox with its explanation here
     shared.el = h('div', { class: 'shared-cost-box' }, shared.el, preview, adoptBox);
+    // amount by period: when the amount of an existing contract changes, ask from which month
+    if (!isNew && r.amount !== null && r.amount !== undefined) {
+      const amountInput = inputs.find((i) => i.field.key === 'amount');
+      priceFrom = h('input', { type: 'month', id: 'f-price-from', value: thisYM() });
+      const box = h('div', { class: 'field', 'data-key': 'price_from', hidden: true },
+        h('label', { for: 'f-price-from' }, '新しい金額の適用開始月'), priceFrom,
+        h('p', { class: 'muted small' }, `今の金額（${yen(r.amount)}）はその前の月までになり、金額の履歴に残ります。過去の月の予定額は変わりません。`),
+        h('p', { class: 'error small field-error' }));
+      const toggle = () => { box.hidden = String(amountInput.get()).replace(/[,円\s]/g, '') === String(r.amount); };
+      amountInput.el.addEventListener('input', toggle);
+      amountInput.el = h('div', {}, amountInput.el, box);
+    }
     setTimeout(update, 0);
     for (const i of inputs) i.el.addEventListener('input', update);
     for (const i of inputs) i.el.addEventListener('change', update);
@@ -1979,10 +2027,21 @@ function renderEdit(ledger, id) {
           summary.scrollIntoView({ behavior: 'smooth', block: 'center' });
           return;
         }
+        let ruleFrom = thisYM();
+        if (priceFrom && values.amount !== null && values.amount !== r.amount) {
+          const from = priceFrom.value;
+          if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(from)) {
+            form.querySelector('[data-key="price_from"] .field-error').textContent = '適用開始月を選んでください。';
+            summary.textContent = '入力内容を確認してください（1件）。';
+            return;
+          }
+          values.price_history = applyPriceChange(r.price_history, r.amount, values.amount, from);
+          ruleFrom = from;
+        }
         if (cardNumberSuspects(values) && !window.confirm('カード番号の全桁と思われる数字が含まれています。カード番号・暗証番号は保存しない方針です。このまま保存しますか？')) return;
         const saved = isNew ? (await db.insertRows(ledger, [values]))[0] : await db.updateRow(ledger, id, values);
         await reloadLedger(ledger);
-        if (ledger === 'contracts') await syncContractRules(saved, adopt && !adopt.closest('[hidden]') ? adopt.value || null : null);
+        if (ledger === 'contracts') await syncContractRules(saved, adopt && !adopt.closest('[hidden]') ? adopt.value || null : null, ruleFrom);
         if (ledger === 'contracts' && (values.match_keywords || null) !== ((r && r.match_keywords) || null)) await relinkUnlinked();
         if (ledger === 'contracts') state.tx.clear();
         if (ledger === 'accounts' || ledger === 'cards') await syncAllContractRules();

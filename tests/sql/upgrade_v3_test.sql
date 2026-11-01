@@ -17,7 +17,8 @@ do $$ begin
   end if;
   if (select count(*) from information_schema.columns where (table_name, column_name) in
       (('accounts', 'mf_name'), ('cards', 'mf_name'), ('contracts', 'match_keywords'), ('transactions', 'mf_id'),
-       ('transactions', 'personal_member_id'), ('transactions', 'needs_review'), ('transactions', 'settled_entry_id'))) <> 7 then
+       ('transactions', 'personal_member_id'), ('transactions', 'needs_review'), ('transactions', 'settled_entry_id'),
+       ('members', 'transfer_names'), ('transactions', 'deposit_entry_id'), ('transactions', 'deposit_ignored'))) <> 10 then
     raise exception 'MoneyForward import columns missing after the upgrade';
   end if;
   if (select count(*) from information_schema.columns where (table_name, column_name) in

@@ -1,7 +1,7 @@
 // MoneyForward ME CSV import. All rows are fictional.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseMfRows, classifyMf, matchContract, normalizeText, summarizeMonth, plannedInMonth, personalTotal, settlementMemo, MF_HEADERS } from '../../web/js/mf.js';
+import { parseMfRows, classifyMf, matchContract, normalizeText, summarizeMonth, plannedInMonth, personalTotal, settlementMemo, MF_HEADERS, depositMember, depositCandidates, depositEntryFor } from '../../web/js/mf.js';
 import { parseCSV, decodeCSVBytes } from '../../web/js/csv.js';
 
 const row = (o) => [o.c ?? '1', o.d ?? '2026/10/05', o.t ?? '', String(o.a ?? -1000), o.i ?? '共用口座', o.l ?? '食費', o.m ?? '食費', '', o.f ?? '0', o.id];
@@ -107,4 +107,30 @@ test('personal lines (個人負担) are left out of the shared totals; lines und
   assert.equal(personalTotal(txs.slice(0, 2)), 500, 'refunds reduce what is owed');
   assert.equal(settlementMemo(txs.slice(0, 1)), '2025/06/09 サンプル会費 600円');
   assert.ok(settlementMemo(Array.from({ length: 100 }, () => txs[0])).length <= 2000);
+});
+
+test('deposits: recognised by the payer names, from the start month, never twice', () => {
+  const members = [
+    { id: 'm-a', transfer_names: 'サトウ ハナコ、スズキ ハナコ' },
+    { id: 'm-b', transfer_names: 'サトウ タロウ' },
+    { id: 'm-c', transfer_names: '' },
+  ];
+  const line = (o) => ({ id: o.id, date: o.date || '2026-02-10', description: o.d, amount: o.a ?? 50000, account_id: o.card ? null : 'acc-s', card_id: o.card ? 'c' : null, transfer: false, ...o.x });
+  assert.equal(depositMember(line({ d: 'サトウ ハナコ' }), members), 'm-a');
+  assert.equal(depositMember(line({ d: 'ｽｽﾞｷ ﾊﾅｺ' }), members), 'm-a', 'half-width kana and an old name');
+  assert.equal(depositMember(line({ d: 'サトウ タロウ' }), members), 'm-b');
+  assert.equal(depositMember(line({ d: '預金利息', a: 30 }), members), null);
+  assert.equal(depositMember(line({ d: 'サトウ ハナコ', a: -1000 }), members), null, 'payments out are not deposits');
+  assert.equal(depositMember(line({ d: 'サトウ ハナコ', card: true }), members), null, 'card lines are not deposits');
+  const txs = [
+    line({ id: 't1', d: 'サトウ ハナコ' }),
+    line({ id: 't2', d: 'サトウ ハナコ', date: '2025-12-20' }),
+    line({ id: 't3', d: 'サトウ タロウ', x: { deposit_entry_id: 'e1' } }),
+    line({ id: 't4', d: 'サトウ タロウ', x: { deposit_ignored: true } }),
+  ];
+  assert.deepEqual(depositCandidates(txs, members).map((c) => [c.tx.id, c.member_id]), [['t1', 'm-a']]);
+  assert.deepEqual(depositCandidates(txs, members, '2025-12').map((c) => c.tx.id), ['t1', 't2']);
+  const e = depositEntryFor({ tx: txs[0], member_id: 'm-a' });
+  assert.deepEqual([e.member_id, e.ym, e.kind, e.label, e.amount], ['m-a', '2026-02', 'deposit', '入金', 50000]);
+  assert.match(e.memo, /2026\/02\/10 サトウ ハナコ/);
 });
