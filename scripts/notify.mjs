@@ -154,7 +154,7 @@ async function main() {
       if (devices.length === 0 || sent.has(key)) continue;
       const st = statement(rules, entries, memberId, ym);
       const delivered = await sendTo(devices, {
-        title: `共通口座への入金（${Number(ym.slice(5))}月）`,
+        title: `共用口座への入金（${Number(ym.slice(5))}月）`,
         body: `今月 ${yen(st.charges)}／未入金の残高 ${yen(st.balance)}`,
         url: `#/shared/${ym}`,
         tag: key,

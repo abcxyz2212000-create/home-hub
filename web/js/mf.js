@@ -226,7 +226,7 @@ export function depositEntryFor({ tx, member_id }) {
       member_id,
       ym: tx.date.slice(0, 7),
       kind: 'charge',
-      label: '共通口座からの受け取り',
+      label: '共用口座からの受け取り',
       amount: -tx.amount,
       memo: `マネーフォワードの明細から自動（${tx.date.replace(/-/g, '/')} ${payeeText(tx.description).slice(0, 60)}）`,
     };

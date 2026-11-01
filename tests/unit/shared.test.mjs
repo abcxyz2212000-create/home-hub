@@ -92,7 +92,7 @@ const rent = { id: 'k-rent', name: '家賃', shared_cost: true, status: 'active'
 test('deduction: only shared costs paid from a personal account with a holder', () => {
   assert.deepEqual(contractDeduction(rent, ctx).target, { member_id: A, label: '家賃', amount: -80000, month_of_year: null });
   assert.equal(contractDeduction({ ...rent, shared_cost: false }, ctx).target, null);
-  assert.match(contractDeduction({ ...rent, pay_account_id: 'acc-shared' }, ctx).reason, /共通口座から払う/);
+  assert.match(contractDeduction({ ...rent, pay_account_id: 'acc-shared' }, ctx).reason, /共用口座から払う/);
   assert.match(contractDeduction({ ...rent, pay_account_id: 'acc-none' }, ctx).reason, /名義人がない/);
   assert.match(contractDeduction({ ...rent, pay_account_id: null }, ctx).reason, /支払元の口座が未設定/);
   assert.match(contractDeduction({ ...rent, status: 'closed' }, ctx).reason, /解約済み/);

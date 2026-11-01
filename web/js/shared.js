@@ -1,4 +1,4 @@
-// Shared account deposits (共通口座の入金管理). Pure functions shared by the app and the daily job.
+// Shared account deposits (共用口座の入金管理). Pure functions shared by the app and the daily job.
 //
 // For each member and month:
 //   charges  = recurring rules active in that month + one-off charges (minus = a shared cost the
@@ -99,7 +99,7 @@ export function contractDeduction(contract, ctx) {
   const accountId = card ? card.debit_account_id : contract.pay_account_id;
   const account = accountId ? ctx.accounts.find((a) => a.id === accountId) : null;
   if (!account) return { target: null, reason: card ? 'カードの引き落とし口座が未設定のため差し引けません。' : '支払元の口座が未設定のため差し引けません。' };
-  if (account.id === ctx.sharedAccountId) return { target: null, reason: '共通口座から払うため、差し引きはありません。' };
+  if (account.id === ctx.sharedAccountId) return { target: null, reason: '共用口座から払うため、差し引きはありません。' };
   if (!account.holder_id) return { target: null, reason: `支払元の口座「${account.name}」に名義人がないため差し引けません。` };
   let month = null;
   if (contract.cycle === 'yearly') {

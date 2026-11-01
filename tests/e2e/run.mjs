@@ -442,22 +442,22 @@ try {
   await page.getByRole('heading', { name: 'お金', exact: true }).waitFor();
   await page.getByRole('link', { name: '流れ図', exact: true }).click();
   await page.getByRole('heading', { name: '口座 → カード → 支払先（月額）' }).waitFor();
-  assert.match(await page.locator('#view').innerText(), /共通口座にする口座を選ぶと/);
+  assert.match(await page.locator('#view').innerText(), /共用口座にする口座を選ぶと/);
   await page.goto(`${appUrl}#/settings/other`);
-  await page.getByLabel('共通口座にする口座').selectOption({ label: '生活費口座（さくら支店・普通・下4桁 1234）' });
-  await page.getByRole('button', { name: '共通口座にする' }).click();
-  await page.getByText('共通口座を設定しました。').waitFor();
+  await page.getByLabel('共用口座にする口座').selectOption({ label: '生活費口座（さくら支店・普通・下4桁 1234）' });
+  await page.getByRole('button', { name: '共用口座にする' }).click();
+  await page.getByText('共用口座を設定しました。').waitFor();
   await page.getByText('今の設定: 生活費口座（さくら支店・普通・下4桁 1234）').waitFor();
   assert.equal(mock.db.settings.find((x) => x.key === 'shared_account_id').value, mock.db.accounts.find((a) => a.name === '生活費口座').id);
   await page.goto(`${appUrl}#/flow/flow/${ymNow}`);
   await page.getByRole('heading', { name: 'はなこ → 口座 → カード → 支払先（月額）' }).waitFor();
   const money = await page.locator('#view').innerText();
-  assert.match(money, /共通口座の収支（生活費口座・月額）/);
+  assert.match(money, /共用口座の収支（生活費口座・月額）/);
   assert.match(money, /入る額\s*66,500円/);
   assert.match(money, /出る額\s*7,000円/);
   assert.match(money, /差（余裕）\s*59,500円/);
   const flow4 = await page.getByRole('img', { name: 'お金の流れ（月額）' }).evaluate((el) => [...el.querySelectorAll('text')].map((t) => t.textContent));
-  for (const t of ['給与口座（はなこ）', '当月分 66,500円', '生活費口座（共通）', '外部（支払先）', 'メインカード']) assert.ok(flow4.includes(t), `flow shows ${t}`);
+  for (const t of ['給与口座（はなこ）', '当月分 66,500円', '生活費口座（共用）', '外部（支払先）', 'メインカード']) assert.ok(flow4.includes(t), `flow shows ${t}`);
   assert.equal(flow4.filter((t) => t === '外部（支払先）').length, 1, 'one box for everything outside');
   await page.getByRole('link', { name: '年間' }).click();
   await page.getByRole('heading', { name: 'はなこ → 口座 → カード → 支払先（年額）' }).waitFor();
@@ -481,7 +481,7 @@ try {
   const dRule = mock.db.shared_rules.find((x) => x.label === 'dアニ');
   await page.getByLabel('既存の定例項目に引き継ぐ', { exact: true }).selectOption(dRule.id);
   await save();
-  await page.getByRole('heading', { name: '共通口座への入金との関係' }).waitFor();
+  await page.getByRole('heading', { name: '共用口座への入金との関係' }).waitFor();
   const dContract = mock.db.contracts.find((c) => c.name === 'dアニ');
   assert.equal(dContract.shared_cost, true);
   assert.deepEqual(mock.db.shared_rules.filter((x) => x.label === 'dアニ').map((x) => [x.id, x.contract_id, x.amount, x.start_ym, x.end_ym]),
@@ -490,7 +490,7 @@ try {
   await page.goto(`${appUrl}#/edit/contracts/${dContract.id}`);
   await fill('金額（円）', '550');
   await save();
-  await page.getByRole('heading', { name: '共通口座への入金との関係' }).waitFor();
+  await page.getByRole('heading', { name: '共用口座への入金との関係' }).waitFor();
   assert.deepEqual(mock.db.shared_rules.filter((x) => x.contract_id === dContract.id).map((x) => [x.amount, x.start_ym, x.end_ym]).sort(),
     [[-500, ymPrev, ymPrev], [-550, ymNow, null]].sort());
   await page.goto(`${appUrl}#/shared/${ymNow}`);
@@ -543,7 +543,7 @@ try {
   const sjis = execFileSync('python3', ['-I', '-c', 'import sys; sys.stdout.buffer.write(sys.stdin.read().encode("cp932"))'], { input: mfCsv });
   const mfFile = { name: 'mf.csv', mimeType: 'text/csv', buffer: sjis };
   await page.goto(`${appUrl}#/flow/ext/${ymNow}`);
-  await page.getByRole('heading', { name: '共通口座の明細（実績）' }).waitFor();
+  await page.getByRole('heading', { name: '共用口座の明細（実績）' }).waitFor();
   await page.waitForLoadState('networkidle'); // the month's lines are loaded (the page redraws once)
   await page.getByLabel('マネーフォワードの CSV ファイル').setInputFiles(mfFile);
   await page.getByText('追加 5件（うち契約に自動でひも付け 1件）、更新 0件、対象外 2件').waitFor();
@@ -596,7 +596,7 @@ try {
   assert.equal(mock.db.transactions.find((t) => t.mf_id === 'mf-c').personal_member_id, hanako.id);
   assert.match(await page.locator('#view').innerText(), /出金（外部へ）\s*13,000円/, 'the personal line is no longer a shared cost');
   await page.goto(`${appUrl}#/flow/member/${ymNow}`);
-  await page.getByText('はなこ：精算待ち 1件・3,000円').waitFor();
+  await page.locator('h3', { hasText: 'はなこ 精算待ち 1件・3,000円' }).waitFor();
   await page.goto(`${appUrl}#/tx/${mock.db.transactions.find((t) => t.mf_id === 'mf-a').id}`); // linked lines are folded away
   await page.getByLabel('負担', { exact: true }).selectOption({ label: '確認中（誰の負担か確かめる）' });
   await page.getByRole('button', { name: '保存' }).click();
@@ -620,7 +620,7 @@ try {
   await page.locator('.shared-card').first().waitFor();
   assert.equal(mock.db.transactions.find((t) => t.mf_id === 'mf-c').settled_entry_id, null, 'deleting the charge puts the line back');
   await page.goto(`${appUrl}#/shared/${ymNow}`);
-  await page.getByText('はなこ：精算待ち 1件・3,000円').waitFor();
+  await page.locator('h3', { hasText: 'はなこ 精算待ち 1件・3,000円' }).waitFor();
 
   step('money tabs: year views, a payout to a member becomes their one-off charge');
   const payCsv = [
@@ -629,30 +629,31 @@ try {
     `"1","${d}","サンプル駐車場(依頼人名:ツツイ ハナコ)","-9000","共用口座","住宅","駐車場","","0","mf-i"`,
   ].join('\n') + '\n';
   await page.goto(`${appUrl}#/flow/ext/${ymNow}`);
-  await page.getByRole('heading', { name: '共通口座の明細（実績）' }).waitFor();
+  await page.getByRole('heading', { name: '共用口座の明細（実績）' }).waitFor();
   await page.waitForLoadState('networkidle'); // the month's lines are loaded (the page redraws once)
   await page.getByLabel('マネーフォワードの CSV ファイル').setInputFiles({ name: 'pay.csv', mimeType: 'text/csv', buffer: Buffer.from(payCsv) });
-  await page.getByText(/共通口座からの受け取りとして記録: 1件（はなこ 1件）/).waitFor();
+  await page.getByText(/共用口座からの受け取りとして記録: 1件（はなこ 1件）/).waitFor();
   await page.getByRole('button', { name: '取り込む' }).click();
   await page.getByText('取り込みました（追加 2件、更新 0件、個人との入出金の記録 1件）。').waitFor();
-  const payout = mock.db.shared_entries.find((e) => e.label === '共通口座からの受け取り');
+  const payout = mock.db.shared_entries.find((e) => e.label === '共用口座からの受け取り');
   assert.deepEqual([payout.member_id, payout.ym, payout.kind, payout.amount], [hanako.id, ymNow, 'charge', 20000]);
   assert.equal(mock.db.transactions.find((t) => t.mf_id === 'mf-i').deposit_entry_id ?? null, null, 'the sender name (依頼人名) is not a payee');
   await page.getByRole('link', { name: '年間' }).click();
-  await page.getByRole('heading', { name: `共通口座の明細（${Number(ymNow.slice(0, 4))}年）` }).waitFor();
+  await page.getByRole('heading', { name: `共用口座の明細（${Number(ymNow.slice(0, 4))}年）` }).waitFor();
+  await page.locator('.year-table').waitFor(); // the year's lines are loaded
   const extYear = await page.locator('#view').innerText();
   assert.match(extYear, /出金（外部へ）\s*22,000円/, '5,000 + 8,000 + 9,000 (the member payout and the personal line are not outside payments)');
-  await page.getByRole('link', { name: '個人 ⇔ 共通口座' }).click();
+  await page.getByRole('link', { name: '個人 ⇔ 共用口座' }).click();
   await page.locator('.shared-card').first().waitFor();
-  assert.match(await page.locator('.shared-table').innerText(), /共通口座からの受け取り\s+20,000円/);
+  assert.match(await page.locator('.shared-table').innerText(), /共用口座からの受け取り\s+20,000円/);
   await page.getByText('個人の口座から払っている共通の費用').waitFor();
   assert.match(await page.locator('#view').innerText(), /dアニ\s+はなこ\s+毎月\s+550円/);
   await page.getByRole('link', { name: '年間' }).click();
   await page.getByRole('heading', { name: `はなこ（${Number(ymNow.slice(0, 4))}年）` }).waitFor();
   assert.match(await page.locator('.member-year').innerText(), /当月分の合計/);
   await page.screenshot({ path: join(OUT, 'money-year.png'), fullPage: true });
-  await page.getByRole('link', { name: '共通口座 ⇔ 外部' }).click();
-  await page.getByRole('heading', { name: `共通口座の明細（${Number(ymNow.slice(0, 4))}年）` }).waitFor(); // each tab keeps its own period
+  await page.getByRole('link', { name: '共用口座 ⇔ 外部' }).click();
+  await page.getByRole('heading', { name: `共用口座の明細（${Number(ymNow.slice(0, 4))}年）` }).waitFor(); // each tab keeps its own period
 
   step('contract amount by period: a new amount from this month, the old one kept for past months');
   await page.goto(`${appUrl}#/edit/contracts/${net.id}`);
@@ -675,7 +676,7 @@ try {
   const zipPath = join(OUT, 'backup.zip');
   writeFileSync(zipPath, readFileSync(await zipDl.path()));
   const listing = execFileSync('python3', ['-I', '-c', 'import sys,zipfile; z=zipfile.ZipFile(sys.argv[1]); assert z.testzip() is None; print("\\n".join(z.namelist()))', zipPath]).toString();
-  for (const name of ['口座.csv', 'カード.csv', '契約・固定費.csv', '書類・家電.csv', 'ポイントカード・会員情報.csv', '写真一覧.csv', '共通口座_定例項目.csv', '共通口座_臨時の費目と入金.csv', '共通口座_明細（マネーフォワード）.csv']) assert.ok(listing.includes(name), name);
+  for (const name of ['口座.csv', 'カード.csv', '契約・固定費.csv', '書類・家電.csv', 'ポイントカード・会員情報.csv', '写真一覧.csv', '共用口座_定例項目.csv', '共用口座_臨時の費目と入金.csv', '共用口座_明細（マネーフォワード）.csv']) assert.ok(listing.includes(name), name);
   assert.match(listing, /photos\/.+\.jpg/);
   const accountsCsv = execFileSync('python3', ['-I', '-c', 'import sys,zipfile; print(zipfile.ZipFile(sys.argv[1]).read("口座.csv").decode("utf-8-sig"))', zipPath]).toString();
   assert.match(accountsCsv, /7654321/, 'backup keeps the full account number');
@@ -703,8 +704,10 @@ try {
   };
   const memberCtx = await browser.newContext({ viewport: { width: 390, height: 844 }, locale: 'ja-JP', serviceWorkers: 'block' });
   const mp = await memberCtx.newPage();
+  mock.db.members.find((m) => m.id === hanako.id).gender = 'female'; // set in the user master
   await login(mp, MEMBER);
   await mp.getByRole('heading', { name: '期限が近い予定' }).waitFor();
+  assert.ok(await mp.evaluate(() => document.documentElement.classList.contains('theme-female')), 'the signed-in person\'s color is the accent');
   await mp.goto(`${appUrl}#/settings/account`);
   await mp.getByText('ログイン中: はなこ（一般）').waitFor(); // the nickname is shown
   await mp.getByRole('link', { name: 'データ', exact: true }).click();
@@ -734,10 +737,11 @@ try {
   await mp.getByRole('button', { name: '保存' }).click();
   await mp.locator('.shared-card').first().waitFor();
   const adv = mock.db.shared_entries.find((e) => e.label === '立替（日用品）');
+  assert.equal(await mp.locator('.shared-card.person-female').count(), 1, 'her card in her color');
   assert.deepEqual([adv.member_id, adv.kind, adv.amount, adv.paid_on, adv.ym], [hanako.id, 'charge', -1200, advDay, ymPrev], 'the month comes from the date');
   assert.equal(mock.db.shared_attachments.filter((a) => a.entry_id === adv.id).length, 3);
   assert.ok(mock.db.shared_attachments.every((a) => a.path.startsWith(`receipts/${adv.id}/`)));
-  assert.match(await mp.locator('#view').innerText(), new RegExp(`はなこ：立替（日用品）\\s*添付あり\\s*${Number(ymPrev.slice(0, 4))}/${Number(ymPrev.slice(5))}/15`));
+  assert.match(await mp.locator('#view').innerText(), new RegExp(`はなこ\\s*立替（日用品）\\s*添付あり\\s*${Number(ymPrev.slice(0, 4))}/${Number(ymPrev.slice(5))}/15`));
   await mp.goto(`${appUrl}#/flow/member/${ymNow}`);
   await mp.locator('.shared-card').first().waitFor();
   assert.equal(await mp.getByRole('link', { name: '立替を記録' }).count(), 1, 'only on their own card');
