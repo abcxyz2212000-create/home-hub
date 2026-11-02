@@ -476,6 +476,8 @@ details summary { cursor: pointer; margin-top: 1rem; }
 .shared-figures dd { margin: 0; text-align: right; }
 .shared-figures dd.big { font-size: 1.4rem; font-weight: 700; }
 .shared-figures dd.due { color: var(--critical-ink); }
+.shared-figures dt.subtotal, .shared-figures dd.subtotal { font-weight: 600; color: var(--ink); border-top: 1px dashed var(--line); padding-top: 0.25rem; }
+.shared-figures dt.total, .shared-figures dd.total { border-top: 2px solid var(--line); padding-top: 0.25rem; color: var(--ink); }
 .table-wrap { overflow-x: auto; }
 .shared-table tr.total th, .shared-table tr.total td { font-weight: 700; border-top: 2px solid var(--line); }
 .shared-table tr.sub th, .shared-table tr.sub td { color: var(--muted); }
@@ -647,5 +649,7 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 0.9rem; }
 .ledger-digest { scroll-margin-top: calc(var(--page-head-top, 44px) + 120px); }
 .count-badge { font-size: 0.78rem; font-weight: 600; color: var(--muted); }
 .list-title .person-chip { margin-left: 0.4rem; }
-.progress { height: 8px; border-radius: 999px; background: var(--bar-track); overflow: hidden; margin: 0 0 0.75rem; }
+.progress { height: 8px; border-radius: 999px; background: var(--bar-track); overflow: hidden; margin: 0; }
+.progress-wrap { margin: 0 0 0.75rem; }
+.progress-caption { text-align: right; margin-top: 0.25rem; }
 .progress-fill { display: block; height: 100%; background: var(--person, var(--accent)); border-radius: 999px; }

@@ -204,8 +204,8 @@ async function main() {
         const yen = (n) => `${n < 0 ? '−' : ''}${Math.abs(Math.round(n)).toLocaleString('ja-JP')}円`;
         const st = statement(shared.rules, shared.entries, g, ym);
         const delivered = await sendTo(devices, {
-          title: `家計への負担（${Number(ym.slice(5))}月）`,
-          body: `負担額 ${yen(contribution(st).burden)}・対応済み ${yen(contribution(st).done)}／残り ${yen(st.balance)}`,
+          title: `家計費（${Number(ym.slice(5))}月）`,
+          body: `今月分 ${yen(contribution(st).burden)}・支払済 ${yen(contribution(st).done)}／残り ${yen(st.balance)}`,
           url: `#/flow/member/${ym}`,
           tag: key,
         });
