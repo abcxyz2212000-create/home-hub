@@ -138,8 +138,8 @@ test('shared account reminder: from the 25th, once a month, only to that member'
     const r = await run('node', [SCRIPT], { env: { ...env, NOTIFY_DATE: '2026-11-25' } });
     const got = mock.pushes.map((p) => ({ id: p.id, ...decrypt(p.body, ua, auth) }));
     assert.deepEqual(got.map((p) => p.id), ['d-shin']);
-    assert.equal(got[0].title, '家計への負担（11月）');
-    assert.equal(got[0].body, '負担額 90,000円・対応済み 87,000円／残り 11,000円');
+    assert.equal(got[0].title, '家計費（11月）');
+    assert.equal(got[0].body, '今月分 90,000円・支払済 87,000円／残り 11,000円');
     assert.equal(got[0].url, '#/flow/member/2026-11');
     assert.doesNotMatch(r.stdout + r.stderr, /8,000|11,000|しん|基本/, 'amounts and names never appear in public logs');
 
