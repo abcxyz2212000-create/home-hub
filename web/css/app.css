@@ -647,3 +647,5 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 0.9rem; }
 .ledger-digest { scroll-margin-top: calc(var(--page-head-top, 44px) + 120px); }
 .count-badge { font-size: 0.78rem; font-weight: 600; color: var(--muted); }
 .list-title .person-chip { margin-left: 0.4rem; }
+.progress { height: 8px; border-radius: 999px; background: var(--bar-track); overflow: hidden; margin: 0 0 0.75rem; }
+.progress-fill { display: block; height: 100%; background: var(--person, var(--accent)); border-radius: 999px; }

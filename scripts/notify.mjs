@@ -14,7 +14,7 @@
 import { CONFIG } from '../web/js/config.js';
 import { collectEvents, dueNotifications, notificationText, todayJST } from '../web/js/events.js';
 import { dueFor } from '../web/js/chores.js';
-import { participantIds, statement } from '../web/js/shared.js';
+import { participantIds, statement, contribution } from '../web/js/shared.js';
 import { missingImports, latestBalance, DEFAULT_LOW_BALANCE } from '../web/js/bank.js';
 import { loadVapidKeys, sendPush } from './webpush.mjs';
 
@@ -204,8 +204,8 @@ async function main() {
         const yen = (n) => `${n < 0 ? '−' : ''}${Math.abs(Math.round(n)).toLocaleString('ja-JP')}円`;
         const st = statement(shared.rules, shared.entries, g, ym);
         const delivered = await sendTo(devices, {
-          title: `共用口座への入金（${Number(ym.slice(5))}月）`,
-          body: `今月 ${yen(st.charges)}／未入金の残高 ${yen(st.balance)}`,
+          title: `家計への負担（${Number(ym.slice(5))}月）`,
+          body: `負担額 ${yen(contribution(st).burden)}・対応済み ${yen(contribution(st).done)}／残り ${yen(st.balance)}`,
           url: `#/flow/member/${ym}`,
           tag: key,
         });

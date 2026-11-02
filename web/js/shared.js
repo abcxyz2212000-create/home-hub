@@ -138,3 +138,33 @@ export function ruleSchedule(rule) {
   const period = `${ymLabel(rule.start_ym)}〜${rule.end_ym ? ymLabel(rule.end_ym) : ''}`;
   return rule.month_of_year ? `毎年${rule.month_of_year}月・${period}` : period;
 }
+
+// ---------------------------------------------------------------- contribution (2026-11-02)
+//
+// Each person has a monthly 負担額 (what they contribute to the household) and meets it by 入金
+// (paying into the shared account) and 立替 (paying shared costs from their own money): 定例の立替
+// = recurring minus items (rent etc. paid from a personal account), 臨時の立替 = one-off minus items.
+// 残り = carry + 負担額 − (入金 + 立替) is the same number as the statement's balance.
+export function contribution(st) {
+  const burdenItems = st.items.filter((i) => i.amount > 0);
+  const regular = st.items.filter((i) => i.amount < 0 && i.rule);
+  const temp = st.items.filter((i) => i.amount < 0 && !i.rule);
+  const sum = (list) => list.reduce((n, i) => n + i.amount, 0);
+  const burden = sum(burdenItems);
+  const regularTotal = -sum(regular);
+  const tempTotal = -sum(temp);
+  const done = st.deposit + regularTotal + tempTotal;
+  return {
+    carry: st.carry,
+    burden,
+    burdenItems,
+    regular,
+    temp,
+    deposit: st.deposit,
+    advance: regularTotal + tempTotal,
+    regularTotal,
+    tempTotal,
+    done,
+    remaining: st.carry + burden - done,
+  };
+}

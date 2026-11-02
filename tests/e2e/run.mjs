@@ -428,21 +428,20 @@ try {
   await save();
   await page.locator('.shared-card').waitFor();
   const card = await page.locator('.shared-card').innerText();
-  assert.match(card, /当月分\s+66,500円/);
-  assert.match(card, /入金済み\s+100,000円/);
-  assert.match(card, /未入金の残高\s+36,000円/, '69,500 carried + 66,500 - 100,000');
+  assert.match(card, /負担額\s+70,000円/);
+  assert.match(card, /入金\s+100,000円\s+立替\s+3,500円/, 'dアニ 500 (recurring) + 管理費 3,000 (one-off)');
+  assert.match(card, /残り\s+36,000円/, '69,500 carried + 70,000 - (100,000 + 3,500)');
   const monthSheet = await page.locator('.shared-table').innerText();
-  assert.match(monthSheet, /前月繰越\s+69,500円/);
-  assert.match(monthSheet, /管理費\s+−3,000円/);
-  assert.match(monthSheet, /当月分（小計）\s+66,500円/);
-  assert.match(monthSheet, /定例（毎月）\s+基本\s+70,000円\s+dアニ\s+−500円\s+臨時（この月だけ）\s+管理費\s+−3,000円/);
+  assert.match(monthSheet, /前月からの繰越\s+69,500円/);
+  assert.match(monthSheet, /負担額（計）\s+70,000円/);
+  assert.match(monthSheet, /負担額\s+基本\s+70,000円[\s\S]*入金\s+100,000円\s+定例の立替: dアニ\s+500円\s+臨時の立替: 管理費\s+3,000円/);
   assert.match(await page.locator('.month-label').innerText(), new RegExp(`${ymLabel(ymNow)}\\s*今月`));
-  assert.match(monthSheet, /合計\s+136,000円/);
-  await page.getByRole('img', { name: '人ごとの未入金の残高の推移' }).waitFor();
+  assert.match(monthSheet, /対応済み（計）\s+103,500円/);
+  await page.getByRole('img', { name: '人ごとの残りの推移' }).waitFor();
   await page.screenshot({ path: join(OUT, 'shared.png'), fullPage: true });
   await page.getByRole('link', { name: '前の月' }).click();
   await page.getByRole('heading', { name: ymLabel(ymPrev), exact: true }).waitFor();
-  assert.match(await page.locator('.shared-card').innerText(), /未入金の残高\s+69,500円/);
+  assert.match(await page.locator('.shared-card').innerText(), /残り\s+69,500円/);
   step('one money page: people -> shared account -> cards -> payees, and the balance of the shared account');
   await page.getByRole('link', { name: 'お金', exact: true }).first().click();
   await page.getByRole('heading', { name: 'お金', exact: true }).waitFor();
@@ -483,7 +482,7 @@ try {
   await page.getByLabel('支払方法', { exact: true }).selectOption({ label: 'はなこの口座' });
   assert.equal(await page.getByLabel('既存の定例項目に引き継ぐ', { exact: true }).isVisible(), false, 'shown only for shared costs');
   await page.getByLabel('共通の費用', { exact: true }).check();
-  await page.getByText('→ はなこの当月分から毎月 500円を差し引きます。').waitFor();
+  await page.getByText('→ はなこの定例の立替として、毎月 500円を負担額の対応済みに入れます。').waitFor();
   const dRule = mock.db.shared_rules.find((x) => x.label === 'dアニ');
   await page.getByLabel('既存の定例項目に引き継ぐ', { exact: true }).selectOption(dRule.id);
   await save();
@@ -500,10 +499,10 @@ try {
   assert.deepEqual(mock.db.shared_rules.filter((x) => x.contract_id === dContract.id).map((x) => [x.amount, x.start_ym, x.end_ym]).sort(),
     [[-500, ymPrev, ymPrev], [-550, ymNow, null]].sort());
   await page.goto(`${appUrl}#/shared/${ymNow}`);
-  assert.match(await page.locator('.shared-card').innerText(), /当月分\s+66,450円/, '70,000 - 550 - 3,000');
+  assert.match(await page.locator('.shared-card').innerText(), /立替\s+3,550円/, 'dアニ 550 from this month + 管理費 3,000');
   await page.goto(`${appUrl}#/shared/${ymPrev}`);
   await page.getByRole('heading', { name: ymLabel(ymPrev), exact: true }).waitFor();
-  assert.match(await page.locator('.shared-card').innerText(), /当月分\s+69,500円/, 'last month unchanged');
+  assert.match(await page.locator('.shared-card').innerText(), /立替\s+500円/, 'last month unchanged');
   const linkedRule = mock.db.shared_rules.find((x) => x.contract_id === dContract.id && !x.end_ym);
   await page.goto(`${appUrl}#/shared-rule/${linkedRule.id}`);
   await page.getByRole('link', { name: '契約「dアニ」を開く' }).waitFor();
@@ -659,11 +658,10 @@ try {
   await page.getByRole('link', { name: '個人の入金・立替' }).click();
   await page.locator('.shared-card').first().waitFor();
   assert.match(await page.locator('.shared-table').innerText(), /共用口座からの受け取り\s+20,000円/);
-  await page.getByText('個人の口座から払っている共通の費用').waitFor();
-  assert.match(await page.locator('#view').innerText(), /dアニ\s+はなこ\s+毎月\s+550円/);
+  assert.match(await page.locator('.shared-table').innerText(), /定例の立替: dアニ\s+550円/, 'a cost paid from a personal account is a recurring 立替');
   await page.getByRole('link', { name: '年間' }).click();
   await page.getByRole('heading', { name: `はなこ（${Number(ymNow.slice(0, 4))}年）` }).waitFor();
-  assert.match(await page.locator('.member-year').innerText(), /当月分の合計/);
+  assert.match(await page.locator('.member-year').innerText(), /負担額の合計/);
   await page.screenshot({ path: join(OUT, 'money-year.png'), fullPage: true });
   await page.getByRole('link', { name: '共用口座の入出金' }).click();
   await page.getByRole('heading', { name: `共用口座の明細（${Number(ymNow.slice(0, 4))}年）` }).waitFor(); // each tab keeps its own period

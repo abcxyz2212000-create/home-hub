@@ -138,3 +138,19 @@ test('yearly rules count only in their month', () => {
   assert.equal(ruleSchedule(yearly[0]), '毎年5月・2026年1月〜');
   assert.equal(ruleSchedule({ start_ym: '2022-01', end_ym: '2022-12' }), '2022年1月〜2022年12月');
 });
+
+// ---- contribution: 負担額, met by 入金 and 立替
+import { contribution } from '../../web/js/shared.js';
+
+test('contribution: burden met by deposits and advances; the remainder equals the balance', () => {
+  const extra = [...entries, { id: 'e4', member_id: A, ym: '2022-02', kind: 'charge', label: '精算', amount: 1200, created_at: 'd' }];
+  const st = statement(rules, extra, A, '2022-02');
+  const c = contribution(st);
+  assert.equal(c.burden, 120000 + 1200, '基本 + the settlement');
+  assert.deepEqual(c.regular.map((i) => i.label), ['家賃']);
+  assert.equal(c.regularTotal, 80000);
+  assert.equal(c.tempTotal, 3000, '管理費 paid by the person is a 立替');
+  assert.equal(c.deposit, 0);
+  assert.equal(c.done, 83000);
+  assert.equal(c.remaining, st.balance);
+});
