@@ -18,7 +18,7 @@ const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '
 const DEFAULTS = {
   status: 'active', links: [], tags: [], notify_days: {}, mf_linked: false, family_card: false, etc_card: false, auto_renew: false, shared_cost: false, price_history: [],
 };
-const TABLES = ['accounts', 'cards', 'contracts', 'items', 'memberships', 'item_photos', 'settings', 'push_subscriptions', 'notification_log', 'members', 'audit_log', 'chores', 'shared_rules', 'shared_entries', 'transactions', 'deposit_reports', 'shared_attachments'];
+const TABLES = ['accounts', 'cards', 'contracts', 'items', 'memberships', 'item_photos', 'settings', 'push_subscriptions', 'notification_log', 'members', 'audit_log', 'chores', 'shared_rules', 'shared_entries', 'transactions', 'deposit_reports', 'shared_attachments', 'account_balances'];
 const TABLE_DEFAULTS = {
   members: { role: 'member', active: true, email: null, nickname: null, transfer_names: null, gender: null, notify_hour: null },
   settings: {}, notification_log: {}, push_subscriptions: {}, audit_log: {},
@@ -187,7 +187,8 @@ export function createMock() {
       const result = [];
       for (const item of list) {
         if (item.pay_card_id && item.pay_account_id) return send(res, 400, { code: '23514', message: 'check violation' });
-        const existing = rows.find((r) => item[conflict] !== undefined && r[conflict] === item[conflict]);
+        const cols = conflict.split(',');
+        const existing = rows.find((r) => cols.every((c) => item[c] !== undefined && r[c] === item[c]));
         if (existing && !upsert) return send(res, 409, { code: '23505', message: 'duplicate key' });
         if (existing) {
           Object.assign(existing, item, { updated_at: new Date().toISOString() });

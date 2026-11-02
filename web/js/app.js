@@ -14,6 +14,7 @@ import {
 import { createZip } from './zip.js';
 import { compressImage } from './image.js';
 import { parseOcrText, receiptMemo, recognizeImage } from './ocr.js';
+import { parseBankRows, monthEndBalances, latestBalance, missingImports, DEFAULT_LOW_BALANCE } from './bank.js';
 import * as push from './push.js';
 import { icon, LEDGER_ICONS } from './icons.js';
 import { timelineChart, barChart, lineChart, flowGraph, urgency } from './charts.js';
@@ -48,6 +49,7 @@ const state = {
   sharedEntries: [],
   depositReports: [], // 入金報告 (reference only)
   attachments: [], // images of one-off items and deposit reports
+  balances: [], // account balances from the bank statement
   tx: new Map(), // ym -> statement lines (null while loading)
   txYear: new Map(), // 'YYYY' -> statement lines of the year (null while loading)
   money: { tab: 'member', member: null, ext: null, flow: null }, // お金の流れ: the open tab and each tab's month or year
@@ -308,7 +310,7 @@ function recordLink(ledger, record) {
 // ---------------------------------------------------------------- data loading
 
 async function loadAll() {
-  const [accounts, cards, contracts, items, memberships, photos, settings, members, chores, sharedRules, sharedEntries, depositReports, attachments] = await Promise.all([
+  const [accounts, cards, contracts, items, memberships, photos, settings, members, chores, sharedRules, sharedEntries, depositReports, attachments, balances] = await Promise.all([
     db.selectAll('accounts'),
     db.selectAll('cards'),
     db.selectAll('contracts'),
@@ -322,6 +324,7 @@ async function loadAll() {
     db.selectAll('shared_entries', 'ym.asc'),
     db.selectAll('deposit_reports', 'paid_on.asc'),
     db.selectAll('shared_attachments', 'created_at.asc'),
+    db.selectAll('account_balances', 'date.asc'),
   ]);
   state.data = { accounts, cards, contracts, items, memberships };
   state.photos = photos;
@@ -332,6 +335,7 @@ async function loadAll() {
   state.sharedEntries = sharedEntries;
   state.depositReports = depositReports;
   state.attachments = attachments;
+  state.balances = balances;
   state.loaded = true;
 }
 
@@ -692,6 +696,7 @@ function renderHome() {
   // ホーム: the signed-in person's deposits, today's chores, deadlines, shortcuts (2026-11-01)
   setView('ホーム',
     pageHead({ title: `${m}月${d}日（${weekdayJa(today)}）`, icon: 'home' }),
+    alertCards(),
     backupReminder(),
     pushHint,
     h('div', { class: 'dash-grid' },
@@ -1068,6 +1073,7 @@ function mfImportBox() {
       const saved = [];
       for (let i = 0; i < rows.length; i += 500) saved.push(...await db.upsertRows('transactions', rows.slice(i, i + 500), 'mf_id'));
       const recorded = await recordDeposits(depositCandidates(saved, state.members));
+      await saveSetting('mf_imported_at', new Date().toISOString());
       clearTxCache();
       toast(`取り込みました（追加 ${added}件、更新 ${rows.length - added}件${recorded ? `、個人との入出金の記録 ${recorded}件` : ''}）。`);
       input.value = '';
@@ -1103,6 +1109,97 @@ function txRow(t) {
 }
 
 // Plan (contracts) vs actual (imported statement) for the shared account in one month.
+// ---- balances of the shared account (bank statement CSV) and alerts
+
+function sharedBalances() {
+  const id = sharedAccountId();
+  return id ? state.balances.filter((b) => b.account_id === id) : [];
+}
+
+function lowBalanceThreshold() {
+  const v = Number(state.settings.low_balance_threshold);
+  return Number.isFinite(v) && v >= 0 ? v : DEFAULT_LOW_BALANCE;
+}
+
+// Alerts for the top of ホーム / お金: imports not done this month (for the person who imports and
+// administrators), and a low balance (everyone).
+function alertCards() {
+  const out = [];
+  const mine = me();
+  const remindTo = state.settings.import_reminder_member;
+  if (sharedAccountId() && (isAdmin() || (mine && mine.id === remindTo))) {
+    const missing = missingImports(todayJST(), { mf: state.settings.mf_imported_at, bank: state.settings.bank_imported_at });
+    if (missing.length) {
+      out.push(h('section', { class: 'card notice alert-card' },
+        h('p', { class: 'with-icon' }, icon('alert'), `今月まだ取り込んでいません: ${missing.join('・')}`),
+        h('a', { class: 'button small', href: `#/flow/ext/${thisYM()}` }, '取り込む')));
+    }
+  }
+  const last = latestBalance(sharedBalances());
+  if (last && last.balance < lowBalanceThreshold()) {
+    out.push(h('section', { class: 'card notice alert-card alert-low' },
+      h('p', { class: 'with-icon' }, icon('alert'), `共用口座の残高が少なくなっています: ${yen(last.balance)}（${dateText(last.date)}時点・基準 ${yen(lowBalanceThreshold())}）`)));
+  }
+  return out;
+}
+
+function bankImportBox() {
+  const status = h('div', { class: 'import-status', role: 'status' });
+  const input = h('input', { type: 'file', accept: '.csv,text/csv', 'aria-label': '銀行の取引明細の CSV ファイル' });
+  input.addEventListener('change', () => busy(input, async () => {
+    status.replaceChildren();
+    const file = input.files[0];
+    if (!file) return;
+    if (file.size > MAX_IMPORT_BYTES) {
+      status.replaceChildren(h('p', { class: 'error' }, 'ファイルが大きすぎます（5MBまで）。'));
+      return;
+    }
+    const { balances, errors } = parseBankRows(parseCSV(decodeCSVBytes(new Uint8Array(await file.arrayBuffer()))));
+    if (errors.length || balances.length === 0) {
+      status.replaceChildren(h('p', { class: 'error' }, errors.length ? '読めない行があるため取り込みませんでした。' : '残高の行がありません。'),
+        h('ul', { class: 'error small' }, errors.slice(0, 10).map((m) => h('li', {}, m))));
+      return;
+    }
+    const accountId = sharedAccountId();
+    const last = balances[balances.length - 1];
+    const save = h('button', { type: 'button', class: 'primary', onclick: (ev) => busy(ev.currentTarget, async () => {
+      for (let i = 0; i < balances.length; i += 500) {
+        await db.upsertRows('account_balances', balances.slice(i, i + 500).map((b) => ({ account_id: accountId, date: b.date, balance: b.balance })), 'account_id,date');
+      }
+      await saveSetting('bank_imported_at', new Date().toISOString());
+      state.balances = await db.selectAll('account_balances', 'date.asc');
+      toast(`残高を取り込みました（${balances.length}日分）。`);
+      input.value = '';
+      render();
+    }) }, '取り込む');
+    status.replaceChildren(h('p', {}, `${dateText(balances[0].date)}〜${dateText(last.date)}：${balances.length}日分の残高（最新 ${yen(last.balance)}）`),
+      h('div', { class: 'actions' }, save));
+  }));
+  return h('div', { class: 'mf-import bank-import' },
+    h('div', { class: 'button-row' }, h('label', { class: 'button' }, '銀行の取引明細 CSV を選ぶ', input),
+      helpButton('銀行の残高の取り込み', '楽天銀行の取引明細の CSV（取引日・入出金・取引後残高・入出金内容）を選びます。', '日ごとの残高だけを保存します（明細はマネーフォワードのものを使うので二重になりません）。同じ期間を取り込み直しても重複しません。')),
+    status);
+}
+
+// Balance of the shared account (as of the last imported day) and its month-end history.
+function balanceCard(ym) {
+  if (!sharedAccountId()) return null;
+  const list = sharedBalances();
+  const asOf = list.filter((b) => b.date.slice(0, 7) <= ym);
+  const last = latestBalance(asOf);
+  const ends = monthEndBalances(list).filter((m) => m.ym <= (ym > thisYM() ? ym : thisYM()));
+  const low = last && last.balance < lowBalanceThreshold();
+  return h('section', { class: 'card' },
+    h('h2', { class: 'with-icon' }, icon('bank'), '残高', helpButton('残高', '銀行の取引明細 CSV から取り込んだ、その日の終わりの残高です。', `残高が ${yen(lowBalanceThreshold())} を下回ると、全員に通知します（基準は設定 → その他で変えられます）。`)),
+    last
+      ? h('div', { class: 'kpis kpis-2' },
+        kpi(`${dateText(last.date)}時点`, yen(last.balance).replace('円', ''), '円', low ? 'kpi-alert' : 'kpi-main'),
+        kpi('基準（これを下回ると通知）', yen(lowBalanceThreshold()).replace('円', ''), '円'))
+      : h('p', { class: 'muted' }, 'まだ残高を取り込んでいません。'),
+    ends.length >= 2 ? lineChart([{ label: '残高', color: 'var(--accent)', points: ends.map((m) => ({ x: m.ym, y: m.balance })) }], '共用口座の月末残高の推移') : null,
+    isAdmin() ? bankImportBox() : null);
+}
+
 // 入金・出金の内訳 (people in their colors)
 function flowBreakdown(f) {
   const people = (map, label) => [...map].filter(([, v]) => v > 0).sort((a, b) => meFirst({ id: a[0] }, { id: b[0] }))
@@ -1440,7 +1537,7 @@ function renderMoney(tabParam, periodParam) {
   const content = tab === 'ext' ? (isYear ? extYearView(period) : extMonthView(period))
     : tab === 'flow' ? flowView(period)
       : (isYear ? memberYearView(period) : memberMonthView(period));
-  setView('お金', pageHead({ title: 'お金', icon: 'flow', tabs, tab, sub: periodNav(tab, period) }), ...[content].flat().filter(Boolean));
+  setView('お金', pageHead({ title: 'お金', icon: 'flow', tabs, tab, sub: periodNav(tab, period) }), alertCards(), ...[content].flat().filter(Boolean));
 }
 
 // ---- tab 3: 流れ図 (people -> shared account -> cards -> payees), the balance of the shared account
@@ -1501,7 +1598,7 @@ function periodNav(tab, period) {
 // ---- tab 2: 共用口座の入出金
 
 function extMonthView(ym) {
-  return actualCard(ym);
+  return [balanceCard(ym), actualCard(ym)];
 }
 
 // Statement lines of one year (loaded on demand, cached like the months).
@@ -1807,6 +1904,29 @@ function labelPicker(field, value) {
     h('label', { for: 'f-label-pick' }, field.label, field.required ? h('span', { class: 'req' }, ' *') : null),
     select, other, h('p', { class: 'error small field-error' }));
   return { field, el, get: () => (select.value === OTHER_LABEL ? other.value : select.value) };
+}
+
+function alertSettingsSection() {
+  if (!isAdmin()) return null;
+  const who = h('select', { id: 'remind-member' }, h('option', { value: '' }, '（送らない）'),
+    state.members.filter((m) => m.active).sort(meFirst).map((m) => h('option', { value: m.id, selected: m.id === state.settings.import_reminder_member }, nick(m))));
+  const limit = h('input', { type: 'text', id: 'low-balance', inputmode: 'numeric', value: String(lowBalanceThreshold()) });
+  const save = h('button', { type: 'button', class: 'primary', onclick: (ev) => busy(ev.currentTarget, async () => {
+    const v = Number(limit.value.replace(/[,，円\s]/g, ''));
+    if (!Number.isInteger(v) || v < 0 || v > 100000000) {
+      toast('基準額は0円以上の整数で入れてください。', 'error');
+      return;
+    }
+    await saveSetting('low_balance_threshold', v);
+    await saveSetting('import_reminder_member', who.value);
+    toast('アラートの設定を保存しました。');
+    render();
+  }) }, '保存');
+  return h('section', { class: 'card' },
+    h('h2', { class: 'with-icon' }, 'アラート', helpButton('アラート', `毎月${5}日から、その月にマネーフォワードの明細または銀行の残高を取り込んでいなければ、取り込む人に毎日通知します。`, '共用口座の残高が基準額を下回ったら、全員に通知します（同じ残高では1回）。')),
+    h('div', { class: 'field' }, h('label', { for: 'remind-member' }, '取り込み忘れの通知先'), who),
+    h('div', { class: 'field' }, h('label', { for: 'low-balance' }, '残高不足の基準額（円）'), limit),
+    h('div', { class: 'actions' }, save));
 }
 
 function expenseLabelsSection() {
@@ -3534,7 +3654,7 @@ function renderSettings(tabParam) {
     account: () => [accountSection(), notifySection()],
     users: () => [membersSection()],
     data: () => [backupSection(), importSection(), usageSection()],
-    other: () => [sharedAccountSection(), expenseLabelsSection(), shortcutSection()],
+    other: () => [sharedAccountSection(), alertSettingsSection(), expenseLabelsSection(), shortcutSection()],
   }[tab]();
   setView('設定', pageHead({ title: '設定', icon: 'settings', tabs, tab }), ...content);
 }

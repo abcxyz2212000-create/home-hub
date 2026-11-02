@@ -15,6 +15,7 @@ import { CONFIG } from '../web/js/config.js';
 import { collectEvents, dueNotifications, notificationText, todayJST } from '../web/js/events.js';
 import { dueFor } from '../web/js/chores.js';
 import { participantIds, statement } from '../web/js/shared.js';
+import { missingImports, latestBalance, DEFAULT_LOW_BALANCE } from '../web/js/bank.js';
 import { loadVapidKeys, sendPush } from './webpush.mjs';
 
 const LOG_RETENTION_DAYS = 400;
@@ -65,11 +66,12 @@ async function main() {
   const vapid = loadVapidKeys(env('VAPID_PRIVATE_KEY'));
   const subject = subjectUrl();
 
-  const [settings, subscriptions] = await Promise.all([
-    db.select('settings', '&key=eq.vapid_public_key'),
+  const [settingRows, subscriptions] = await Promise.all([
+    db.select('settings'),
     db.select('push_subscriptions'),
   ]);
-  const storedPublic = settings[0] && settings[0].value;
+  const settings = Object.fromEntries(settingRows.map((r) => [r.key, r.value]));
+  const storedPublic = settings.vapid_public_key;
   if (storedPublic && storedPublic !== vapid.publicKey) {
     throw new Error('VAPID_PRIVATE_KEY does not match the public key saved in the app. Re-register the secret.');
   }
@@ -139,6 +141,14 @@ async function main() {
   const ready = [...groups].filter(([g]) => hourOf(g) <= hour && !sent.has(`daily:${today}:${g}`));
   console.log(`${today} ${hour}h: ${due.length} deadline notification(s) due, ${ready.length}/${groups.size} person(s) to notify now.`);
 
+  // the shared account's balance and this month's imports (2026-11-01)
+  const sharedId = settings.shared_account_id;
+  const balances = sharedId ? await db.select('account_balances', `&account_id=eq.${encodeURIComponent(sharedId)}&order=date.desc&limit=1`) : [];
+  const lastBalance = latestBalance(balances);
+  const threshold = Number.isFinite(Number(settings.low_balance_threshold)) && settings.low_balance_threshold !== null ? Number(settings.low_balance_threshold) : DEFAULT_LOW_BALANCE;
+  const missing = sharedId ? missingImports(today, { mf: settings.mf_imported_at, bank: settings.bank_imported_at }) : [];
+  const yenText = (n) => `${n < 0 ? '−' : ''}${Math.abs(Math.round(n)).toLocaleString('ja-JP')}円`;
+
   let shared = null;
   for (const [g, devices] of ready) {
     const failuresBefore = failures;
@@ -149,6 +159,24 @@ async function main() {
       const delivered = await sendTo(devices, { ...notificationText(d.event), url: `#/view/${d.event.ledger}/${d.event.id}`, tag: d.key });
       if (delivered > 0) await mark(key);
       console.log(`- ${d.event.type} ${d.event.date} (stage ${d.stage}d): delivered to ${delivered} device(s)`);
+    }
+    // low balance: everyone, once per balance date. Amounts never go to the log.
+    if (lastBalance && lastBalance.balance < threshold) {
+      const key = `lowbal:${lastBalance.date}:${g}`;
+      if (!sent.has(key)) {
+        const delivered = await sendTo(devices, { title: '共用口座の残高が少なくなっています', body: `${yenText(lastBalance.balance)}（${lastBalance.date.slice(5).replace('-', '/')}時点）`, url: '#/flow/ext', tag: 'low-balance' });
+        if (delivered > 0) await mark(key);
+        console.log(`- low balance: delivered to ${delivered} device(s)`);
+      }
+    }
+    // monthly imports not done: the person who imports, every day until done
+    if (missing.length && g === settings.import_reminder_member) {
+      const key = `import:${today}:${g}`;
+      if (!sent.has(key)) {
+        const delivered = await sendTo(devices, { title: '今月の取り込みがまだです', body: missing.join('・'), url: '#/flow/ext', tag: 'imports' });
+        if (delivered > 0) await mark(key);
+        console.log(`- import reminder: delivered to ${delivered} device(s)`);
+      }
     }
     if (g === 'none') {
       if (failures === failuresBefore) await mark(`daily:${today}:${g}`);

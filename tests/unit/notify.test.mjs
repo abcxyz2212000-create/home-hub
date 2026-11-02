@@ -150,3 +150,36 @@ test('shared account reminder: from the 25th, once a month, only to that member'
     await mock.stop();
   }
 });
+
+test('low balance to everyone once per balance date; monthly import reminder to the person who imports', async () => {
+  const mock = createMock();
+  const { apiUrl } = await mock.start();
+  try {
+    const vapid = crypto.createECDH('prime256v1');
+    vapid.generateKeys();
+    const ua = crypto.createECDH('prime256v1');
+    ua.generateKeys();
+    const auth = crypto.randomBytes(16);
+    const dev = (id, memberId) => ({ id, endpoint: `${apiUrl}/push/${id}`, p256dh: b64urlEncode(ua.getPublicKey()), auth: b64urlEncode(auth), member_id: memberId });
+    mock.db.settings.push({ key: 'vapid_public_key', value: b64urlEncode(vapid.getPublicKey()) }, { key: 'shared_account_id', value: 'acc-s' },
+      { key: 'import_reminder_member', value: 'm-shin' }, { key: 'mf_imported_at', value: '2026-11-02T00:00:00Z' });
+    mock.db.members.push({ id: 'm-shin', name: '佐藤 真一', nickname: 'しん', active: true }, { id: 'm-haru', name: '佐藤 春子', nickname: 'はる', active: true });
+    mock.db.push_subscriptions.push(dev('d-shin', 'm-shin'), dev('d-haru', 'm-haru'));
+    mock.db.account_balances.push({ id: 'b1', account_id: 'acc-s', date: '2026-10-23', balance: 26130 }, { id: 'b0', account_id: 'acc-s', date: '2026-10-01', balance: 300000 });
+    const env = { ...process.env, SUPABASE_URL: apiUrl, SUPABASE_SERVICE_ROLE_KEY: SERVICE_KEY, VAPID_PRIVATE_KEY: b64urlEncode(privateKey32(vapid)), GITHUB_REPOSITORY: 'Owner/home-hub', NOTIFY_HOUR: '9' };
+    const r = await run('node', [SCRIPT], { env: { ...env, NOTIFY_DATE: '2026-11-06' } });
+    const got = mock.pushes.map((p) => ({ id: p.id, ...decrypt(p.body, ua, auth) }));
+    const low = got.filter((p) => p.title === '共用口座の残高が少なくなっています');
+    assert.deepEqual(low.map((p) => p.id).sort(), ['d-haru', 'd-shin'], 'everyone');
+    assert.equal(low[0].body, '26,130円（10/23時点）');
+    const imp = got.filter((p) => p.title === '今月の取り込みがまだです');
+    assert.deepEqual(imp.map((p) => [p.id, p.body]), [['d-shin', '銀行の残高']], 'only the bank balance is missing, only to しん');
+    assert.doesNotMatch(r.stdout + r.stderr, /26,130/, 'amounts never appear in public logs');
+    await run('node', [SCRIPT], { env: { ...env, NOTIFY_DATE: '2026-11-07' } });
+    const after = mock.pushes.map((p) => decrypt(p.body, ua, auth));
+    assert.equal(after.filter((p) => p.title === '共用口座の残高が少なくなっています').length, 2, 'once per balance date');
+    assert.equal(after.filter((p) => p.title === '今月の取り込みがまだです').length, 2, 'every day until imported');
+  } finally {
+    await mock.stop();
+  }
+});

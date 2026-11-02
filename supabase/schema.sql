@@ -391,6 +391,16 @@ create table if not exists public.deposit_reports (
   updated_by uuid references public.members (id) on delete set null
 );
 create index if not exists deposit_reports_member_idx on public.deposit_reports (member_id, paid_on);
+-- Balances of an account at the end of a day, from the bank's statement CSV (2026-11-01). Lines come
+-- from MoneyForward; only balances are kept here.
+create table if not exists public.account_balances (
+  id uuid primary key default gen_random_uuid(),
+  account_id uuid not null references public.accounts (id) on delete cascade,
+  date date not null,
+  balance bigint not null,
+  created_at timestamptz not null default now(),
+  unique (account_id, date)
+);
 -- Images attached to a one-off item (receipt) or a deposit report (completion screen), stored in the
 -- item-photos bucket.
 create table if not exists public.shared_attachments (
@@ -604,7 +614,7 @@ begin
 
   foreach t in array array['members', 'accounts', 'cards', 'contracts', 'items', 'memberships',
                            'item_photos', 'settings', 'push_subscriptions', 'notification_log', 'audit_log', 'chores', 'shared_rules', 'shared_entries', 'transactions',
-                           'deposit_reports', 'shared_attachments'] loop
+                           'deposit_reports', 'shared_attachments', 'account_balances'] loop
     execute format('alter table public.%I enable row level security', t);
     execute format('revoke all on public.%I from anon, authenticated', t);
     -- service_role (used only by the daily GitHub Actions job) bypasses RLS but still needs table
@@ -649,6 +659,12 @@ begin
     with check (public.is_admin() or (public.is_member() and contract_id is not null));
   create policy member_delete on public.shared_rules for delete to authenticated
     using (public.is_admin() or (public.is_member() and contract_id is not null));
+  -- account balances: everyone reads, administrators import
+  grant select, insert, update, delete on public.account_balances to authenticated;
+  drop policy if exists member_read on public.account_balances;
+  drop policy if exists admin_write on public.account_balances;
+  create policy member_read on public.account_balances for select to authenticated using (public.is_member());
+  create policy admin_write on public.account_balances for all to authenticated using (public.is_admin()) with check (public.is_admin());
   -- deposit reports: a member reports only their own
   create policy member_insert on public.deposit_reports for insert to authenticated
     with check (public.is_admin() or (public.is_member() and member_id = public.current_member_id()));
