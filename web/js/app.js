@@ -1604,7 +1604,7 @@ function noBudgetCard(year) {
 function budgetSummaryTable(b, actual, months) {
   const p = proposal(b.rows, b.year, budgetMemberIds());
   const lines = [
-    ['収入', p.total * months, actual.income, false],
+    ['収入（二人の負担額）', p.total * months, actual.income, false],
     ['支出', p.spending * months, actual.spendingTotal, true],
     ['貯蓄', p.savings * months, actual.income - actual.spendingTotal, false],
   ];
@@ -1655,11 +1655,11 @@ function proposalCard(b, ym) {
   });
   return h('section', { class: 'card' },
     h('h2', { class: 'with-icon' }, icon('user'), '今月分の内訳', helpButton('今月分の内訳',
-      '各人の今月分（定例項目「基本」）＝ 収入 × 負担率 です（100円単位）。',
+      '各人の今月分（定例項目「基本」）＝ 二人の負担額の合計 × 負担率 です（100円単位）。',
       '基本の額は年の途中では変わりません。来年の予算を保存すると、その年の1月から「基本」に自動で入ります。')),
-    h('p', { class: 'muted small' }, `収入 月 ${yen(p.total)}（支出の予算 ${yen(p.spending)} ＋ 貯蓄 ${yen(p.savings)}）`),
+    h('p', { class: 'muted small' }, `二人の負担額の合計 月 ${yen(p.total)}（支出の予算 ${yen(p.spending)} ＋ 貯蓄 ${yen(p.savings)}）`),
     h('div', { class: 'table-wrap' }, h('table', { class: 'table' },
-      h('thead', {}, h('tr', {}, h('th', {}, ''), h('th', { class: 'num' }, '負担率'), h('th', { class: 'num' }, '予算から'), h('th', { class: 'num' }, `${Number(ym.slice(5))}月の基本`))),
+      h('thead', {}, h('tr', {}, h('th', {}, ''), h('th', { class: 'num' }, '負担率'), h('th', { class: 'num' }, '負担額'), h('th', { class: 'num' }, `${Number(ym.slice(5))}月の基本`))),
       h('tbody', {}, rows))));
 }
 
@@ -1880,14 +1880,22 @@ function renderBudget(yearParam) {
     const income = h('input', { type: 'text', inputmode: 'numeric', id: 'budget-income', value: String(incomeOf(base.rows, base.year)) });
     const weights = ids.map((id) => ({ id, input: h('input', { type: 'text', inputmode: 'decimal', id: `ratio-${id}`, value: base.year && base.year.ratio && base.year.ratio[id] !== undefined ? String(base.year.ratio[id]) : '' }) }));
     const pctOut = h('p', { class: 'ratio-big', role: 'status' });
+    const shareOut = h('div', { class: 'share-out', role: 'status' });
     const note = h('textarea', { id: 'ratio-note', maxlength: 1000, rows: 2 }, (base.year && base.year.ratio_note) || '');
     const readWeights = () => Object.fromEntries(weights.map((w) => [w.id, Number(w.input.value.replace(/[,，\s]/g, ''))]).filter(([, v]) => Number.isFinite(v) && v > 0));
     const update = () => {
       const total = catInputs.reduce((n, x) => n + (parseYen(x.amount.value) || 0), 0);
       const inc = parseYen(income.value) || 0;
-      sumOut.textContent = `支出の予算 月 ${yen(total)}（年 ${yen(total * 12)}）／ 貯蓄 ＝ 収入 − 支出 ＝ 月 ${signedYen(inc - total)}`;
+      sumOut.textContent = `支出の予算 月 ${yen(total)}（年 ${yen(total * 12)}）／ 貯蓄 ＝ 二人の負担額の合計 − 支出 ＝ 月 ${signedYen(inc - total)}`;
       const pc = percents(readWeights(), ids);
       pctOut.textContent = Object.keys(readWeights()).length ? `負担率 ${ids.map((id) => `${memberNick(id)} ${pc.get(id)}%`).join(' ： ')}` : '負担率：賃金を入れると計算します';
+      // each person's 負担額 (the same rounding as when it is applied)
+      const p = proposal([{ monthly: total }], { income_monthly: inc, ratio: readWeights() }, ids);
+      shareOut.replaceChildren(h('table', { class: 'table share-table' },
+        h('thead', {}, h('tr', {}, h('th', {}, ''), h('th', { class: 'num' }, '負担率'), h('th', { class: 'num' }, '負担額（月）'))),
+        h('tbody', {},
+          ids.map((id) => h('tr', {}, h('th', { scope: 'row', class: `person-name ${personClass(id)}` }, memberNick(id)), h('td', { class: 'num' }, `${pc.get(id)}%`), h('td', { class: 'num' }, yen(p.perMember.get(id))))),
+          h('tr', { class: 'total' }, h('th', { scope: 'row' }, '合計'), h('td', { class: 'num' }, '100%'), h('td', { class: 'num' }, yen(inc))))));
     };
     for (const x of [...catInputs.flatMap((c) => [c.amount]), income, ...weights.map((w) => w.input)]) x.addEventListener('input', update);
     update();
@@ -1901,7 +1909,7 @@ function renderBudget(yearParam) {
         else if (v > 0 || x.memo.value.trim()) rows.push({ year, category: x.c, monthly: v, memo: x.memo.value.trim() || null });
       }
       const inc = parseYen(income.value);
-      if (inc === null) bad.push('収入');
+      if (inc === null) bad.push('二人の負担額の合計');
       const w = readWeights();
       if (weights.some((x) => x.input.value.trim() && !(Number(x.input.value.replace(/[,，\s]/g, '')) > 0))) bad.push('負担率');
       if (bad.length) {
@@ -1931,15 +1939,16 @@ function renderBudget(yearParam) {
         h('div', { class: 'budget-edit' }, catInputs.map((x) => x.el)),
         sumOut),
       h('section', { class: 'card' },
-        h('h2', {}, '収入と負担率'),
-        h('div', { class: 'field' }, h('div', { class: 'label-row' }, h('label', { for: 'budget-income' }, '収入（月・円）'),
-          helpButton('収入', '二人が家計に入れる月の合計です。各人の今月分 ＝ 収入 × 負担率。', '貯蓄は 収入 − 支出の予算 で決まります。')), income),
+        h('h2', {}, '負担額と負担率'),
+        h('div', { class: 'field' }, h('div', { class: 'label-row' }, h('label', { for: 'budget-income' }, '二人の負担額の合計（月・円）'),
+          helpButton('二人の負担額の合計', '二人が家計に出す月の合計です（入金と立替の合計。共用口座から見ると収入）。', '各人の負担額 ＝ 合計 × 負担率。貯蓄 ＝ 合計 − 支出の予算。')), income),
         wageBox(year, ids),
         weights.map((w) => h('div', { class: 'field' },
           h('div', { class: 'label-row' }, h('label', { for: `ratio-${w.id}` }, `${memberNick(w.id)}の賃金（千円）`),
             helpButton('賃金（千円）', '統計で見た値をそのまま入れます（例：294.6）。負担率は二人の値の比で、その場で計算します。', '比率（57 と 43）を入れることもできます（合計が100のときは比率として扱います）。')),
           w.input)),
         pctOut,
+        shareOut,
         evidenceBox(year),
         h('div', { class: 'field' }, h('label', { for: 'ratio-note' }, '負担率のメモ（任意）'), note)),
       h('div', { class: 'actions sticky-actions' }, save),
@@ -2899,7 +2908,7 @@ function renderSharedRule(id) {
           h('dt', {}, '人'), h('dd', {}, memberNick(r.member_id)),
           h('dt', {}, '金額'), h('dd', { class: 'num' }, signedYen(r.amount)),
           h('dt', {}, '期間'), h('dd', {}, ruleSchedule(r))),
-        h('p', {}, '基本の額は予算から自動で決まります（収入 × 負担率）。年の途中では変わらず、来年の予算を保存するとその年の1月から反映されます。'),
+        h('p', {}, '基本の額は予算から自動で決まります（二人の負担額の合計 × 負担率）。年の途中では変わらず、来年の予算を保存するとその年の1月から反映されます。'),
         h('div', { class: 'button-row' },
           h('a', { class: 'button primary', href: `#/flow/budget/${y === thisYM().slice(0, 4) ? thisYM() : `${y}-01`}` }, `${y}年の予算を開く`),
           h('a', { class: 'button', href: '#/flow/member' }, '戻る'))));

@@ -715,3 +715,5 @@ details.chore-group > summary { cursor: pointer; list-style: revert; }
 .ratio-table td .linklike { margin-right: 0.5rem; }
 .shared-figures dt.band { grid-column: 1 / -1; margin-top: 0.4rem; padding: 0.15rem 0.5rem; border-radius: 4px; background: var(--accent-soft); color: var(--ink-2); font-size: 0.78rem; font-weight: 700; }
 .shared-figures dd.band { display: none; }
+.share-out { margin: 0 0 0.75rem; }
+.share-table { margin: 0; }

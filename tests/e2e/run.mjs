@@ -703,11 +703,12 @@ try {
   await page.getByLabel('住宅の月の予算（円）').fill('90,000');
   await page.getByLabel('住宅の備考').fill('更新料を按分');
   await page.getByLabel('通信費の月の予算（円）').fill('6000');
-  await page.getByLabel('収入（月・円）').fill('100,000');
+  await page.getByLabel('二人の負担額の合計（月・円）').fill('100,000');
   const ratioInputs = page.locator('input[id^="ratio-"]');
   const people = await ratioInputs.count();
   for (let i = 0; i < people; i += 1) await ratioInputs.nth(i).fill(i === 0 ? '294.6' : '258.1');
   if (people === 2) assert.match(await page.locator('.ratio-big').innerText(), /負担率 \S+ 53% ： \S+ 47%/);
+  assert.match(await page.locator('.share-out').innerText(), /負担額（月）[\s\S]*合計\s+100%\s+100,000円/, 'each person\'s share of the total is shown');
   // the wage statistics: what to look up for each person
   const budgetYear = Number(ymNow.slice(0, 4));
   assert.match(await page.locator('.wage-box').innerText(), /生まれ年がユーザーマスターにありません/);
@@ -728,7 +729,7 @@ try {
   await page.getByLabel('住宅の月の予算（円）').fill('90,000');
   await page.getByLabel('住宅の備考').fill('更新料を按分');
   await page.getByLabel('通信費の月の予算（円）').fill('6000');
-  await page.getByLabel('収入（月・円）').fill('100,000');
+  await page.getByLabel('二人の負担額の合計（月・円）').fill('100,000');
   const before = mock.db.shared_rules.length;
   await page.getByRole('button', { name: '保存' }).click();
   await page.getByText(`${ymNow.slice(0, 4)}年の予算を保存しました。`, { exact: false }).waitFor();
@@ -740,7 +741,7 @@ try {
   const budgetText = await page.locator('#view').innerText();
   assert.match(budgetText, /支出\s+96,000\s/);
   assert.match(budgetText, /住宅\s+[\d,]+円 \/ 90,000円/);
-  assert.match(budgetText, /今月分の内訳[\s\S]*収入 月 100,000円（支出の予算 96,000円 ＋ 貯蓄 4,000円）/);
+  assert.match(budgetText, /今月分の内訳[\s\S]*二人の負担額の合計 月 100,000円（支出の予算 96,000円 ＋ 貯蓄 4,000円）/);
   assert.doesNotMatch(budgetText, /この額で切り替える/);
   assert.match(budgetText, /大項目が決まっていない立替があります（[^）]*管理費/);
   // the 大項目 of a 費目 is chosen in the settings
