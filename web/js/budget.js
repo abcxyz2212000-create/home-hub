@@ -100,12 +100,11 @@ function monthBefore(ym) {
   return m === 1 ? `${y - 1}-12` : `${y}-${String(m - 1).padStart(2, '0')}`;
 }
 
-// First month the budget of `year` changes the base amounts when saved in month `current`: next month,
-// within that year (null when the year is over).
+// First month the budget of `year` changes the base amounts when saved in month `current`: base amounts
+// change only at the start of a year, so a coming year's budget applies from its January and the
+// budget of this year or a past year changes nothing (null).
 export function applyFrom(year, current) {
-  const next = current.endsWith('-12') ? `${Number(current.slice(0, 4)) + 1}-01` : `${current.slice(0, 4)}-${String(Number(current.slice(5)) + 1).padStart(2, '0')}`;
-  const from = next > `${year}-01` ? next : `${year}-01`;
-  return from <= `${year}-12` ? from : null;
+  return Number(year) > Number(current.slice(0, 4)) ? `${year}-01` : null;
 }
 
 // 大項目 of one 立替 line (an item of a statement). mapping (setting budget_category_of):

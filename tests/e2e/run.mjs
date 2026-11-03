@@ -729,20 +729,12 @@ try {
   await page.getByLabel('住宅の備考').fill('更新料を按分');
   await page.getByLabel('通信費の月の予算（円）').fill('6000');
   await page.getByLabel('収入（月・円）').fill('100,000');
-  const nextYM = ymAdd(ymNow, 1);
-  const sameYear = nextYM.slice(0, 4) === ymNow.slice(0, 4);
   const before = mock.db.shared_rules.length;
   await page.getByRole('button', { name: '保存' }).click();
   await page.getByText(`${ymNow.slice(0, 4)}年の予算を保存しました。`, { exact: false }).waitFor();
   await page.locator('.budget-summary').waitFor();
-  // each person's base amount follows the budget from next month on (none in December: next month is next year)
-  const switched = mock.db.shared_rules.filter((r) => r.start_ym === nextYM && r.amount > 0 && !r.contract_id);
-  if (sameYear) {
-    assert.equal(switched.length, people, 'a new base amount for each person from next month');
-    assert.equal(switched.reduce((n, r) => n + r.amount, 0), 100000, 'income 100,000 split by the ratio');
-    assert.ok(mock.db.shared_rules.length >= before + people);
-    assert.ok(mock.db.shared_rules.filter((r) => r.end_ym === ymNow).length >= 1, 'the old amount ends this month');
-  } else assert.equal(switched.length, 0);
+  // this year's budget never changes the base amounts mid-year (a coming year's does, from its January)
+  assert.equal(mock.db.shared_rules.length, before, 'no base rule changed by this year\'s budget');
   assert.deepEqual(mock.db.budgets.map((b) => [b.category, b.monthly, b.memo]).sort(), [['住宅', 90000, '更新料を按分'], ['通信費', 6000, null]]);
   assert.deepEqual([mock.db.budget_years[0].income_monthly, mock.db.budget_years[0].savings_monthly], [100000, 4000], 'savings = income - spending');
   const budgetText = await page.locator('#view').innerText();
