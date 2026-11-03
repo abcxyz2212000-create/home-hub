@@ -708,6 +708,24 @@ try {
   const people = await ratioInputs.count();
   for (let i = 0; i < people; i += 1) await ratioInputs.nth(i).fill(i === 0 ? '294.6' : '258.1');
   if (people === 2) assert.match(await page.locator('#view').innerText(), /負担率 \S+ 53% : \S+ 47%/);
+  // the wage statistics: what to look up, and the yearly proposal
+  const budgetYear = Number(ymNow.slice(0, 4));
+  assert.match(await page.locator('.wage-box').innerText(), /生まれ年がユーザーマスターにありません/);
+  const firstPerson = (await ratioInputs.first().getAttribute('id')).slice('ratio-'.length);
+  const pm = mock.db.members.find((m) => m.id === firstPerson);
+  Object.assign(pm, { gender: 'female', birth_year: budgetYear - 32 });
+  mock.db.settings.push({ key: 'ratio_proposal', value: { budget_year: budgetYear, survey_year: budgetYear - 2, created_at: new Date().toISOString(), problems: [],
+    values: [{ member_id: firstPerson, sex: 'female', ageClass: '30～34歳', value: 270.5 }] } });
+  await page.reload();
+  await page.locator('.wage-box').waitFor();
+  assert.match(await page.locator('.wage-box').innerText(), /女 30～34歳 270.5千円/);
+  await page.getByRole('button', { name: 'この値を使う' }).click();
+  assert.equal(await ratioInputs.first().inputValue(), '270.5');
+  assert.match(await page.getByLabel('負担率のメモ（参照した資料など）').inputValue(), /賃金構造基本統計調査/);
+  await page.getByLabel('住宅の月の予算（円）').fill('90,000');
+  await page.getByLabel('住宅の備考').fill('更新料を按分');
+  await page.getByLabel('通信費の月の予算（円）').fill('6000');
+  await page.getByLabel('貯蓄の目標（月・円）').fill('4000');
   await page.getByLabel('立替の大項目').first().waitFor().catch(() => {});
   await page.getByRole('button', { name: '保存' }).click();
   await page.getByText(`${ymNow.slice(0, 4)}年の予算を保存しました。`).waitFor();

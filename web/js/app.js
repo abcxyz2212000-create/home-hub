@@ -16,6 +16,7 @@ import { compressImage } from './image.js';
 import { parseOcrText, receiptMemo, recognizeImage } from './ocr.js';
 import { parseBankRows, monthEndBalances, latestBalance, missingImports, DEFAULT_LOW_BALANCE } from './bank.js';
 import { lowBalanceAlert, importAlert } from './alerts.js';
+import { ESTAT_DB_URL, surveyYearFor, reiwa, overviewUrl, lookups, sourceText, SEX_LABEL } from './wage.js';
 import { MF_CATEGORIES, MAX_BUDGET, percents, proposal, baseRule, planBaseChange, advanceCategory, monthActual, compareRows } from './budget.js';
 import * as push from './push.js';
 import { icon, LEDGER_ICONS } from './icons.js';
@@ -1757,6 +1758,33 @@ function budgetYearView(year) {
 
 // ---- budget editor (administrators)
 
+// The ratio from the wage statistics: the yearly proposal (if any) and what to look up by hand.
+function wageBox(year, ids, use) {
+  const survey = surveyYearFor(year);
+  const people = ids.map((id) => state.members.find((m) => m.id === id)).filter(Boolean);
+  const { items, problems } = lookups(people, year);
+  const p = state.settings.ratio_proposal;
+  const mine = p && typeof p === 'object' && p.budget_year === year ? p : null;
+  const noteOf = (prop) => `${reiwa(prop.survey_year)}賃金構造基本統計調査（一般労働者・性、年齢階級別の賃金）：${prop.values.map((v) => `${memberNick(v.member_id)} ${sourceText(prop, v)}`).join('／')}`;
+  return h('div', { class: 'wage-box notice-text' },
+    h('div', { class: 'label-row' }, h('strong', {}, '賃金統計から決める'),
+      helpButton('賃金統計の負担率', `${year}年の予算には、${reiwa(survey)}（${survey}年）の賃金構造基本統計調査を使います（2年前の結果）。`,
+        '二人それぞれの性別と、その年の年齢階級の「賃金（所定内給与額、千円）」を比べます。年齢は ユーザーマスターの生まれ年から求めます。',
+        '毎年12月1日に自動で取りに行き、案を管理者に通知します。')),
+    mine && !mine.error ? [
+      h('p', {}, `案（${new Date(mine.created_at).toLocaleDateString('ja-JP')} 取得）：`),
+      h('ul', { class: 'small' }, mine.values.map((v) => h('li', {}, `${memberNick(v.member_id)}：${sourceText(mine, v)}`))),
+      h('button', { type: 'button', class: 'small', onclick: () => use(Object.fromEntries(mine.values.map((v) => [v.member_id, v.value])), noteOf(mine)) }, 'この値を使う'),
+    ] : null,
+    mine && mine.error ? h('p', { class: 'warn-text small' }, '自動では取れませんでした。下の資料で数字を確かめて、基準の値に入れてください。') : null,
+    h('p', { class: 'small' }, `見る値（${reiwa(survey)}・一般労働者・全国・産業計）：`),
+    items.length ? h('ul', { class: 'small' }, items.map((it) => h('li', {}, `${memberNick(it.member_id)}：${SEX_LABEL[it.sex]} ${it.ageClass}`))) : null,
+    problems.length ? h('p', { class: 'warn-text small' }, `${problems.join('')}設定 → ユーザー で入れてください。`) : null,
+    h('p', { class: 'small' },
+      h('a', { href: overviewUrl(survey), target: '_blank', rel: 'noopener noreferrer' }, `${reiwa(survey)}の結果の概況（厚生労働省）`), '　',
+      h('a', { href: ESTAT_DB_URL, target: '_blank', rel: 'noopener noreferrer' }, 'e-Stat の表')));
+}
+
 function parseYen(v, { min = 0, max = MAX_BUDGET } = {}) {
   const t = String(v ?? '').replace(/[,，円\s]/g, '');
   if (t === '') return 0;
@@ -1863,6 +1891,11 @@ function renderBudget(yearParam) {
             helpButton('基準の値', '負担率は、二人の基準の値の比で決まります。', '比率（57 と 43）をそのまま入れても、統計の金額（294.6 と 258.1 など）を入れても構いません。')),
           w.input)),
         pctOut,
+        wageBox(year, ids, (values, text) => {
+          for (const w of weights) if (values[w.id] !== undefined) w.input.value = String(values[w.id]);
+          note.value = text;
+          update();
+        }),
         h('div', { class: 'field' }, h('label', { for: 'ratio-note' }, '負担率のメモ（参照した資料など）'), note)),
       labels.length ? h('section', { class: 'card' },
         h('h2', { class: 'with-icon' }, '立替の大項目', helpButton('立替の大項目', '個人のお金で払った共通の支出（立替）を、どの大項目の実績に入れるかを選びます。', '「自動」は、契約の種類から決めた大項目です（契約でない立替は未分類）。')),
@@ -3260,7 +3293,7 @@ function fieldInput(field, r, ledger) {
     case 'int':
     case 'day':
     case 'monthnum': {
-      const el = h('input', { type: 'text', inputmode: 'numeric', id, value: v ?? '' });
+      const el = h('input', { type: 'text', inputmode: 'numeric', id, value: v ?? '', placeholder: field.placeholder });
       const help = field.type === 'day' ? '1〜31（31は末日）' : field.type === 'monthnum' ? '1〜12' : null;
       return wrap(el, () => el.value, help);
     }
