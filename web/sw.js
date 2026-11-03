@@ -1,6 +1,6 @@
 // Service worker: offline app shell + Web Push display.
 // Bump CACHE when the list of files changes.
-const CACHE = 'homehub-v62';
+const CACHE = 'homehub-v63';
 const SHELL = [
   './', 'index.html', 'manifest.webmanifest', 'css/app.css',
   'js/app.js', 'js/config.js', 'js/supabase.js', 'js/schema.js', 'js/events.js', 'js/validate.js',
@@ -40,7 +40,7 @@ self.addEventListener('push', (event) => {
   } catch {
     data = { body: event.data ? event.data.text() : '' };
   }
-  event.waitUntil(self.registration.showNotification(data.title || '家の管理ハブ', {
+  event.waitUntil(self.registration.showNotification(data.title || 'HouseHub', {
     body: data.body || '',
     tag: data.tag || undefined,
     icon: 'icons/icon-192.png',

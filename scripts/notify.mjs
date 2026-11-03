@@ -113,7 +113,7 @@ async function main() {
   const sendToAll = (payload) => sendTo(subscriptions, payload);
 
   if (env('NOTIFY_TEST', false) === '1') {
-    const delivered = await sendToAll({ title: 'テスト通知', body: '家の管理ハブからの通知は正しく届いています。', url: '#/', tag: 'test' });
+    const delivered = await sendToAll({ title: 'テスト通知', body: 'HouseHubからの通知は正しく届いています。', url: '#/', tag: 'test' });
     console.log(`Test notification delivered to ${delivered}/${subscriptions.length} device(s).`);
     if (failures > 0 || delivered === 0) process.exitCode = 1;
     return;

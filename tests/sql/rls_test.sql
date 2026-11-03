@@ -536,6 +536,11 @@ begin
   end if;
   update public.budgets set monthly = 36000 where year = 2031;
   if exists (select 1 from public.notice_reads where notice_id = n.id) then raise exception 'a new change must ask everyone again'; end if;
+  insert into public.deposit_reports (member_id, paid_on, amount, memo) values (haru, '2031-01-25', 79560, '1月分');
+  if (select body from public.notices where key like 'change:reports:%') <> '報告：はる 1/25 79,560円（1月分）' then
+    raise exception 'deposit report: %', (select body from public.notices where key like 'change:reports:%');
+  end if;
+  delete from public.deposit_reports where paid_on = '2031-01-25';
 end $$;
 reset role;
 delete from public.notices;

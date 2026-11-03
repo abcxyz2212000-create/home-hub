@@ -1085,12 +1085,36 @@ begin
 end;
 $$;
 
+-- 入金の報告 (a person says they paid, before the statement shows it): everyone confirms it too
+create or replace function public.deposit_reports_changed()
+returns trigger language plpgsql security definer set search_path = public as $$
+declare
+  r public.deposit_reports := coalesce(new, old);
+  txt text;
+  line text;
+begin
+  txt := format('%s %s %s%s', public.member_label(r.member_id), to_char(r.paid_on, 'FMMM/FMDD'), public.yen_text(r.amount),
+    coalesce('（' || left(nullif(r.memo, ''), 40) || case when char_length(r.memo) > 40 then '…' else '' end || '）', ''));
+  if tg_op = 'INSERT' then
+    line := '報告：' || txt;
+  elsif tg_op = 'DELETE' then
+    line := '取り消し：' || txt;
+  else
+    if new.amount = old.amount and new.paid_on = old.paid_on and new.member_id = old.member_id and new.memo is not distinct from old.memo then return null; end if;
+    line := format('変更：%s %s %s → %s %s', public.member_label(old.member_id), to_char(old.paid_on, 'FMMM/FMDD'), public.yen_text(old.amount),
+      to_char(new.paid_on, 'FMMM/FMDD'), public.yen_text(new.amount));
+  end if;
+  perform public.record_change('reports', extract(year from r.paid_on)::integer, '入金の報告がありました', '#/flow/member', line);
+  return null;
+end;
+$$;
+
 revoke all on function public.record_change(text, integer, text, text, text) from public, anon, authenticated;
 do $$
 declare
   t text;
 begin
-  foreach t in array array['budgets', 'budget_years', 'shared_rules', 'shared_entries'] loop
+  foreach t in array array['budgets', 'budget_years', 'shared_rules', 'shared_entries', 'deposit_reports'] loop
     execute format('drop trigger if exists %I_notify on public.%I', t, t);
     execute format('create trigger %I_notify after insert or update or delete on public.%I for each row execute function public.%I_changed()', t, t, t);
   end loop;

@@ -1,4 +1,4 @@
-/* 家の管理ハブ — dashboard style (B): navy header, blue accent, thin borders.
+/* HouseHub — dashboard style (B): navy header, blue accent, thin borders.
    Chart colors follow the validated reference palette (categorical slots in fixed order,
    one hue for magnitude, status colors always paired with an icon and a label). */
 :root {
