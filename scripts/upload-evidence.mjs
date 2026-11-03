@@ -14,7 +14,18 @@ if (key.startsWith('eyJ')) headers.Authorization = `Bearer ${key}`;
 const TYPES = { pdf: 'application/pdf', jpg: 'image/jpeg', png: 'image/png' };
 
 const manifest = JSON.parse(readFileSync('evidence-upload/manifest.json', 'utf8'));
-const existing = await (await fetch(`${base}/rest/v1/budget_attachments?select=year,name`, { headers })).json();
+const existing = await (await fetch(`${base}/rest/v1/budget_attachments?select=year,name,path`, { headers })).json();
+
+// files left by an earlier failed run (stored, not recorded) are removed first
+for (const year of new Set(manifest.map((f) => f.year))) {
+  const res = await fetch(`${base}/storage/v1/object/list/evidence`, { method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' }, body: JSON.stringify({ prefix: `budget/${year}`, limit: 100 }) });
+  if (!res.ok) throw new Error(`list failed: HTTP ${res.status} ${await res.text()}`);
+  const orphans = (await res.json()).map((o) => `budget/${year}/${o.name}`).filter((p) => !existing.some((e) => e.path === p));
+  if (orphans.length) {
+    await fetch(`${base}/storage/v1/object/evidence`, { method: 'DELETE', headers: { ...headers, 'Content-Type': 'application/json' }, body: JSON.stringify({ prefixes: orphans }) });
+    console.log(`${year}: removed ${orphans.length} unrecorded file(s)`);
+  }
+}
 let added = 0;
 for (const f of manifest) {
   if (existing.some((e) => e.year === f.year && e.name === f.name)) {
@@ -32,9 +43,13 @@ for (const f of manifest) {
   res = await fetch(`${base}/rest/v1/budget_attachments`, {
     method: 'POST',
     headers: { ...headers, 'Content-Type': 'application/json', Prefer: 'return=minimal' },
-    body: JSON.stringify([{ year: f.year, path, name: f.name, content_type: type, bytes: body.length }]),
+    body: JSON.stringify([{ year: f.year, path, name: f.name, content_type: type, bytes: body.length, created_by: null }]),
   });
-  if (!res.ok) throw new Error(`${f.year}: record failed: HTTP ${res.status} ${await res.text()}`);
+  if (!res.ok) {
+    const text = await res.text();
+    await fetch(`${base}/storage/v1/object/evidence`, { method: 'DELETE', headers: { ...headers, 'Content-Type': 'application/json' }, body: JSON.stringify({ prefixes: [path] }) });
+    throw new Error(`${f.year}: record failed (file removed again): HTTP ${res.status} ${text}`);
+  }
   added += 1;
   console.log(`${f.year}: uploaded`);
 }
