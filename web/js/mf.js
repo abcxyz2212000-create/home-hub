@@ -116,6 +116,8 @@ export function matchContract(description, contracts) {
 export function summarizeMonth(txs, members = []) {
   const out = { inflow: 0, outflow: 0, byContract: new Map(), byCategory: new Map(), unlinked: [], excluded: [], personal: [], review: [], memberFlows: [] };
   for (const t of txs) {
+    // hand-typed lines (not money of the account; e.g. past purchases kept for the budget only)
+    if (normalizeText(t.institution) === normalizeText(MF_MANUAL_INSTITUTION)) continue;
     if (!t.counted || t.transfer) {
       out.excluded.push(t);
       continue;

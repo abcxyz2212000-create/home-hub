@@ -74,6 +74,7 @@ test('month summary: transfers and excluded rows are not added up', () => {
     { id: 't3', amount: -2000, counted: true, transfer: false, contract_id: null, category: '食費' },
     { id: 't4', amount: -13000, counted: false, transfer: true, contract_id: null, category: '現金・カード' },
     { id: 't5', amount: 50000, counted: true, transfer: false, contract_id: null, category: '収入' },
+    { id: 't6', amount: -1751, counted: true, transfer: false, contract_id: null, category: '日用品', institution: 'なし' }, // hand-typed: not the account's
   ];
   const s = summarizeMonth(txs);
   assert.equal(s.inflow, 50000);
