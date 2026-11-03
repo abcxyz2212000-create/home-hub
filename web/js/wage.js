@@ -150,7 +150,7 @@ export function buildProposal({ budgetYear, members, table, error }) {
   const surveyYear = surveyYearFor(budgetYear);
   const { items, problems } = lookups(members, budgetYear);
   const base = { budget_year: budgetYear, survey_year: surveyYear, created_at: new Date().toISOString() };
-  if (error) return { ...base, error: String(error).slice(0, 300), problems };
+  if (error) return { ...base, error: String(error).slice(0, 1000), problems };
   const values = items.map((it) => {
     const hit = table.find((r) => r.sex === it.sex && r.ageClass === it.ageClass);
     return { ...it, value: hit ? hit.value : null };

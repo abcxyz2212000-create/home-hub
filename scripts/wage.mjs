@@ -51,12 +51,55 @@ async function estat(method, params, appId) {
   return res.json();
 }
 
-// Wage table of one survey year: [{ sex, ageClass, value }].
-export async function fetchWages(surveyYear, appId, statsDataId = ESTAT_STATS_DATA_ID) {
+async function fromTable(statsDataId, surveyYear, appId) {
   const meta = await estat('getMetaInfo', { statsDataId }, appId);
   const { fixed } = chooseClasses(metaClasses(meta), surveyYear);
   const data = await estat('getStatsData', { statsDataId, metaGetFlg: 'Y', cntGetFlg: 'N', ...narrowParams(fixed) }, appId);
   return parseEstat(data, surveyYear);
+}
+
+const text = (v) => (v && typeof v === 'object' ? v.$ || '' : String(v || ''));
+
+// Tables of one survey year that may hold the wages by sex and age group (best first).
+export function candidateTables(listJson) {
+  const data = listJson && listJson.GET_STATS_LIST;
+  if (!data || Number(data.RESULT && data.RESULT.STATUS) !== 0) return [];
+  const tables = [].concat((data.DATALIST_INF && data.DATALIST_INF.TABLE_INF) || []);
+  const score = (t) => {
+    const all = `${text(t.STATISTICS_NAME)} ${text(t.TITLE)} ${text(t.TITLE_SPEC && t.TITLE_SPEC.TABLE_NAME)}`;
+    if (!/年齢/.test(all) || /短時間|都道府県|職種|学歴別|勤続|経験/.test(all)) return -1;
+    let n = 0;
+    if (/一般労働者/.test(all)) n += 4;
+    if (/産業計/.test(all)) n += 2;
+    if (/企業規模/.test(all)) n += 1;
+    if (/所定内給与額/.test(all)) n += 1;
+    return n;
+  };
+  return tables.map((t) => ({ id: t['@id'], title: text(t.TITLE).slice(0, 80), name: text(t.STATISTICS_NAME).slice(0, 80), s: score(t) }))
+    .filter((t) => t.s >= 0).sort((a, b) => b.s - a.s);
+}
+
+// Wage table of one survey year: { rows: [{ sex, ageClass, value }], source: { id, title } }.
+// First the database of all years (updated late), then the year's own tables.
+export async function fetchWages(surveyYear, appId, statsDataId = ESTAT_STATS_DATA_ID) {
+  const errors = [];
+  try {
+    return { rows: await fromTable(statsDataId, surveyYear, appId), source: { id: statsDataId, title: '一般_都道府県別_年齢階級別DB' } };
+  } catch (e) {
+    if (/HTTP|status/.test(e.message)) throw e;
+    errors.push(`DB: ${e.message}`);
+  }
+  const list = await estat('getStatsList', { statsCode: '00450091', surveyYears: String(surveyYear), searchWord: '年齢階級' }, appId);
+  const cands = candidateTables(list).slice(0, 6);
+  for (const t of cands) {
+    try {
+      return { rows: await fromTable(t.id, surveyYear, appId), source: { id: t.id, title: `${t.name} ${t.title}`.trim() } };
+    } catch (e) {
+      errors.push(`${t.id} ${t.title}: ${e.message}`);
+    }
+  }
+  if (cands.length === 0) errors.push('no table of the year found by search');
+  throw new Error(errors.join(' / ').slice(0, 900));
 }
 
 async function main() {
@@ -79,8 +122,8 @@ async function main() {
 
   let proposal;
   try {
-    const table = await fetchWages(surveyYear, env('ESTAT_APP_ID'));
-    proposal = buildProposal({ budgetYear, members: people, table });
+    const { rows, source } = await fetchWages(surveyYear, env('ESTAT_APP_ID'));
+    proposal = { ...buildProposal({ budgetYear, members: people, table: rows }), source };
   } catch (e) {
     proposal = buildProposal({ budgetYear, members: people, error: e.message });
   }

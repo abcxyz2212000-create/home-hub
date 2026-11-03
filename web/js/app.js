@@ -1765,7 +1765,7 @@ function wageBox(year, ids, use) {
   const { items, problems } = lookups(people, year);
   const p = state.settings.ratio_proposal;
   const mine = p && typeof p === 'object' && p.budget_year === year ? p : null;
-  const noteOf = (prop) => `${reiwa(prop.survey_year)}賃金構造基本統計調査（一般労働者・性、年齢階級別の賃金）：${prop.values.map((v) => `${memberNick(v.member_id)} ${sourceText(prop, v)}`).join('／')}`;
+  const noteOf = (prop) => `${reiwa(prop.survey_year)}賃金構造基本統計調査（一般労働者・性、年齢階級別の賃金${prop.source ? `、e-Stat ${prop.source.id}` : ''}）：${prop.values.map((v) => `${memberNick(v.member_id)} ${sourceText(prop, v)}`).join('／')}`;
   return h('div', { class: 'wage-box notice-text' },
     h('div', { class: 'label-row' }, h('strong', {}, '賃金統計から決める'),
       helpButton('賃金統計の負担率', `${year}年の予算には、${reiwa(survey)}（${survey}年）の賃金構造基本統計調査を使います（2年前の結果）。`,

@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { ageClassOf, lookups, parseEstat, buildProposal, surveyYearFor, sourceText, reiwa, chooseClasses, narrowParams, metaClasses } from '../../web/js/wage.js';
 import { percents } from '../../web/js/budget.js';
-import { fetchWages } from '../../scripts/wage.mjs';
+import { fetchWages, candidateTables } from '../../scripts/wage.mjs';
 
 // Shaped like e-Stat getStatsData (made-up numbers): time x area x sex x age x measure.
 function fixture() {
@@ -82,8 +82,9 @@ test('the yearly script asks e-Stat for the classes it needs only, the app ID ne
     return new Response(JSON.stringify(fixture()));
   };
   try {
-    const rows = await fetchWages(2024, 'secret-app-id');
+    const { rows, source } = await fetchWages(2024, 'secret-app-id');
     assert.equal(rows.length, 3);
+    assert.equal(source.id, '0003426933');
     const q = calls[1].searchParams;
     assert.deepEqual([q.get('cdTime'), q.get('cdArea'), q.get('cdTab'), q.get('statsDataId')], ['2024000000', '00000', '01', '0003426933']);
     globalThis.fetch = async () => new Response('no', { status: 403 });
@@ -104,4 +105,36 @@ test('the year is found however the table writes it, and the error tells which y
   assert.equal(chooseClasses(objs([{ '@code': 'b', '@name': '２０２４年' }]), 2024).fixed.time, 'b');
   assert.equal(chooseClasses(objs([{ '@code': '2024000000', '@name': '?' }]), 2024).fixed.time, '2024000000');
   assert.throws(() => chooseClasses(objs([{ '@code': '2023000000', '@name': '2023年' }]), 2024), /it has: 2023000000=2023年/);
+});
+
+test('tables of the year: wages of 一般労働者 by sex and age first, other breakdowns left out', () => {
+  const t = (id, name, title) => ({ '@id': id, STATISTICS_NAME: name, TITLE: { $: title } });
+  const json = { GET_STATS_LIST: { RESULT: { STATUS: 0 }, DATALIST_INF: { TABLE_INF: [
+    t('1', '賃金構造基本統計調査 令和6年 短時間労働者', '性、年齢階級別1時間当たり所定内給与額'),
+    t('2', '賃金構造基本統計調査 令和6年 一般労働者 産業大分類', '年齢階級別きまって支給する現金給与額、所定内給与額及び年間賞与その他特別給与額（産業計）'),
+    t('3', '賃金構造基本統計調査 令和6年 一般労働者 職種', '職種、年齢階級別'),
+    t('4', '賃金構造基本統計調査 令和6年 一般労働者 都道府県', '年齢階級別'),
+  ] } } };
+  assert.deepEqual(candidateTables(json).map((x) => x.id), ['2']);
+  assert.deepEqual(candidateTables({ GET_STATS_LIST: { RESULT: { STATUS: 1 } } }), []);
+});
+
+test('when the database lacks the year, the year\'s own tables are tried', async () => {
+  const objs = fixture().GET_STATS_DATA.STATISTICAL_DATA.CLASS_INF.CLASS_OBJ;
+  const old = objs.map((o) => (o['@id'] === 'time' ? { ...o, CLASS: [{ '@code': '2023000000', '@name': '2023年' }] } : o));
+  const orig = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const u = new URL(url);
+    const id = u.searchParams.get('statsDataId');
+    if (u.pathname.endsWith('/getStatsList')) return new Response(JSON.stringify({ GET_STATS_LIST: { RESULT: { STATUS: 0 }, DATALIST_INF: { TABLE_INF: [{ '@id': 'Y24', STATISTICS_NAME: '一般労働者', TITLE: '性、年齢階級別（産業計）' }] } } }));
+    if (u.pathname.endsWith('/getMetaInfo')) return new Response(JSON.stringify({ GET_META_INFO: { RESULT: { STATUS: 0 }, METADATA_INF: { CLASS_INF: { CLASS_OBJ: id === 'Y24' ? objs : old } } } }));
+    return new Response(JSON.stringify(fixture()));
+  };
+  try {
+    const { rows, source } = await fetchWages(2024, 'k');
+    assert.equal(source.id, 'Y24');
+    assert.equal(rows.length, 3);
+  } finally {
+    globalThis.fetch = orig;
+  }
 });
