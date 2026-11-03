@@ -680,7 +680,7 @@ try {
   assert.ok(mock.db.settings.some((x) => x.key === 'bank_imported_at'));
   const balanceText = await page.locator('#view').innerText();
   assert.match(balanceText, /3時点\s*26,130円/);
-  assert.match(balanceText, /共用口座の残高が少なくなっています: 26,130円/, 'below the default 100,000円');
+  assert.match(balanceText, /共用口座の残高不足\s+残高 26,130円（\d+\/3時点）。目安の10万円を下回っています。/, 'below the default 100,000円');
   await page.getByLabel('銀行の取引明細の CSV ファイル').setInputFiles({ name: 'bank.csv', mimeType: 'text/csv', buffer: bankSjis });
   await page.getByText(/2日分の残高/).waitFor();
   await page.getByRole('button', { name: '取り込む' }).first().click();
