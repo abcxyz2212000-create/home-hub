@@ -88,10 +88,10 @@ test('今月分 from the income: savings is what is left of it', () => {
   assert.equal(p.perMember.get('b'), 115000, '253000 x 45.45% = 114,996 -> 115,000');
 });
 
-test('the budget changes base amounts from next month, within its year', () => {
-  assert.equal(applyFrom(2026, '2026-11'), '2026-12');
+test('the budget changes base amounts from the January of a coming year only', () => {
+  assert.equal(applyFrom(2026, '2026-11'), null, 'not in the middle of a year');
   assert.equal(applyFrom(2027, '2026-11'), '2027-01');
-  assert.equal(applyFrom(2026, '2026-12'), null, 'the year is over');
+  assert.equal(applyFrom(2027, '2026-01'), '2027-01');
   assert.equal(applyFrom(2023, '2026-11'), null, 'past years never change');
   const rules = [
     { id: 'r1', member_id: 'a', label: '基本', amount: 70000, start_ym: '2025-01', end_ym: '2026-12' },

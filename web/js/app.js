@@ -1656,7 +1656,7 @@ function proposalCard(b, ym) {
   return h('section', { class: 'card' },
     h('h2', { class: 'with-icon' }, icon('user'), '今月分の内訳', helpButton('今月分の内訳',
       '各人の今月分（定例項目「基本」）＝ 収入 × 負担率 です（100円単位）。',
-      '予算を保存すると、来月からその年の月の「基本」に自動で入ります。今月と過去の月は変わりません。')),
+      '基本の額は年の途中では変わりません。来年の予算を保存すると、その年の1月から「基本」に自動で入ります。')),
     h('p', { class: 'muted small' }, `収入 月 ${yen(p.total)}（支出の予算 ${yen(p.spending)} ＋ 貯蓄 ${yen(p.savings)}）`),
     h('div', { class: 'table-wrap' }, h('table', { class: 'table' },
       h('thead', {}, h('tr', {}, h('th', {}, ''), h('th', { class: 'num' }, '負担率'), h('th', { class: 'num' }, '予算から'), h('th', { class: 'num' }, `${Number(ym.slice(5))}月の基本`))),
@@ -1915,7 +1915,7 @@ function renderBudget(yearParam) {
       const yearRow = { year, income_monthly: inc, savings_monthly: Math.max(-MAX_BUDGET, Math.min(MAX_BUDGET, inc - spending)), ratio: w, ratio_note: note.value.trim() || null };
       await db.upsertRows('budget_years', [yearRow], 'year');
       [state.budgets, state.budgetYears] = await Promise.all([db.selectAll('budgets', 'year.asc'), db.selectAll('budget_years', 'year.asc')]);
-      // each person's base amount follows the budget from next month on (past months stay)
+      // each person's base amount follows the budget of a coming year from its January (never mid-year)
       const from = applyFrom(year, thisYM());
       const changed = from ? await applyBudgetToBase(rows, yearRow, from) : 0;
       toast(`${year}年の予算を保存しました。${changed ? `${ymLabel(from)}から各人の今月分（基本）を予算に合わせました。` : ''}`);
@@ -2899,7 +2899,7 @@ function renderSharedRule(id) {
           h('dt', {}, '人'), h('dd', {}, memberNick(r.member_id)),
           h('dt', {}, '金額'), h('dd', { class: 'num' }, signedYen(r.amount)),
           h('dt', {}, '期間'), h('dd', {}, ruleSchedule(r))),
-        h('p', {}, '基本の額は予算から自動で決まります（収入 × 負担率）。変えるときは予算を変更して保存してください（来月から反映され、過去の月は変わりません）。'),
+        h('p', {}, '基本の額は予算から自動で決まります（収入 × 負担率）。年の途中では変わらず、来年の予算を保存するとその年の1月から反映されます。'),
         h('div', { class: 'button-row' },
           h('a', { class: 'button primary', href: `#/flow/budget/${y === thisYM().slice(0, 4) ? thisYM() : `${y}-01`}` }, `${y}年の予算を開く`),
           h('a', { class: 'button', href: '#/flow/member' }, '戻る'))));
