@@ -1,6 +1,6 @@
 {
-  "name": "家の管理ハブ",
-  "short_name": "家ハブ",
+  "name": "HouseHub",
+  "short_name": "HouseHub",
   "description": "口座・カード・契約・書類/家電・会員情報の台帳と期限通知",
   "lang": "ja",
   "start_url": "./",

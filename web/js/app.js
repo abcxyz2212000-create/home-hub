@@ -1,4 +1,4 @@
-// 家の管理ハブ: single page app (vanilla JS, hash routing).
+// HouseHub: single page app (vanilla JS, hash routing).
 import * as db from './supabase.js';
 import { AppError } from './supabase.js';
 import { LEDGERS, LEDGER_ORDER, MEMBER_DEF, optionPairs, optionLabel } from './schema.js';
@@ -117,7 +117,7 @@ function view() {
 }
 
 function setView(title, ...nodes) {
-  document.title = title ? `${title} | 家の管理ハブ` : '家の管理ハブ';
+  document.title = title ? `${title} | HouseHub` : 'HouseHub';
   const root = view();
   root.replaceChildren(...nodes.flat(Infinity).filter((n) => n !== null && n !== undefined && n !== false));
   updateStickyOffset();
@@ -627,7 +627,7 @@ function renderNotices(sub) {
       : [['消す', async () => { await setNoticeReads([n], { hidden: true }); render(); }]];
   };
   setView('お知らせ', pageHead({ title: 'お知らせ', icon: 'bell', action: h('a', { class: 'button primary', href: '#/notices/new' }, 'メッセージを送る'),
-    help: ['お知らせ', 'アプリから端末に送った通知と、メッセージが並びます。二人とも全部見られます。', 'メッセージは送ってから10分ほどで、宛先の人の端末に通知が届きます（GitHub の都合で遅れることがあります）。予約したものは、その日時のあとに届きます。', '予算・負担率・負担額・入金や立替の記録が変わると、全員に「確認待ち」のお知らせが届きます。内容を見て「確認しました」を押してください。確認するまで、毎日端末にお知らせします。',
+    help: ['お知らせ', 'アプリから端末に送った通知と、メッセージが並びます。二人とも全部見られます。', 'メッセージは送ってから10分ほどで、宛先の人の端末に通知が届きます（GitHub の都合で遅れることがあります）。予約したものは、その日時のあとに届きます。', '予算・負担率・負担額・入金や立替の記録が変わったときと、入金の報告があったときは、全員に「確認待ち」のお知らせが届きます。内容を見て「確認しました」を押してください。確認するまで、毎日端末にお知らせします。',
       '「消す」は自分の画面から消すだけで、相手には残ります。1年たったものは全員から消えます。'] }),
     pending.length ? h('section', { class: 'card' }, h('h2', {}, '予約中'), pending.map((n) => noticeItem(n, { pending: true }))) : null,
     h('section', { class: 'card' },
@@ -746,7 +746,7 @@ function renderLogin() {
       }
     },
   },
-  h('h1', {}, '家の管理ハブ'),
+  h('h1', {}, 'HouseHub'),
   state.loginNotice ? h('p', { class: 'error', role: 'alert' }, state.loginNotice) : null,
   h('label', { for: 'login-email' }, 'メールアドレス'), email,
   h('label', { for: 'login-password' }, 'パスワード'), password,
@@ -3189,7 +3189,8 @@ function renderDepositReport(id, memberParam) {
       const saved = isNew ? (await db.insertRows('deposit_reports', [values]))[0] : await db.updateRow('deposit_reports', id, values);
       if (attach.files().length) await uploadAttachments('report', saved.id, attach.files(), attach.status);
       await reloadShared();
-      toast(isNew ? '入金を報告しました。' : '保存しました。');
+      await reloadNotices(); // the report becomes an お知らせ for everyone to confirm (made by the database)
+      toast(isNew ? '入金を報告しました。全員に確認のお知らせが届きます。' : '保存しました。');
       location.hash = `#/flow/member/${values.paid_on.slice(0, 7)}`;
     },
     onDelete: isNew ? null : async () => {
@@ -4170,14 +4171,14 @@ async function fullBackup(status) {
   files.push({ name: '添付画像一覧.csv', data: toCSV(attachRows) });
   status.textContent = 'ZIPファイルを作成しています…';
   const zip = createZip(files);
-  download(`家の管理ハブ_バックアップ_${todayJST()}.zip`, new Blob([zip], { type: 'application/zip' }));
+  download(`HouseHub_バックアップ_${todayJST()}.zip`, new Blob([zip], { type: 'application/zip' }));
   await saveSetting('last_backup_at', new Date().toISOString());
   status.textContent = `バックアップを書き出しました（写真${state.photos.length}枚・添付画像${state.attachments.length}枚を含む）。`;
 }
 
 // アプリの更新: the version this device runs (APP_VERSION, the same as the service worker's cache name) and a button that drops
 // the saved files and loads the newest version. Sign-in and notifications stay as they are.
-const APP_VERSION = 'v62'; // = CACHE in sw.js (checked by tests/unit/version.test.mjs)
+const APP_VERSION = 'v63'; // = CACHE in sw.js (checked by tests/unit/version.test.mjs)
 
 function appUpdateSection() {
   const version = h('span', { class: 'num' }, APP_VERSION);
