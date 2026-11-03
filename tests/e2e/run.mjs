@@ -755,6 +755,14 @@ try {
   await page.getByText('支出の累計').waitFor();
   await page.screenshot({ path: join(OUT, 'budget.png'), fullPage: true });
 
+  // the ratio and where it comes from, on the people's tab
+  await page.goto(`${appUrl}#/flow/member/${ymNow}`);
+  await page.locator('.ratio-line').waitFor();
+  assert.match(await page.locator('.ratio-line').innerText(), new RegExp(`${ymNow.slice(0, 4)}年の負担率 .*%`));
+  await page.goto(`${appUrl}#/flow/member/${ymNow.slice(0, 4)}`);
+  await page.locator('.ratio-table').waitFor();
+  assert.match(await page.locator('.ratio-table').innerText(), /賃金構造基本統計調査/, 'the note of the ratio is its basis');
+
   step('contract amount by period: a new amount from this month, the old one kept for past months');
   await page.goto(`${appUrl}#/edit/contracts/${net.id}`);
   assert.equal(await page.getByLabel('新しい金額の適用開始月', { exact: true }).isVisible(), false, 'asked only when the amount changes');
