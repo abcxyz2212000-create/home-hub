@@ -247,6 +247,25 @@ do $$ begin
 end $$;
 delete from public.budgets;
 delete from public.budget_years;
+-- budget evidence: administrators add files, everyone reads
+insert into public.budget_attachments (year, path, name, content_type, bytes) values (2026, 'budget/2026/a.pdf', 'a.pdf', 'application/pdf', 1000);
+insert into storage.objects (bucket_id, name) values ('evidence', 'budget/2026/a.pdf');
+select pg_temp.login('adv@example.com');
+do $$ begin
+  if (select count(*) from public.budget_attachments) <> 1 then raise exception 'member cannot read evidence'; end if;
+  if (select count(*) from storage.objects where bucket_id = 'evidence') <> 1 then raise exception 'member cannot read the evidence file'; end if;
+  begin insert into public.budget_attachments (year, path, name, content_type) values (2026, 'budget/2026/b.pdf', 'b.pdf', 'application/pdf');
+    raise exception 'member added evidence'; exception when insufficient_privilege then null; end;
+  begin insert into storage.objects (bucket_id, name) values ('evidence', 'budget/2026/b.pdf');
+    raise exception 'member uploaded evidence'; exception when insufficient_privilege then null; end;
+end $$;
+select pg_temp.login('owner@example.com');
+do $$ begin
+  begin insert into public.budget_attachments (year, path, name, content_type) values (2026, 'budget/2026/c.exe', 'c.exe', 'application/x-msdownload');
+    raise exception 'other file types accepted'; exception when check_violation then null; end;
+end $$;
+delete from storage.objects where bucket_id = 'evidence';
+delete from public.budget_attachments;
 do $$ begin
   begin update public.members set birth_year = 1800; raise exception 'birth year 1800 accepted'; exception when check_violation then null; end;
 end $$;

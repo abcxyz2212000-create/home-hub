@@ -705,3 +705,11 @@ details.chore-group > summary { cursor: pointer; list-style: revert; }
 .ratio-table tr.is-current th, .ratio-table tr.is-current td { font-weight: 700; }
 .ratio-table td.small { min-width: 12rem; }
 .ratio-table th { white-space: nowrap; }
+.ratio-big { font-size: 1.15rem; font-weight: 700; color: var(--accent); margin: 0.25rem 0 0.75rem; }
+.linklike { background: none; border: 0; padding: 0; color: var(--accent); text-decoration: underline; cursor: pointer; font: inherit; text-align: left; min-height: 0; }
+.evidence-box { display: grid; gap: 0.35rem; margin: 0 0 0.75rem; }
+.evidence-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.3rem; }
+.evidence-list li { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+.evidence-box label.button { position: relative; overflow: hidden; justify-self: start; }
+.evidence-box label.button input[type=file] { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.ratio-table td .linklike { margin-right: 0.5rem; }

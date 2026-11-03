@@ -55,6 +55,7 @@ const state = {
   balances: [], // account balances from the bank statement
   budgets: [], // budget per 大項目 and year
   budgetYears: [], // savings target and ratio per year
+  budgetAttachments: [], // evidence files of the budget
   tx: new Map(), // ym -> statement lines (null while loading)
   txYear: new Map(), // 'YYYY' -> statement lines of the year (null while loading)
   money: { tab: 'member', member: null, ext: null, flow: null }, // お金の流れ: the open tab and each tab's month or year
@@ -315,7 +316,7 @@ function recordLink(ledger, record) {
 // ---------------------------------------------------------------- data loading
 
 async function loadAll() {
-  const [accounts, cards, contracts, items, memberships, photos, settings, members, chores, sharedRules, sharedEntries, depositReports, attachments, balances, budgets, budgetYears] = await Promise.all([
+  const [accounts, cards, contracts, items, memberships, photos, settings, members, chores, sharedRules, sharedEntries, depositReports, attachments, balances, budgets, budgetYears, budgetAttachments] = await Promise.all([
     db.selectAll('accounts'),
     db.selectAll('cards'),
     db.selectAll('contracts'),
@@ -332,6 +333,7 @@ async function loadAll() {
     db.selectAll('account_balances', 'date.asc'),
     db.selectAll('budgets', 'year.asc'),
     db.selectAll('budget_years', 'year.asc'),
+    db.selectAll('budget_attachments', 'created_at.asc'),
   ]);
   state.data = { accounts, cards, contracts, items, memberships };
   state.photos = photos;
@@ -345,6 +347,7 @@ async function loadAll() {
   state.balances = balances;
   state.budgets = budgets;
   state.budgetYears = budgetYears;
+  state.budgetAttachments = budgetAttachments;
   state.loaded = true;
 }
 
@@ -371,6 +374,7 @@ function resetState() {
   state.attachments = [];
   state.budgets = [];
   state.budgetYears = [];
+  state.budgetAttachments = [];
   clearTxCache();
   state.personal = null;
   for (const url of photoUrls.values()) URL.revokeObjectURL(url);
@@ -1757,6 +1761,76 @@ function budgetYearView(year) {
   ];
 }
 
+// Evidence of the year's ratio (PDF or image of the statistics), kept in the private bucket "evidence".
+const EVIDENCE_TYPES = { 'application/pdf': 'pdf', 'image/jpeg': 'jpg', 'image/png': 'png' };
+const MAX_EVIDENCE_BYTES = 5 * 1024 * 1024;
+
+function evidenceOf(year) {
+  return state.budgetAttachments.filter((a) => a.year === Number(year));
+}
+
+async function openEvidence(a) {
+  const win = window.open('', '_blank'); // opened now, so that it is not blocked as a pop-up
+  try {
+    const url = URL.createObjectURL(await db.downloadEvidence(a.path));
+    if (win) win.location.href = url;
+    else {
+      const link = h('a', { href: url, download: a.name });
+      link.click();
+    }
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  } catch (e) {
+    if (win) win.close();
+    throw e;
+  }
+}
+
+function evidenceLinks(year) {
+  return evidenceOf(year).map((a) => h('button', { type: 'button', class: 'linklike small', onclick: (ev) => busy(ev.currentTarget, () => openEvidence(a)) }, `📎${a.name}`));
+}
+
+function evidenceBox(year) {
+  const list = h('ul', { class: 'evidence-list' });
+  const draw = () => list.replaceChildren(...evidenceOf(year).map((a) => h('li', {},
+    h('button', { type: 'button', class: 'linklike', onclick: (ev) => busy(ev.currentTarget, () => openEvidence(a)) }, a.name),
+    h('span', { class: 'muted small' }, formatBytes(a.bytes)),
+    isAdmin() ? h('button', { type: 'button', class: 'small danger', 'aria-label': `${a.name}を削除`, onclick: (ev) => busy(ev.currentTarget, async () => {
+      if (!confirm(`${a.name} を削除します。よろしいですか？`)) return;
+      await db.removeEvidence([a.path]);
+      await db.deleteWhere('budget_attachments', 'id', a.id);
+      state.budgetAttachments = state.budgetAttachments.filter((x) => x.id !== a.id);
+      draw();
+      toast('証跡を削除しました。');
+    }) }, '削除') : null)));
+  const input = h('input', { type: 'file', accept: 'application/pdf,image/jpeg,image/png', multiple: true, 'aria-label': '証跡のファイル' });
+  input.addEventListener('change', () => busy(input, async () => {
+    const files = [...input.files];
+    input.value = '';
+    for (const f of files) {
+      const ext = EVIDENCE_TYPES[f.type];
+      if (!ext) {
+        toast(`${f.name} は PDF・JPEG・PNG ではないため追加できません。`, 'error');
+        continue;
+      }
+      if (f.size > MAX_EVIDENCE_BYTES) {
+        toast(`${f.name} は5MBを超えるため追加できません。`, 'error');
+        continue;
+      }
+      const path = `budget/${year}/${crypto.randomUUID()}.${ext}`;
+      await db.uploadEvidence(path, f, f.type);
+      const [row] = await db.insertRows('budget_attachments', [{ year: Number(year), path, name: f.name.slice(0, 200), content_type: f.type, bytes: f.size }]);
+      state.budgetAttachments.push(row);
+    }
+    draw();
+    if (files.length) toast('証跡を保存しました。');
+  }));
+  draw();
+  return h('div', { class: 'evidence-box' },
+    h('div', { class: 'label-row' }, h('strong', {}, '証跡'), helpButton('証跡', '負担率の根拠にした統計のPDFや画像です（PDF・JPEG・PNG、1ファイル5MBまで）。', 'アプリの非公開の保管場所に保存し、家族だけが開けます。')),
+    list,
+    isAdmin() ? h('label', { class: 'button small' }, '＋ PDF・画像を添付', input) : null);
+}
+
 // The ratio from the wage statistics: what to look up for each person, and where.
 function wageBox(year, ids) {
   const survey = surveyYearFor(year);
@@ -1765,14 +1839,14 @@ function wageBox(year, ids) {
   return h('div', { class: 'wage-box notice-text' },
     h('div', { class: 'label-row' }, h('strong', {}, '賃金統計から決める'),
       helpButton('賃金統計の負担率', `${year}年の予算には、${reiwa(survey)}（${survey}年）の賃金構造基本統計調査を使います（2年前の結果）。`,
-        '「結果の概況」の「性、年齢階級別賃金」の表で、二人それぞれの性別と年齢階級の賃金（千円）を見て、基準の値に入れます。年齢はユーザーマスターの生まれ年から求めます。',
+        '「結果の概況」の第6-1表「雇用形態、性、年齢階級別賃金」の正社員・正職員の欄で、二人それぞれの性別と年齢階級の賃金（千円）を見て入れます。年齢はユーザーマスターの生まれ年から求めます。',
         '毎年12月1日に、管理者へ確認の通知が届きます。')),
-    items.length ? [h('p', { class: 'small' }, `見る値（${reiwa(survey)}・性、年齢階級別賃金）：`),
+    items.length ? [h('p', { class: 'small' }, `見る値（${reiwa(survey)}・第6-1表 雇用形態、性、年齢階級別賃金の正社員・正職員）：`),
       h('ul', { class: 'small' }, items.map((it) => h('li', {}, `${memberNick(it.member_id)}：${lookupText(survey, it).replace(`${reiwa(survey)} `, '')}`)))] : null,
     problems.length ? h('p', { class: 'warn-text small' }, `${problems.join('')}設定 → ユーザー で入れてください。`) : null,
     h('p', { class: 'small' },
       h('a', { href: overviewUrl(survey), target: '_blank', rel: 'noopener noreferrer' }, `${reiwa(survey)}の結果の概況（厚生労働省）`)),
-    h('p', { class: 'small' }, '見た値（千円）を、それぞれの「基準の値」に入れてください。'));
+    h('p', { class: 'small' }, '見た値（千円）を、下のそれぞれの「賃金（千円）」に入れてください。'));
 }
 
 // ---- budget editor (administrators)
@@ -1808,7 +1882,7 @@ function renderBudget(yearParam) {
     const sumOut = h('p', { class: 'meta', role: 'status' });
     const savings = h('input', { type: 'text', inputmode: 'numeric', id: 'budget-savings', value: base.year ? String(base.year.savings_monthly || 0) : '0' });
     const weights = ids.map((id) => ({ id, input: h('input', { type: 'text', inputmode: 'decimal', id: `ratio-${id}`, value: base.year && base.year.ratio && base.year.ratio[id] !== undefined ? String(base.year.ratio[id]) : '' }) }));
-    const pctOut = h('p', { class: 'meta', role: 'status' });
+    const pctOut = h('p', { class: 'ratio-big', role: 'status' });
     const note = h('textarea', { id: 'ratio-note', maxlength: 1000, rows: 2 }, (base.year && base.year.ratio_note) || '');
     const readWeights = () => Object.fromEntries(weights.map((w) => [w.id, Number(w.input.value.replace(/[,，\s]/g, ''))]).filter(([, v]) => Number.isFinite(v) && v > 0));
     const update = () => {
@@ -1816,7 +1890,7 @@ function renderBudget(yearParam) {
       const s = parseYen(savings.value, { min: -MAX_BUDGET }) || 0;
       sumOut.textContent = `支出の予算 月 ${yen(total)}（年 ${yen(total * 12)}）／ 支出 ＋ 貯蓄 ＝ 月 ${yen(total + s)}`;
       const pc = percents(readWeights(), ids);
-      pctOut.textContent = `負担率 ${ids.map((id) => `${memberNick(id)} ${pc.get(id)}%`).join(' : ')}`;
+      pctOut.textContent = Object.keys(readWeights()).length ? `負担率 ${ids.map((id) => `${memberNick(id)} ${pc.get(id)}%`).join(' ： ')}` : '負担率：賃金を入れると計算します';
     };
     for (const x of [...catInputs.flatMap((c) => [c.amount]), savings, ...weights.map((w) => w.input)]) x.addEventListener('input', update);
     update();
@@ -1857,12 +1931,13 @@ function renderBudget(yearParam) {
       h('section', { class: 'card' },
         h('h2', {}, '貯蓄と負担率'),
         h('div', { class: 'field' }, h('label', { for: 'budget-savings' }, '貯蓄の目標（月・円）'), savings),
+        wageBox(year, ids),
         weights.map((w) => h('div', { class: 'field' },
-          h('div', { class: 'label-row' }, h('label', { for: `ratio-${w.id}` }, `${memberNick(w.id)}の基準の値`),
-            helpButton('基準の値', '負担率は、二人の基準の値の比で決まります。', '比率（57 と 43）をそのまま入れても、統計の金額（294.6 と 258.1 など）を入れても構いません。')),
+          h('div', { class: 'label-row' }, h('label', { for: `ratio-${w.id}` }, `${memberNick(w.id)}の賃金（千円）`),
+            helpButton('賃金（千円）', '統計で見た値をそのまま入れます（例：294.6）。負担率は二人の値の比で、その場で計算します。', '比率（57 と 43）を入れることもできます（合計が100のときは比率として扱います）。')),
           w.input)),
         pctOut,
-        wageBox(year, ids),
+        evidenceBox(year),
         h('div', { class: 'field' }, h('label', { for: 'ratio-note' }, '負担率のメモ（任意）'), note)),
       h('div', { class: 'actions sticky-actions' }, save),
     ];
@@ -2213,7 +2288,7 @@ function ratioOf(year) {
     const it = items.find((x) => x.member_id === id);
     return it ? lookupText(survey, it).replace(`${reiwa(survey)} `, '') : '（性別・生まれ年が未設定）';
   };
-  const source = `厚生労働省「${reiwa(survey)}賃金構造基本統計調査」性、年齢階級別賃金（千円）`;
+  const source = `厚生労働省「${reiwa(survey)}賃金構造基本統計調査 結果の概況」第6-1表 雇用形態、性、年齢階級別賃金（正社員・正職員、千円）`;
   const basis = fromStats
     ? [`出典：${source}`, `見た値：${ids.map((id) => `${memberNick(id)} ${area(id)} ${w(id)}千円`).join('・')}`]
     : [`統計の値は未入力です${entered ? `（比率 ${ids.map((id) => w(id)).join(':')} を直接入力）` : ''}。`, `見る値：${source}の ${ids.map((id) => `${memberNick(id)} ${area(id)}`).join('・')}`];
@@ -2225,7 +2300,8 @@ function ratioLine(year) {
   const r = ratioOf(year);
   if (!r) return null;
   return h('p', { class: 'meta ratio-line' }, `${Number(year)}年の負担率 ${r.text}`,
-    helpButton(`${Number(year)}年の負担率の根拠`, ...(r.basis.length ? r.basis : ['根拠のメモはまだありません。']), '負担率は予算の「今月分の提案」に使います。'));
+    helpButton(`${Number(year)}年の負担率の根拠`, ...(r.basis.length ? r.basis : ['根拠のメモはまだありません。']), '負担率は予算の「今月分の提案」に使います。'),
+    evidenceLinks(year));
 }
 
 function ratioHistoryCard(year) {
@@ -2242,7 +2318,7 @@ function ratioHistoryCard(year) {
         return h('tr', { class: String(y.year) === String(year) ? 'is-current' : '' },
           h('th', { scope: 'row' }, isAdmin() ? h('a', { href: `#/budget/${y.year}` }, `${y.year}年`) : `${y.year}年`),
           ids.map((id) => h('td', { class: 'num' }, `${r.pc.get(id)}%`)),
-          h('td', { class: `small${r.fromStats ? '' : ' warn-text'}` }, r.basis.join('／')));
+          h('td', { class: `small${r.fromStats ? '' : ' warn-text'}` }, r.basis.join('／'), evidenceLinks(y.year).length ? h('div', {}, evidenceLinks(y.year)) : null));
       })))));
 }
 

@@ -707,7 +707,7 @@ try {
   const ratioInputs = page.locator('input[id^="ratio-"]');
   const people = await ratioInputs.count();
   for (let i = 0; i < people; i += 1) await ratioInputs.nth(i).fill(i === 0 ? '294.6' : '258.1');
-  if (people === 2) assert.match(await page.locator('#view').innerText(), /負担率 \S+ 53% : \S+ 47%/);
+  if (people === 2) assert.match(await page.locator('.ratio-big').innerText(), /負担率 \S+ 53% ： \S+ 47%/);
   // the wage statistics: what to look up for each person
   const budgetYear = Number(ymNow.slice(0, 4));
   assert.match(await page.locator('.wage-box').innerText(), /生まれ年がユーザーマスターにありません/);
@@ -715,8 +715,16 @@ try {
   Object.assign(mock.db.members.find((m) => m.id === firstPerson), { gender: 'female', birth_year: budgetYear - 32 });
   await page.reload();
   await page.locator('.wage-box').waitFor();
-  assert.match(await page.locator('.wage-box').innerText(), /見る値（令和\d+年・性、年齢階級別賃金）：[\s\S]*女 30～34歳/);
+  assert.match(await page.locator('.wage-box').innerText(), /見る値（令和\d+年・第6-1表 雇用形態、性、年齢階級別賃金の正社員・正職員）：[\s\S]*女 30～34歳/);
   for (let i = 0; i < people; i += 1) await ratioInputs.nth(i).fill(i === 0 ? '294.6' : '258.1');
+  // evidence of the ratio: a PDF kept in the private bucket
+  await page.getByLabel('証跡のファイル').setInputFiles({ name: '令和2年_概況.pdf', mimeType: 'application/pdf', buffer: Buffer.from('%PDF-1.4 test') });
+  await page.getByText('証跡を保存しました。').waitFor();
+  assert.equal(mock.db.budget_attachments.length, 1);
+  assert.match(mock.db.budget_attachments[0].path, new RegExp(`^budget/${budgetYear}/[0-9a-f-]+\\.pdf$`));
+  assert.ok(mock.files.has(mock.db.budget_attachments[0].path), 'the file is stored');
+  await page.getByLabel('証跡のファイル').setInputFiles({ name: 'x.txt', mimeType: 'text/plain', buffer: Buffer.from('x') });
+  await page.getByText('x.txt は PDF・JPEG・PNG ではないため追加できません。').waitFor();
   await page.getByLabel('住宅の月の予算（円）').fill('90,000');
   await page.getByLabel('住宅の備考').fill('更新料を按分');
   await page.getByLabel('通信費の月の予算（円）').fill('6000');
@@ -759,7 +767,7 @@ try {
   assert.match(await page.locator('.ratio-line').innerText(), new RegExp(`${ymNow.slice(0, 4)}年の負担率 .*%`));
   await page.goto(`${appUrl}#/flow/member/${ymNow.slice(0, 4)}`);
   await page.locator('.ratio-table').waitFor();
-  assert.match(await page.locator('.ratio-table').innerText(), /出典：厚生労働省「令和\d+年賃金構造基本統計調査」性、年齢階級別賃金（千円）[\s\S]*見た値：\S+ 女 30～34歳 294.6千円/, 'the basis is the source and the values seen');
+  assert.match(await page.locator('.ratio-table').innerText(), /出典：厚生労働省「令和\d+年賃金構造基本統計調査 結果の概況」第6-1表 雇用形態、性、年齢階級別賃金（正社員・正職員、千円）[\s\S]*見た値：\S+ 女 30～34歳 294.6千円[\s\S]*📎令和2年_概況.pdf/, 'the basis is the source and the values seen');
 
   step('contract amount by period: a new amount from this month, the old one kept for past months');
   await page.goto(`${appUrl}#/edit/contracts/${net.id}`);
