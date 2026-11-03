@@ -75,8 +75,12 @@ export function chooseClasses(classObjs, surveyYear) {
     const name = String(o['@name'] || '');
     const classes = list(o.CLASS).map((c) => ({ code: c['@code'], name: String(c['@name'] || '') }));
     if (id === 'time' || /時間軸/.test(name)) {
-      const hit = classes.find((c) => c.name.startsWith(`${surveyYear}年`));
-      if (!hit) throw new Error(`year ${surveyYear} is not in the table`);
+      // '2024年', '２０２４年', '令和6年' or a code starting with the year
+      const y = String(surveyYear);
+      const hit = classes.find((c) => c.name.normalize('NFKC').replace(/\s/g, '').startsWith(`${y}年`))
+        || classes.find((c) => c.name.normalize('NFKC').includes(reiwa(surveyYear)))
+        || classes.find((c) => String(c.code).startsWith(y));
+      if (!hit) throw new Error(`year ${surveyYear} is not in the table (it has: ${classes.slice(-6).map((c) => `${c.code}=${c.name}`).join(', ')})`);
       fixed[id] = hit.code;
     } else if (/性別/.test(name)) {
       sexDim = id;
