@@ -72,13 +72,13 @@ test('daily run sends each due notification once and removes expired devices', a
     assert.match(delivered[0].headers.authorization, /^vapid t=.+, k=/);
     assert.equal(delivered[0].headers['content-encoding'], 'aes128gcm');
     const payload = decrypt(delivered[0].body, ua, auth);
-    assert.equal(payload.title, '契約の自動更新日: 火災保険');
-    assert.match(payload.body, /^あと7日/);
+    assert.equal(payload.title, '契約の自動更新');
+    assert.match(payload.body, /^火災保険はあと7日（\d+\/\d+）。続けるか解約するか決めましょう。$/);
     assert.equal(payload.url, '#/view/contracts/k1');
     assert.deepEqual(mock.db.push_subscriptions.map((s) => s.id), ['dev1', 'dev2']);
     const choresPush = mock.pushes.filter((p) => p.id === 'dev2').map((p) => decrypt(p.body, ua, auth)).find((p) => p.title.startsWith('今日の家事'));
-    assert.equal(choresPush.title, '今日の家事（2件）');
-    assert.equal(choresPush.body, 'ゴミ出し、郵便物回収');
+    assert.equal(choresPush.title, '今日の家事');
+    assert.equal(choresPush.body, '2件：ゴミ出し、郵便物回収');
     assert.equal(choresPush.url, '#/chores');
     assert.ok(!mock.pushes.filter((p) => p.id === 'dev1').map((p) => decrypt(p.body, ua, auth)).some((p) => p.title.startsWith('今日の家事')),
       'a device without a member gets no chore reminder');
@@ -138,8 +138,8 @@ test('shared account reminder: from the 25th, once a month, only to that member'
     const r = await run('node', [SCRIPT], { env: { ...env, NOTIFY_DATE: '2026-11-25' } });
     const got = mock.pushes.map((p) => ({ id: p.id, ...decrypt(p.body, ua, auth) }));
     assert.deepEqual(got.map((p) => p.id), ['d-shin']);
-    assert.equal(got[0].title, '家計費（11月）');
-    assert.equal(got[0].body, '今月分 90,000円・支払済 87,000円／残り 11,000円');
+    assert.equal(got[0].title, '今月の家計費');
+    assert.equal(got[0].body, '11月は残り 11,000円（今月分 90,000円・支払済 87,000円）。');
     assert.equal(got[0].url, '#/flow/member/2026-11');
     assert.doesNotMatch(r.stdout + r.stderr, /8,000|11,000|しん|基本/, 'amounts and names never appear in public logs');
 
@@ -169,16 +169,16 @@ test('low balance to everyone once per balance date; monthly import reminder to 
     const env = { ...process.env, SUPABASE_URL: apiUrl, SUPABASE_SERVICE_ROLE_KEY: SERVICE_KEY, VAPID_PRIVATE_KEY: b64urlEncode(privateKey32(vapid)), GITHUB_REPOSITORY: 'Owner/home-hub', NOTIFY_HOUR: '9' };
     const r = await run('node', [SCRIPT], { env: { ...env, NOTIFY_DATE: '2026-11-06' } });
     const got = mock.pushes.map((p) => ({ id: p.id, ...decrypt(p.body, ua, auth) }));
-    const low = got.filter((p) => p.title === '共用口座の残高が少なくなっています');
+    const low = got.filter((p) => p.title === '共用口座の残高不足');
     assert.deepEqual(low.map((p) => p.id).sort(), ['d-haru', 'd-shin'], 'everyone');
-    assert.equal(low[0].body, '26,130円（10/23時点）');
-    const imp = got.filter((p) => p.title === '今月の取り込みがまだです');
-    assert.deepEqual(imp.map((p) => [p.id, p.body]), [['d-shin', '銀行の残高']], 'only the bank balance is missing, only to しん');
+    assert.equal(low[0].body, '残高 26,130円（10/23時点）。目安の10万円を下回っています。');
+    const imp = got.filter((p) => p.title === '明細の取り込み');
+    assert.deepEqual(imp.map((p) => [p.id, p.body]), [['d-shin', '今月の銀行の残高がまだです。取り込んでください。']], 'only the bank balance is missing, only to しん');
     assert.doesNotMatch(r.stdout + r.stderr, /26,130/, 'amounts never appear in public logs');
     await run('node', [SCRIPT], { env: { ...env, NOTIFY_DATE: '2026-11-07' } });
     const after = mock.pushes.map((p) => decrypt(p.body, ua, auth));
-    assert.equal(after.filter((p) => p.title === '共用口座の残高が少なくなっています').length, 2, 'once per balance date');
-    assert.equal(after.filter((p) => p.title === '今月の取り込みがまだです').length, 2, 'every day until imported');
+    assert.equal(after.filter((p) => p.title === '共用口座の残高不足').length, 2, 'once per balance date');
+    assert.equal(after.filter((p) => p.title === '明細の取り込み').length, 2, 'every day until imported');
   } finally {
     await mock.stop();
   }

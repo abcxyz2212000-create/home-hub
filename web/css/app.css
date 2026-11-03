@@ -619,6 +619,10 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 0.9rem; }
 .flow-graph .fg-outside svg { color: var(--muted); }
 .flow-graph .fg-label rect { fill: var(--surface); stroke: var(--line); stroke-width: 0.8; }
 .flow-graph .fg-label text { font-size: 11px; fill: var(--ink-2); }
+.flow-graph .fg-tie { fill: none; stroke: var(--muted); stroke-width: 1.2; }
+.flow-graph .fg-dot { fill: var(--muted); }
+.flow-graph .fg-tie-halo { fill: none; stroke: var(--surface); stroke-width: 5; }
+.flow-graph .fg-label rect { stroke-width: 1.2; }
 .flow-graph a:hover rect, .flow-graph a:focus rect { fill: var(--accent-soft); }
 
 /* ---------------------------------------------------------------- person colors (2026-11-01) */
@@ -653,3 +657,7 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 0.9rem; }
 .progress-wrap { margin: 0 0 0.75rem; }
 .progress-caption { text-align: right; margin-top: 0.25rem; }
 .progress-fill { display: block; height: 100%; background: var(--person, var(--accent)); border-radius: 999px; }
+.alert-card { display: flex; align-items: center; gap: 0.75rem; justify-content: space-between; }
+.alert-card .alert-text { min-width: 0; }
+.alert-card .alert-title { font-weight: 700; margin: 0; }
+.alert-card .alert-body { margin: 0.25rem 0 0; }

@@ -15,6 +15,7 @@ import { createZip } from './zip.js';
 import { compressImage } from './image.js';
 import { parseOcrText, receiptMemo, recognizeImage } from './ocr.js';
 import { parseBankRows, monthEndBalances, latestBalance, missingImports, DEFAULT_LOW_BALANCE } from './bank.js';
+import { lowBalanceAlert, importAlert } from './alerts.js';
 import * as push from './push.js';
 import { icon, LEDGER_ICONS } from './icons.js';
 import { timelineChart, barChart, lineChart, flowGraph, urgency } from './charts.js';
@@ -1130,17 +1131,23 @@ function alertCards() {
   if (sharedAccountId() && (isAdmin() || (mine && mine.id === remindTo))) {
     const missing = missingImports(todayJST(), { mf: state.settings.mf_imported_at, bank: state.settings.bank_imported_at });
     if (missing.length) {
-      out.push(h('section', { class: 'card notice alert-card' },
-        h('p', { class: 'with-icon' }, icon('alert'), `今月まだ取り込んでいません: ${missing.join('・')}`),
-        h('a', { class: 'button small', href: `#/flow/ext/${thisYM()}` }, '取り込む')));
+      out.push(alertCard(importAlert(missing), 'alert-card', h('a', { class: 'button small', href: `#/flow/ext/${thisYM()}` }, '取り込む')));
     }
   }
   const last = latestBalance(sharedBalances());
   if (last && last.balance < lowBalanceThreshold()) {
-    out.push(h('section', { class: 'card notice alert-card alert-low' },
-      h('p', { class: 'with-icon' }, icon('alert'), `共用口座の残高が少なくなっています: ${yen(last.balance)}（${dateText(last.date)}時点・基準 ${yen(lowBalanceThreshold())}）`)));
+    out.push(alertCard(lowBalanceAlert(last, lowBalanceThreshold(), todayJST()), 'alert-card alert-low'));
   }
   return out;
+}
+
+// Same wording as the push notification: fixed title, details in the body.
+function alertCard({ title, body }, cls, action) {
+  return h('section', { class: `card notice ${cls}` },
+    h('div', { class: 'alert-text' },
+      h('p', { class: 'with-icon alert-title' }, icon('alert'), title),
+      h('p', { class: 'alert-body' }, body)),
+    action || null);
 }
 
 function bankImportBox() {

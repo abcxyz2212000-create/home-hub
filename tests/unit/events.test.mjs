@@ -61,7 +61,8 @@ test('dueNotifications picks the current stage once', () => {
 
 test('notification text and monthly total', () => {
   const [e] = collectEvents({ items: [{ id: 'x', name: 'テレビ', status: 'active', warranty_until: '2026-10-31' }] }, '2026-10-31');
-  assert.match(notificationText(e).body, /^今日（2026-10-31）/);
+  assert.deepEqual(notificationText(e, '2026-10-31'), { title: '保証期限', body: 'テレビは今日（10/31）。不具合があれば期間内に修理を依頼しましょう。' });
+  assert.match(notificationText(e, '2025-12-31').body, /今日（2026\/10\/31）/, 'the year when it is not this year');
   assert.equal(monthlyTotal([
     { status: 'active', amount: 1000, cycle: 'monthly' },
     { status: 'active', amount: 12000, cycle: 'yearly' },

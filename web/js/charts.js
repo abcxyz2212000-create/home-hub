@@ -245,13 +245,21 @@ export function flowGraph(model, { ariaLabel = 'お金の流れ', width = 360 } 
   // rows passed by a skipping arrow leave room on that side for the arrow and its label
   const SIDE = 96;
   const xOf = (row, j, l, r) => l + ((W - l - r) * (j + 0.5)) / row.length;
+  const LANE_GAP = 10;
+  const laneCount = { left: 0, right: 0 };
+  const sideOf = new Map();
+  for (const e of edges.filter(skips)) {
+    const srcRow = rows[rowOf.get(byId.get(e.from).tier)];
+    const side = xOf(srcRow, srcRow.indexOf(byId.get(e.from)), 0, 0) <= W / 2 ? 'left' : 'right';
+    sideOf.set(e, side);
+    laneCount[side] += 1;
+  }
   const reserved = rows.map(() => ({ l: 0, r: 0 }));
   for (const e of edges.filter(skips)) {
     const ra = rowOf.get(byId.get(e.from).tier);
     const rb = rowOf.get(byId.get(e.to).tier);
-    const srcRow = rows[ra];
-    const left = xOf(srcRow, srcRow.indexOf(byId.get(e.from)), 0, 0) <= W / 2;
-    for (let i = ra + 1; i < rb; i += 1) reserved[i][left ? 'l' : 'r'] = SIDE;
+    const side = sideOf.get(e);
+    for (let i = ra + 1; i < rb; i += 1) reserved[i][side === 'left' ? 'l' : 'r'] = SIDE;
   }
   const pos = new Map();
   let y = 8;
@@ -271,16 +279,20 @@ export function flowGraph(model, { ariaLabel = 'お金の流れ', width = 360 } 
   const boxLayer = s('g', {});
   svg.append(lineLayer, boxLayer, labelLayer);
 
-  const label = (lines, x, yMid, anchor) => {
+  const label = (lines, x, yMid, anchor, color) => {
     const widths = lines.map((l) => textWidth(l));
     const w = Math.max(...widths) + 10;
     const hgt = lines.length * LINE + 6;
     const left = anchor === 'start' ? x : anchor === 'end' ? x - w : x - w / 2;
     const top = yMid - hgt / 2;
-    labelLayer.append(s('g', { class: 'fg-label' },
-      s('rect', { x: left, y: top, width: w, height: hgt, rx: 5 }),
+    const rect = s('rect', { x: left, y: top, width: w, height: hgt, rx: 5 });
+    if (color) rect.style.stroke = color; // the label is framed in the color of its arrow
+    labelLayer.append(s('g', { class: 'fg-label' }, rect,
       lines.map((l, k) => s('text', { x: left + 5, y: top + 4 + LINE * (k + 0.78) }, l))));
   };
+  // side lanes: the labels sit beyond the outermost lane, joined to their own lane by a short
+  // line with a dot, and are stacked so that they never overlap
+  const labelBottom = { left: -Infinity, right: -Infinity };
 
   for (const e of edges) {
     const a = pos.get(e.from);
@@ -298,18 +310,31 @@ export function flowGraph(model, { ariaLabel = 'お金の流れ', width = 360 } 
       const lx = a.x + (b.x - a.x) * 0.15;
       label(lines, Math.min(Math.max(lx, half + 2), W - half - 2), my, 'middle');
     } else {
-      const side = a.x <= W / 2 ? 'left' : 'right';
+      const side = sideOf.get(e);
       lanes[side] += 1;
-      const lx = side === 'left' ? 6 + (lanes[side] - 1) * 8 : W - 6 - (lanes[side] - 1) * 8;
+      const lx = side === 'left' ? 6 + (lanes[side] - 1) * LANE_GAP : W - 6 - (lanes[side] - 1) * LANE_GAP;
       // into the side of the target box
       const tx = side === 'left' ? b.x - b.w / 2 - 2 : b.x + b.w / 2 + 2;
       const ty = y2 + BOX_H / 2;
       d = `M${a.x} ${y1} C${a.x} ${y1 + 22} ${lx} ${y1 + 8} ${lx} ${y1 + 34} L${lx} ${ty - 12} C${lx} ${ty} ${lx} ${ty} ${tx} ${ty}`;
       const lines = e.lines.flatMap((l) => {
         const m = /^(.*?)\s+([\d,]+円.*)$/.exec(l);
-        return m ? [fitText(m[1], SIDE - 18), m[2]] : [fitText(l, SIDE - 18)];
+        const room = SIDE - 18 - (laneCount[side] - 1) * LANE_GAP;
+        return m ? [fitText(m[1], room), m[2]] : [fitText(l, room)];
       });
-      label(lines, side === 'left' ? lx + 5 : lx - 5, (y1 + 34 + ty - 12) / 2, side === 'left' ? 'start' : 'end');
+      const hgt = lines.length * LINE + 6;
+      const outer = side === 'left' ? 6 + (laneCount.left - 1) * LANE_GAP + 8 : W - 6 - (laneCount.right - 1) * LANE_GAP - 8;
+      const ly = Math.max((y1 + 34 + ty - 12) / 2, labelBottom[side] + hgt / 2 + 6);
+      labelBottom[side] = ly + hgt / 2;
+      const tie = s('path', { d: `M${lx} ${ly}L${outer} ${ly}`, class: 'fg-tie' });
+      const dot = s('circle', { cx: lx, cy: ly, r: 3, class: 'fg-dot' });
+      if (from.color) {
+        tie.style.stroke = from.color;
+        dot.style.fill = from.color;
+      }
+      // a white edge under the tie, so that it is seen passing over the inner lanes
+      labelLayer.append(s('path', { d: `M${lx} ${ly}L${outer} ${ly}`, class: 'fg-tie-halo' }), tie, dot);
+      label(lines, outer, ly, side === 'left' ? 'start' : 'end', from.color);
     }
     const path = s('path', { d, class: 'fg-line', 'marker-end': 'url(#fg-arrow)' });
     if (from.color) path.style.stroke = from.color; // CSSOM: allowed by the CSP

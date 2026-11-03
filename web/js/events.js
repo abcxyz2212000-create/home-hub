@@ -2,11 +2,12 @@
 // Pure functions without DOM access: shared by the web app and scripts/notify.mjs.
 // Dates are 'YYYY-MM-DD' strings in Japan time; "day numbers" are days since 1970-01-01.
 
+import { shortDate } from './alerts.js';
 export const EVENT_TYPES = {
-  card_expiry: { label: 'カード有効期限', ledger: 'cards', defaults: [30], purpose: '新カードの登録先を更新しましょう' },
-  annual_fee: { label: '年会費の発生月', ledger: 'cards', defaults: [30], purpose: '継続か解約かを判断しましょう' },
-  contract_renewal: { label: '契約の自動更新日', ledger: 'contracts', defaults: [30, 7], purpose: '継続か解約かを判断しましょう' },
-  warranty: { label: '保証期限', ledger: 'items', defaults: [30], purpose: '不具合があれば期間内に修理を依頼しましょう' },
+  card_expiry: { label: 'カード有効期限', title: 'カードの有効期限', ledger: 'cards', defaults: [30], purpose: '新しいカードの登録先を更新しましょう。' },
+  annual_fee: { label: '年会費の発生月', title: 'カードの年会費', ledger: 'cards', defaults: [30], purpose: '続けるか解約するか決めましょう。' },
+  contract_renewal: { label: '契約の自動更新日', title: '契約の自動更新', ledger: 'contracts', defaults: [30, 7], purpose: '続けるか解約するか決めましょう。' },
+  warranty: { label: '保証期限', title: '保証期限', ledger: 'items', defaults: [30], purpose: '不具合があれば期間内に修理を依頼しましょう。' },
 };
 
 // Upcoming list on the home screen: from 30 days ago to 60 days ahead.
@@ -120,11 +121,12 @@ export function dueNotifications(events) {
   return due;
 }
 
-export function notificationText(e) {
+// Fixed title per kind; the name, the date and what to do go in the body.
+export function notificationText(e, today) {
   const when = e.daysLeft === 0 ? '今日' : `あと${e.daysLeft}日`;
   return {
-    title: `${e.label}: ${e.name}`,
-    body: `${when}（${e.date}）。${EVENT_TYPES[e.type].purpose}`,
+    title: EVENT_TYPES[e.type].title,
+    body: `${e.name}は${when}（${shortDate(e.date, today)}）。${EVENT_TYPES[e.type].purpose}`,
   };
 }
 

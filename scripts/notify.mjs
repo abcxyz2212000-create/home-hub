@@ -16,6 +16,7 @@ import { collectEvents, dueNotifications, notificationText, todayJST } from '../
 import { dueFor } from '../web/js/chores.js';
 import { participantIds, statement, contribution } from '../web/js/shared.js';
 import { missingImports, latestBalance, DEFAULT_LOW_BALANCE } from '../web/js/bank.js';
+import { lowBalanceAlert, importAlert, choresAlert, householdAlert } from '../web/js/alerts.js';
 import { loadVapidKeys, sendPush } from './webpush.mjs';
 
 const LOG_RETENTION_DAYS = 400;
@@ -147,7 +148,6 @@ async function main() {
   const lastBalance = latestBalance(balances);
   const threshold = Number.isFinite(Number(settings.low_balance_threshold)) && settings.low_balance_threshold !== null ? Number(settings.low_balance_threshold) : DEFAULT_LOW_BALANCE;
   const missing = sharedId ? missingImports(today, { mf: settings.mf_imported_at, bank: settings.bank_imported_at }) : [];
-  const yenText = (n) => `${n < 0 ? '−' : ''}${Math.abs(Math.round(n)).toLocaleString('ja-JP')}円`;
 
   let shared = null;
   for (const [g, devices] of ready) {
@@ -156,7 +156,7 @@ async function main() {
     for (const d of due) {
       const key = `${d.key}:${g}`;
       if (sent.has(d.key) || sent.has(key)) continue;
-      const delivered = await sendTo(devices, { ...notificationText(d.event), url: `#/view/${d.event.ledger}/${d.event.id}`, tag: d.key });
+      const delivered = await sendTo(devices, { ...notificationText(d.event, today), url: `#/view/${d.event.ledger}/${d.event.id}`, tag: d.key });
       if (delivered > 0) await mark(key);
       console.log(`- ${d.event.type} ${d.event.date} (stage ${d.stage}d): delivered to ${delivered} device(s)`);
     }
@@ -164,7 +164,7 @@ async function main() {
     if (lastBalance && lastBalance.balance < threshold) {
       const key = `lowbal:${lastBalance.date}:${g}`;
       if (!sent.has(key)) {
-        const delivered = await sendTo(devices, { title: '共用口座の残高が少なくなっています', body: `${yenText(lastBalance.balance)}（${lastBalance.date.slice(5).replace('-', '/')}時点）`, url: '#/flow/ext', tag: 'low-balance' });
+        const delivered = await sendTo(devices, { ...lowBalanceAlert(lastBalance, threshold, today), url: '#/flow/ext', tag: 'low-balance' });
         if (delivered > 0) await mark(key);
         console.log(`- low balance: delivered to ${delivered} device(s)`);
       }
@@ -173,7 +173,7 @@ async function main() {
     if (missing.length && g === settings.import_reminder_member) {
       const key = `import:${today}:${g}`;
       if (!sent.has(key)) {
-        const delivered = await sendTo(devices, { title: '今月の取り込みがまだです', body: missing.join('・'), url: '#/flow/ext', tag: 'imports' });
+        const delivered = await sendTo(devices, { ...importAlert(missing), url: '#/flow/ext', tag: 'imports' });
         if (delivered > 0) await mark(key);
         console.log(`- import reminder: delivered to ${delivered} device(s)`);
       }
@@ -186,9 +186,7 @@ async function main() {
     const list = dueFor(chores, today, g);
     const choreKey = `chores:${today}:${g}`;
     if (list.length > 0 && !sent.has(choreKey)) {
-      const names = list.map((c) => c.name);
-      const body = names.slice(0, 3).join('、') + (names.length > 3 ? ` ほか${names.length - 3}件` : '');
-      const delivered = await sendTo(devices, { title: `今日の家事（${list.length}件）`, body, url: '#/chores', tag: choreKey });
+      const delivered = await sendTo(devices, { ...choresAlert(list.map((c) => c.name)), url: '#/chores', tag: choreKey });
       if (delivered > 0) await mark(choreKey);
       console.log(`- chores: ${list.length} task(s) for a member, delivered to ${delivered} device(s)`);
     }
@@ -201,11 +199,9 @@ async function main() {
       const ym = today.slice(0, 7);
       const key = `shared:${ym}:${g}`;
       if (shared.ids.includes(g) && !sent.has(key)) {
-        const yen = (n) => `${n < 0 ? '−' : ''}${Math.abs(Math.round(n)).toLocaleString('ja-JP')}円`;
         const st = statement(shared.rules, shared.entries, g, ym);
         const delivered = await sendTo(devices, {
-          title: `家計費（${Number(ym.slice(5))}月）`,
-          body: `今月分 ${yen(contribution(st).burden)}・支払済 ${yen(contribution(st).done)}／残り ${yen(st.balance)}`,
+          ...householdAlert(ym, contribution(st)),
           url: `#/flow/member/${ym}`,
           tag: key,
         });
