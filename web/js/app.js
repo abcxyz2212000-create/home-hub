@@ -1773,6 +1773,7 @@ function wageBox(year, ids, use) {
         '毎年12月1日に自動で取りに行き、案を管理者に通知します。')),
     mine && !mine.error ? [
       h('p', {}, `案（${new Date(mine.created_at).toLocaleDateString('ja-JP')} 取得）：`),
+      mine.survey_year < survey ? h('p', { class: 'warn-text small' }, `${reiwa(survey)}の結果がまだ e-Stat から取れないため、${reiwa(mine.survey_year)}の結果です。`) : null,
       h('ul', { class: 'small' }, mine.values.map((v) => h('li', {}, `${memberNick(v.member_id)}：${sourceText(mine, v)}`))),
       h('button', { type: 'button', class: 'small', onclick: () => use(Object.fromEntries(mine.values.map((v) => [v.member_id, v.value])), noteOf(mine)) }, 'この値を使う'),
     ] : null,

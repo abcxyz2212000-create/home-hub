@@ -138,3 +138,24 @@ test('when the database lacks the year, the year\'s own tables are tried', async
     globalThis.fetch = orig;
   }
 });
+
+test('the latest earlier year when neither the database nor a table of the year has it', async () => {
+  const objs = fixture().GET_STATS_DATA.STATISTICAL_DATA.CLASS_INF.CLASS_OBJ;
+  const orig = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const u = new URL(url);
+    if (u.pathname.endsWith('/getStatsList')) return new Response(JSON.stringify({ GET_STATS_LIST: { RESULT: { STATUS: 0 }, DATALIST_INF: {} } }));
+    if (u.pathname.endsWith('/getMetaInfo')) return new Response(JSON.stringify({ GET_META_INFO: { RESULT: { STATUS: 0 }, METADATA_INF: { CLASS_INF: { CLASS_OBJ: objs } } } }));
+    assert.equal(u.searchParams.get('cdTime'), '2024000000', 'the latest year before 2025');
+    return new Response(JSON.stringify(fixture()));
+  };
+  try {
+    const r = await fetchWages(2025, 'k');
+    assert.equal(r.usedYear, 2024);
+    assert.match(r.notes.join(' '), /used 2024 instead of 2025/);
+    const p = buildProposal({ budgetYear: 2027, members: [{ id: 'a', nickname: 'a', gender: 'male', birth_year: 1995 }, { id: 'b', nickname: 'b', gender: 'female', birth_year: 2000 }], table: r.rows, usedYear: r.usedYear });
+    assert.equal(p.survey_year, 2024);
+  } finally {
+    globalThis.fetch = orig;
+  }
+});
