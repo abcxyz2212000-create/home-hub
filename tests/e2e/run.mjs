@@ -437,16 +437,16 @@ try {
   await save();
   await page.locator('.shared-card').waitFor();
   const card = await page.locator('.shared-card').innerText();
-  assert.match(card, /先月の残り\s+69,500円\s+今月分\s+＋70,000円\s+合計\s+139,500円/);
-  assert.match(card, /入金\s+−100,000円\s+立替\s+−3,500円/, 'dアニ 500 (recurring) + 管理費 3,000 (one-off)');
+  assert.match(card, /計画（払う額）\s+先月の残り\s+69,500円\s+今月分\s+＋70,000円\s+＝ 払う額\s+139,500円/);
+  assert.match(card, /実績（払った額）\s+入金\s+100,000円\s+立替\s+3,500円\s+＝ 払った額\s+103,500円/, 'dアニ 500 (recurring) + 管理費 3,000 (one-off)');
   assert.match(card, /残り（来月へ）\s+36,000円/, '69,500 carried + 70,000 - (100,000 + 3,500)');
-  assert.match(card, /支払済 103,500円／139,500円/);
+  assert.match(card, /払った額 103,500円／払う額 139,500円（74%）/);
   const monthSheet = await page.locator('.shared-table').innerText();
   assert.match(monthSheet, /先月の残り\s+69,500円/);
-  assert.match(monthSheet, /今月分（計）\s+70,000円\s+合計\s+139,500円/);
-  assert.match(monthSheet, /今月分\s+基本\s+70,000円[\s\S]*支払い\s+入金\s+100,000円\s+立替（定例）: dアニ\s+500円\s+立替（臨時）: 管理費\s+3,000円/);
+  assert.match(monthSheet, /今月分: 基本\s+70,000円[\s\S]*＝ 払う額\s+139,500円/);
+  assert.match(monthSheet, /計画（払う額）[\s\S]*実績（払った額）\s+入金\s+100,000円\s+立替（定例）: dアニ\s+500円\s+立替（臨時）: 管理費\s+3,000円/);
   assert.match(await page.locator('.month-label').innerText(), new RegExp(`${ymLabel(ymNow)}\\s*今月`));
-  assert.match(monthSheet, /支払済（計）\s+103,500円/);
+  assert.match(monthSheet, /＝ 払った額\s+103,500円/);
   await page.getByRole('img', { name: '人ごとの残りの推移' }).waitFor();
   await page.screenshot({ path: join(OUT, 'shared.png'), fullPage: true });
   await page.getByRole('link', { name: '前の月' }).click();
@@ -509,10 +509,10 @@ try {
   assert.deepEqual(mock.db.shared_rules.filter((x) => x.contract_id === dContract.id).map((x) => [x.amount, x.start_ym, x.end_ym]).sort(),
     [[-500, ymPrev, ymPrev], [-550, ymNow, null]].sort());
   await page.goto(`${appUrl}#/shared/${ymNow}`);
-  assert.match(await page.locator('.shared-card').innerText(), /立替\s+−3,550円/, 'dアニ 550 from this month + 管理費 3,000');
+  assert.match(await page.locator('.shared-card').innerText(), /立替\s+3,550円/, 'dアニ 550 from this month + 管理費 3,000');
   await page.goto(`${appUrl}#/shared/${ymPrev}`);
   await page.getByRole('heading', { name: ymLabel(ymPrev), exact: true }).waitFor();
-  assert.match(await page.locator('.shared-card').innerText(), /立替\s+−500円/, 'last month unchanged');
+  assert.match(await page.locator('.shared-card').innerText(), /立替\s+500円/, 'last month unchanged');
   const linkedRule = mock.db.shared_rules.find((x) => x.contract_id === dContract.id && !x.end_ym);
   await page.goto(`${appUrl}#/shared-rule/${linkedRule.id}`);
   await page.getByRole('link', { name: '契約「dアニ」を開く' }).waitFor();
