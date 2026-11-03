@@ -53,6 +53,7 @@ test('actual of a month: the shared account by 大項目 plus 立替; people\'s 
     { amount: -800, category: '日用品', counted: false, transfer: false, description: '対象外' },
     { amount: -2000, category: '趣味・娯楽', counted: true, transfer: false, description: '本', personal_member_id: 'a' },
     { amount: 70000, category: '収入', counted: true, transfer: false, description: '入金', deposit_entry_id: 'd' },
+    { amount: 42, category: '収入', counted: true, transfer: false, description: '預金利息' },
   ];
   const shared = {
     rules: [{ id: 'r1', member_id: 'a', label: '基本', amount: 70000, start_ym: '2026-01' },

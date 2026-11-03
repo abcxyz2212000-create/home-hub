@@ -106,6 +106,7 @@ export function monthActual({ txs, shared, members, memberIds, mapping, contract
     if (!t.counted || t.transfer) continue;
     if (t.deposit_entry_id || transferMember(t, members)) continue; // money of the people, not spending
     if (t.personal_member_id) continue; // one person's own purchase, settled separately
+    if (t.category === '収入') continue; // interest and other income: not spending (as in the former spreadsheet)
     const v = -t.amount; // refunds lower the spending of their 大項目
     add(t.category || '未分類', v);
     fromAccount += v;
