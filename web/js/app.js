@@ -1658,7 +1658,7 @@ function proposalCard(b, ym) {
   });
   return h('section', { class: 'card' },
     h('h2', { class: 'with-icon' }, icon('user'), '今月分の内訳', helpButton('今月分の内訳',
-      '各人の今月分（負担額）＝ 二人の負担額の合計 × 負担率 です（100円単位）。',
+      ...RATIO_FORMULA_HELP,
       '基本の額は年の途中では変わりません。来年の予算を保存すると、その年の1月から「基本」に自動で入ります。')),
     h('p', { class: 'muted small' }, `二人の負担額の合計 月 ${yen(p.total)}（支出の予算 ${yen(p.spending)} ＋ 貯蓄 ${yen(p.savings)}）`),
     h('div', { class: 'table-wrap' }, h('table', { class: 'table' },
@@ -1851,6 +1851,14 @@ function wageBox(year, ids) {
     h('p', { class: 'small' }, '見た値（千円）を、下のそれぞれの「賃金（千円）」に入れてください。'));
 }
 
+// How the ratio and each person's 負担額 are calculated (shown in the help of the screens about them).
+const RATIO_FORMULA_HELP = [
+  '負担率 ＝ 本人の賃金 ÷（二人の賃金の合計）。計算には端数を切らない値を使います。',
+  '画面の％表示は整数です。各人の値を小数点以下切り捨てにし、合計が100％に足りない分は、切り捨てた小数部分が大きい人から1％ずつ足します（最大剰余法）。',
+  '負担額 ＝ 二人の負担額の合計 × 負担率（端数を切らない値）を、100円単位に四捨五入します。四捨五入で合計とずれた分（数十円）は、負担率の大きい人に足します。',
+  '例（2026年）：しん 359.5 ÷（359.5 ＋ 299.6）＝ 0.54544…（55％）、はる 0.45455…（45％）。170,210円 × 0.45455… ＝ 77,370.5円 → 77,400円、しん 92,839.5円 → 92,800円、合計との差10円をしんに足して 92,810円。',
+];
+
 // ---- budget editor (administrators)
 
 function parseYen(v, { min = 0, max = MAX_BUDGET } = {}) {
@@ -1951,7 +1959,7 @@ function renderBudget(yearParam) {
         wageBox(year, ids),
         weights.map((w) => h('div', { class: 'field' },
           h('div', { class: 'label-row' }, h('label', { for: `ratio-${w.id}` }, `${memberNick(w.id)}の賃金（千円）`),
-            helpButton('賃金（千円）', '統計で見た値をそのまま入れます（例：294.6）。負担率は二人の値の比で、その場で計算します。', '比率（57 と 43）を入れることもできます（合計が100のときは比率として扱います）。')),
+            helpButton('賃金（千円）', '統計で見た値をそのまま入れます（例：294.6）。負担率は二人の値の比で、その場で計算します。', '比率（57 と 43）を入れることもできます（合計が100のときは比率として扱います）。', ...RATIO_FORMULA_HELP)),
           w.input)),
         pctOut,
         shareOut,
@@ -2317,8 +2325,8 @@ function ratioHistoryCard(year) {
   };
   const personHead = (id, text) => h('th', { class: `num person-name ${personClass(id)}` }, `${memberNick(id)}${text}`);
   return h('section', { class: 'card' },
-    h('h2', { class: 'with-icon' }, '負担率と負担額の推移', helpButton('負担率と負担額', '各年の負担率と、各人の月の負担額（その年に使った額）です。負担額 ＝ 二人の負担額の合計 × 負担率。',
-      'Y年の負担率は、Y−2年の賃金構造基本統計調査の性、年齢階級別賃金で、二人それぞれの性別とY年の年齢階級の値の比です。', '値は予算の編集画面で入れます。')),
+    h('h2', { class: 'with-icon' }, '負担率と負担額の推移', helpButton('負担率と負担額', '各年の負担率と、各人の月の負担額（その年に使った額）です。',
+      'Y年の負担率は、Y−2年の賃金構造基本統計調査（結果の概況 第6-1表、正社員・正職員）で、二人それぞれの性別とY年の年齢階級の賃金の比です。', ...RATIO_FORMULA_HELP, '値は予算の編集画面で入れます。')),
     h('div', { class: 'table-wrap' }, h('table', { class: 'table ratio-table' },
       h('thead', {}, h('tr', {},
         h('th', {}, '年'),
