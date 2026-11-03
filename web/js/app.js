@@ -498,7 +498,9 @@ const NOTICE_BODY_MAX = 1000;
 
 const noticeDelivered = (n) => new Date(n.deliver_at).getTime() <= Date.now();
 const noticeForMe = (n) => !n.to_members || n.to_members.length === 0 || n.to_members.includes(me().id);
-const noticeRead = (n) => state.noticeReads.some((r) => r.notice_id === n.id && r.member_id === me().id);
+const myRead = (n) => state.noticeReads.find((r) => r.notice_id === n.id && r.member_id === me().id);
+const noticeRead = (n) => Boolean(myRead(n));
+const noticeHidden = (n) => Boolean(myRead(n) && myRead(n).hidden);
 const unreadNotices = () => state.notices.filter((n) => noticeDelivered(n) && noticeForMe(n) && !noticeRead(n));
 
 // The top bar: today's date (Japan) and who is logged in. The date is checked every minute.
@@ -541,7 +543,16 @@ function recipientsText(n) {
   return !n.to_members || n.to_members.length === 0 ? '全員' : n.to_members.map((id) => memberNick(id)).join('・');
 }
 
-function noticeItem(n, { unread = false, pending = false } = {}) {
+// Marks notices as read (and, with hidden, clears them from my list or brings them back).
+async function setNoticeReads(list, values = {}) {
+  if (list.length === 0) return;
+  const mine = me().id;
+  await db.upsertRows('notice_reads', list.map((n) => ({ notice_id: n.id, member_id: mine, ...values })), 'notice_id,member_id');
+  state.noticeReads = await db.selectAll('notice_reads', 'read_at.asc');
+  updateBell();
+}
+
+function noticeItem(n, { unread = false, pending = false, actions = [] } = {}) {
   const from = n.kind === 'system' || !n.from_member ? 'アプリ' : memberNick(n.from_member);
   return h('div', { class: `notice${unread ? ' unread' : ''}` },
     h('div', { class: 'notice-title' }, n.title),
@@ -549,6 +560,7 @@ function noticeItem(n, { unread = false, pending = false } = {}) {
     h('div', { class: 'notice-actions muted small' },
       h('span', {}, `${from} → ${recipientsText(n)}・${pending ? `${formatTime(n.deliver_at)}に送る予定` : formatTime(n.deliver_at)}`),
       n.url && /^#\//.test(n.url) ? h('a', { href: n.url }, '開く') : null,
+      ...actions.map(([label, fn]) => h('button', { type: 'button', class: 'link', onclick: (ev) => busy(ev.currentTarget, fn) }, label)),
       pending ? h('button', { type: 'button', class: 'link', onclick: (ev) => busy(ev.currentTarget, async () => {
         if (!confirm('この予約を取り消しますか？')) return;
         await db.deleteWhere('notices', 'id', n.id);
@@ -566,12 +578,32 @@ function renderNotices(sub) {
   const mine = me().id;
   const pending = state.notices.filter((n) => n.kind === 'message' && n.from_member === mine && !n.delivered_at && !noticeDelivered(n))
     .sort((a, b) => a.deliver_at.localeCompare(b.deliver_at));
-  const list = state.notices.filter(noticeDelivered);
+  const delivered = state.notices.filter(noticeDelivered);
+  const hiddenCount = delivered.filter(noticeHidden).length;
+  const showHidden = state.showHiddenNotices;
+  const list = delivered.filter((n) => showHidden || !noticeHidden(n));
   const unread = new Set(unreadNotices().map((n) => n.id));
+  const clearable = list.filter((n) => !unread.has(n.id) && !noticeHidden(n));
+  const actionsOf = (n) => {
+    if (unread.has(n.id)) return [];
+    return noticeHidden(n)
+      ? [['戻す', async () => { await setNoticeReads([n], { hidden: false }); render(); }]]
+      : [['消す', async () => { await setNoticeReads([n], { hidden: true }); render(); }]];
+  };
   setView('お知らせ', pageHead({ title: 'お知らせ', icon: 'bell', action: h('a', { class: 'button primary', href: '#/notices/new' }, 'メッセージを送る'),
-    help: ['お知らせ', 'アプリから端末に送った通知と、メッセージが並びます。二人とも全部見られます。', 'メッセージは送ってから10分ほどで、宛先の人の端末に通知が届きます（GitHub の都合で遅れることがあります）。予約したものは、その日時のあとに届きます。', '1年たったものは消えます。'] }),
+    help: ['お知らせ', 'アプリから端末に送った通知と、メッセージが並びます。二人とも全部見られます。', 'メッセージは送ってから10分ほどで、宛先の人の端末に通知が届きます（GitHub の都合で遅れることがあります）。予約したものは、その日時のあとに届きます。', '「消す」は自分の画面から消すだけで、相手には残ります。1年たったものは全員から消えます。'] }),
     pending.length ? h('section', { class: 'card' }, h('h2', {}, '予約中'), pending.map((n) => noticeItem(n, { pending: true }))) : null,
-    h('section', { class: 'card' }, list.length ? list.map((n) => noticeItem(n, { unread: unread.has(n.id) })) : h('p', { class: 'muted' }, 'お知らせはまだありません。')));
+    h('section', { class: 'card' },
+      h('div', { class: 'button-row notice-tools' },
+        clearable.length ? h('button', { type: 'button', class: 'small', onclick: (ev) => busy(ev.currentTarget, async () => {
+          await setNoticeReads(clearable, { hidden: true });
+          toast(`既読の${clearable.length}件を消しました（自分の画面だけ）。`);
+          render();
+        }) }, '既読をまとめて消す') : null,
+        hiddenCount ? h('button', { type: 'button', class: 'small', onclick: () => { state.showHiddenNotices = !showHidden; render(); } },
+          showHidden ? '消したものを隠す' : `消したものも表示（${hiddenCount}件）`) : null),
+      list.length ? list.map((n) => noticeItem(n, { unread: unread.has(n.id), actions: actionsOf(n) }))
+        : h('p', { class: 'muted' }, hiddenCount ? '表示するお知らせはありません（消したものは上のボタンで表示できます）。' : 'お知らせはまだありません。')));
   // opening the page marks what was for me as read (the dots stay until the next visit)
   if (unread.size) {
     const rows = [...unread].map((id) => ({ notice_id: id, member_id: mine }));
@@ -580,6 +612,16 @@ function renderNotices(sub) {
       updateBell();
     }).catch((e) => console.error('mark notices read failed', e));
   }
+}
+
+// ホーム: the unread お知らせ for me (or everyone), each can be marked as read here.
+function unreadNoticesCard() {
+  const list = unreadNotices();
+  if (list.length === 0) return null;
+  return h('section', { class: 'card unread-notices' },
+    sectionHead('bell', `未読のお知らせ（${list.length}件）`, { href: '#/notices', text: 'お知らせへ' }),
+    list.slice(0, 10).map((n) => noticeItem(n, { unread: true, actions: [['既読にする', async () => { await setNoticeReads([n]); render(); }]] })),
+    list.length > 10 ? h('p', { class: 'muted small' }, `ほか${list.length - 10}件はお知らせで見られます。`) : null);
 }
 
 function renderNoticeForm() {
@@ -872,6 +914,7 @@ function renderHome() {
   setView('ホーム',
     pageHead({ title: `${m}月${d}日（${weekdayJa(today)}）`, icon: 'home' }),
     alertCards(),
+    unreadNoticesCard(),
     backupReminder(),
     pushHint,
     h('div', { class: 'dash-grid' },
@@ -1298,7 +1341,7 @@ function lowBalanceThreshold() {
 }
 
 // Alerts for the top of ホーム / お金: imports not done this month (for the person who imports and
-// administrators), and a low balance (everyone).
+// administrators). A low balance is in お知らせ.
 function alertCards() {
   const out = [];
   const mine = me();
@@ -1309,10 +1352,7 @@ function alertCards() {
       out.push(alertCard(importAlert(missing), 'alert-card', h('a', { class: 'button small', href: `#/flow/ext/${thisYM()}` }, '取り込む')));
     }
   }
-  const last = latestBalance(sharedBalances());
-  if (last && last.balance < lowBalanceThreshold()) {
-    out.push(alertCard(lowBalanceAlert(last, lowBalanceThreshold(), todayJST()), 'alert-card alert-low'));
-  }
+  // a low balance is an お知らせ from the app (made when the bank statement is imported)
   return out;
 }
 
@@ -1350,6 +1390,7 @@ function bankImportBox() {
       }
       await saveSetting('bank_imported_at', new Date().toISOString());
       state.balances = await db.selectAll('account_balances', 'date.asc');
+      await recordLowBalance();
       toast(`残高を取り込みました（${balances.length}日分）。`);
       input.value = '';
       render();
@@ -1361,6 +1402,16 @@ function bankImportBox() {
     h('div', { class: 'button-row' }, h('label', { class: 'button' }, '銀行の取引明細 CSV を選ぶ', input),
       helpButton('銀行の残高の取り込み', '楽天銀行の取引明細の CSV（取引日・入出金・取引後残高・入出金内容）を選びます。', '日ごとの残高だけを保存します（明細はマネーフォワードのものを使うので二重になりません）。同じ期間を取り込み直しても重複しません。')),
     status);
+}
+
+// A low balance after an import becomes an お知らせ for everyone at once (the same key as the
+// notification job uses, so there is one per balance date). Devices get it at each person's hour.
+async function recordLowBalance() {
+  const last = latestBalance(sharedBalances());
+  if (!last || last.balance >= lowBalanceThreshold()) return;
+  const text = lowBalanceAlert(last, lowBalanceThreshold(), todayJST());
+  await db.insertIgnore('notices', [{ kind: 'system', key: `lowbal:${last.date}`, to_members: [], title: text.title, body: text.body, url: '#/flow/ext', delivered_at: new Date().toISOString() }], 'key');
+  await reloadNotices();
 }
 
 // Balance of the shared account (as of the last imported day) and its month-end history.
@@ -1766,25 +1817,25 @@ function noBudgetCard(year) {
 // 予算・実績・差 of income, spending and savings.
 function budgetSummaryTable(b, actual, months) {
   const p = proposal(b.rows, b.year, budgetMemberIds());
-  const lines = [
-    ['収入（二人の負担額）', p.total * months, actual.income, false],
-    ['支出', p.spending * months, actual.spendingTotal, true],
-    ['貯蓄', p.savings * months, actual.income - actual.spendingTotal, false],
-  ];
+  const n = (v) => signedYen(v).replace('円', '');
+  const line = ([label, plan, act, costLike]) => {
+    const diff = act - plan;
+    const bad = costLike ? diff > 0 : diff < 0;
+    return h('tr', {}, h('th', { scope: 'row' }, label), h('td', { class: 'num' }, n(plan)), h('td', { class: 'num' }, n(act)),
+      h('td', { class: `num${bad ? ' over' : ''}` }, diff > 0 ? `+${n(diff)}` : n(diff)));
+  };
+  // the breakdown of the income (both people together): what came in + what has not come in yet
+  // (when earlier months were paid late, what came in includes them and they are taken off)
   const unpaid = actual.income - actual.paid;
+  const sub = (label, v, cls = '') => h('tr', { class: 'sub' }, h('th', { scope: 'row' }, label), h('td', {}), h('td', { class: `num${cls}` }, n(v)), h('td', {}));
   return h('div', { class: 'table-wrap' }, h('table', { class: 'table budget-summary' },
     h('thead', {}, h('tr', {}, h('th', {}, '（円）'), h('th', { class: 'num' }, '予算'), h('th', { class: 'num' }, '実績'), h('th', { class: 'num' }, '差'))),
-    h('tbody', {}, lines.map(([label, plan, act, costLike]) => {
-      const diff = act - plan;
-      const bad = costLike ? diff > 0 : diff < 0;
-      const n = (v) => signedYen(v).replace('円', '');
-      return h('tr', {}, h('th', { scope: 'row' }, label), h('td', { class: 'num' }, n(plan)), h('td', { class: 'num' }, n(act)),
-        h('td', { class: `num${bad ? ' over' : ''}` }, diff > 0 ? `+${n(diff)}` : n(diff)));
-    }),
-    // cash: what came in, and what is still to come (late deposits)
-    h('tr', { class: 'sub' }, h('th', { scope: 'row' }, '（参考）払われた額'), h('td', { class: 'num' }, '—'), h('td', { class: 'num' }, signedYen(actual.paid).replace('円', '')), h('td', {})),
-    h('tr', { class: 'sub' }, h('th', { scope: 'row' }, unpaid >= 0 ? '（参考）未入金' : '（参考）前の月の分の入金'), h('td', { class: 'num' }, '—'),
-      h('td', { class: `num${unpaid > 0 ? ' due' : ''}` }, yen(Math.abs(unpaid)).replace('円', '')), h('td', {})))));
+    h('tbody', {},
+      line(['収入（二人の負担額）', p.total * months, actual.income, false]),
+      sub('└ 入った額（入金＋立替）', actual.paid),
+      unpaid >= 0 ? sub('└ 未入金（二人の合計）', unpaid, unpaid > 0 ? ' due' : '') : sub('└ 前の月の分の入金', unpaid),
+      line(['支出', p.spending * months, actual.spendingTotal, true]),
+      line(['貯蓄', p.savings * months, actual.income - actual.spendingTotal, false]))));
 }
 
 // One row per 大項目 with a bar of how much of its budget was used (orange beyond 100%).
@@ -1862,7 +1913,7 @@ function budgetMonthView(ym) {
       cardHead('yen', `${ymLabel(ym)}の予算と実績`, {
         help: ['実績は、共用口座の明細（マネーフォワードの大項目別。振替・対象外・二人との入出金・○○負担は除く）と、二人の立替（定例・臨時）の合計です。',
           '収入は、二人がその月に払うべき額（各人の今月分）の合計です。入金が遅れても、その月の収入として数えます。貯蓄 ＝ 収入 − 支出。',
-          '（参考）払われた額は、その月に実際に入った額（入金＋立替）です。未入金 ＝ 収入 − 払われた額（マイナスのときは、前の月の分がこの月に払われた額）。',
+          '収入の内訳：入った額は、その月に二人から実際に入った額（入金＋立替）。未入金は、二人の合計でまだ入っていない額（収入 − 入った額）。前の月の分がこの月にまとめて入ったときは「前の月の分の入金」として差し引きます。',
           txs.length === 0 ? 'この月の明細はまだ取り込まれていません（立替だけの集計です）。' : ''].filter(Boolean),
         action: editLink,
       }),

@@ -678,12 +678,16 @@ try {
   assert.ok(mock.db.settings.some((x) => x.key === 'bank_imported_at'));
   const balanceText = await page.locator('#view').innerText();
   assert.match(balanceText, /3時点\s*26,130円/);
-  assert.match(balanceText, /共用口座の残高不足\s+残高 26,130円（\d+\/3時点）。目安の10万円を下回っています。/, 'below the default 100,000円');
+  assert.doesNotMatch(balanceText, /共用口座の残高不足/, 'no alert card: a low balance is an お知らせ');
+  const lowNotice = mock.db.notices.filter((n) => n.key === `lowbal:${ymNow}-03`);
+  assert.equal(lowNotice.length, 1, 'below the default 100,000円: an お知らせ for everyone at once');
+  assert.match(lowNotice[0].body, /^残高 26,130円（\d+\/3時点）。目安の10万円を下回っています。/);
   await page.getByLabel('銀行の取引明細の CSV ファイル').setInputFiles({ name: 'bank.csv', mimeType: 'text/csv', buffer: bankSjis });
   await page.getByText(/2日分の残高/).waitFor();
   await page.getByRole('button', { name: '取り込む' }).first().click();
   await page.getByText('残高を取り込みました（2日分）。').waitFor();
   assert.equal(mock.db.account_balances.length, 2, 'importing again does not duplicate');
+  assert.equal(mock.db.notices.filter((n) => n.key === `lowbal:${ymNow}-03`).length, 1, 'one お知らせ per balance date');
 
   step('budget: set per 大項目, actual from the statement and 立替, 今月分 proposed and switched from next month');
   await page.goto(`${appUrl}#/flow/budget/${ymNow}`);
@@ -745,7 +749,7 @@ try {
   await page.getByRole('link', { name: '年間' }).click();
   await page.getByText('支出の累計').waitFor();
   const yearBudgetText = await page.locator('#view').innerText();
-  assert.match(yearBudgetText, /（参考）払われた額/);
+  assert.match(yearBudgetText, /収入（二人の負担額）[^\n]*\n└ 入った額（入金＋立替）[^\n]*\n└ (未入金（二人の合計）|前の月の分の入金)[^\n]*\n支出/);
   if (Number(ymNow.slice(5)) < 12) assert.match(yearBudgetText, /年末の貯蓄の見込み [−\d,]+円/);
   await page.screenshot({ path: join(OUT, 'budget.png'), fullPage: true });
 
@@ -990,11 +994,11 @@ try {
   await strangerCtx.close();
 
   step('お知らせ: app notices for everyone, messages now or scheduled, cancel, read marks and the bell');
-  mock.db.notices.push({ id: crypto.randomUUID(), kind: 'system', key: 'e2e-lowbal', from_member: null, to_members: [], title: '共用口座の残高不足', body: '残高が少なくなっています。', url: '#/flow/ext', deliver_at: nowIso, delivered_at: nowIso, created_at: nowIso });
   await page.goto(`${appUrl}#/`);
   await page.reload();
   await page.locator('#bell .bell-count').waitFor();
   assert.equal(await page.locator('#bell .bell-count').innerText(), '1');
+  assert.match(await page.locator('.unread-notices').innerText(), /未読のお知らせ（1件）[\s\S]*共用口座の残高不足/, 'unread お知らせ on ホーム');
   // the top bar: today's date and who is logged in
   assert.match(await page.locator('#head-date').innerText(), /^\d{1,2}\/\d{1,2}\([日月火水木金土]\)$/);
   assert.equal((await page.locator('#head-user').innerText()).trim(), '共通（管理者）');
@@ -1003,6 +1007,16 @@ try {
   assert.match(await page.locator('#view').innerText(), /アプリ → 全員/);
   await page.waitForFunction(() => document.querySelector('#bell .bell-count').hidden);
   assert.equal(mock.db.notice_reads.length, 1, 'opening the page marks it as read');
+  // clear a read one from my own list, show it again, bring it back
+  await page.reload();
+  await page.getByRole('button', { name: '消す', exact: true }).click();
+  await page.getByRole('button', { name: '消したものも表示（1件）' }).waitFor();
+  assert.equal(await page.getByText('共用口座の残高不足').count(), 0);
+  assert.equal(mock.db.notice_reads[0].hidden, true);
+  await page.getByRole('button', { name: '消したものも表示（1件）' }).click();
+  await page.getByRole('button', { name: '戻す', exact: true }).click();
+  await page.getByText('共用口座の残高不足').waitFor();
+  assert.equal(mock.db.notice_reads[0].hidden, false);
   await page.getByRole('link', { name: 'メッセージを送る' }).click();
   await page.locator('#notice-title').waitFor();
   const others = await page.locator('.recipients input:checked').count();

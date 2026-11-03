@@ -464,19 +464,30 @@ do $$ declare me uuid := public.current_member_id(); begin
     raise exception 'member sent as someone else'; exception when insufficient_privilege then null; end;
   begin insert into public.notices (kind, from_member, title) values ('system', me, 'x');
     raise exception 'member wrote a system notice'; exception when insufficient_privilege then null; end;
+  begin insert into public.notices (kind, title) values ('system', 'x');
+    raise exception 'a member who is not an administrator wrote a system notice'; exception when insufficient_privilege then null; end;
   if (select count(*) from public.notices) <> 3 then raise exception 'sender does not see their notices'; end if;
   insert into public.notice_reads (notice_id, member_id) select id, me from public.notices where kind = 'system';
+  update public.notice_reads set hidden = true;
+  if not (select hidden from public.notice_reads) then raise exception 'cannot hide own notice'; end if;
 end $$;
 select pg_temp.login('owner@example.com');
 do $$ begin
   if (select count(*) from public.notices) <> 2 then raise exception 'others see a scheduled message (or miss a delivered one)'; end if;
   if (select count(*) from public.notice_reads) <> 1 then raise exception 'read marks are not visible'; end if;
+  update public.notice_reads set hidden = false;
+  if not (select hidden from public.notice_reads) then raise exception 'changed someone else''s read mark'; end if;
   delete from public.notices where title = '今すぐ';
   delete from public.notice_reads;
   if (select count(*) from public.notices) <> 2 or (select count(*) from public.notice_reads) <> 1 then raise exception 'deleted someone else''s notice or read mark'; end if;
   begin insert into public.notice_reads (notice_id, member_id) select n.id, m.id from public.notices n, public.members m where m.email = 'adv@example.com' and n.kind = 'message';
     raise exception 'marked as read for someone else'; exception when insufficient_privilege then null; end;
 end $$;
+-- an administrator records a low balance found by a bank statement import
+insert into public.notices (kind, key, title) values ('system', 'lowbal:2026-03-02', '残高不足');
+reset role;
+delete from public.notices where key = 'lowbal:2026-03-02';
+set role authenticated;
 select pg_temp.login('adv@example.com');
 do $$ begin
   delete from public.notices where title = '予約';

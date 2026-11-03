@@ -104,6 +104,8 @@ h3 { font-size: 0.95rem; margin: 1.25rem 0 0.5rem; }
 .notice.unread .notice-title::before { content: ''; width: 0.5rem; height: 0.5rem; border-radius: 50%; background: var(--critical); flex: none; }
 .notice-body { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0.25rem 0; }
 .notice-actions { display: flex; gap: 0.6rem; align-items: center; }
+.notice-tools { justify-content: flex-end; margin-bottom: 0.2rem; }
+.notice-tools:empty { display: none; }
 .recipients { display: flex; flex-wrap: wrap; gap: 0.4rem 1rem; }
 .recipients label { display: inline-flex; align-items: center; gap: 0.3rem; font-weight: 400; }
 
