@@ -1758,11 +1758,10 @@ function budgetYearView(year) {
 }
 
 // The ratio from the wage statistics: what to look up for each person, and where.
-function wageBox(year, ids, use) {
+function wageBox(year, ids) {
   const survey = surveyYearFor(year);
   const people = ids.map((id) => state.members.find((m) => m.id === id)).filter(Boolean);
   const { items, problems } = lookups(people, year);
-  const note = () => `${reiwa(survey)}賃金構造基本統計調査（一般労働者・性、年齢階級別の賃金）：${items.map((it) => `${memberNick(it.member_id)} ${lookupText(survey, it)}`).join('／')}`;
   return h('div', { class: 'wage-box notice-text' },
     h('div', { class: 'label-row' }, h('strong', {}, '賃金統計から決める'),
       helpButton('賃金統計の負担率', `${year}年の予算には、${reiwa(survey)}（${survey}年）の賃金構造基本統計調査を使います（2年前の結果）。`,
@@ -1773,7 +1772,7 @@ function wageBox(year, ids, use) {
     problems.length ? h('p', { class: 'warn-text small' }, `${problems.join('')}設定 → ユーザー で入れてください。`) : null,
     h('p', { class: 'small' },
       h('a', { href: overviewUrl(survey), target: '_blank', rel: 'noopener noreferrer' }, `${reiwa(survey)}の結果の概況（厚生労働省）`)),
-    items.length ? h('button', { type: 'button', class: 'small', onclick: () => use({}, note()) }, 'メモに出典を書く') : null);
+    h('p', { class: 'small' }, '見た値（千円）を、それぞれの「基準の値」に入れてください。'));
 }
 
 // ---- budget editor (administrators)
@@ -1863,12 +1862,8 @@ function renderBudget(yearParam) {
             helpButton('基準の値', '負担率は、二人の基準の値の比で決まります。', '比率（57 と 43）をそのまま入れても、統計の金額（294.6 と 258.1 など）を入れても構いません。')),
           w.input)),
         pctOut,
-        wageBox(year, ids, (values, text) => {
-          for (const w of weights) if (values[w.id] !== undefined) w.input.value = String(values[w.id]);
-          note.value = text;
-          update();
-        }),
-        h('div', { class: 'field' }, h('label', { for: 'ratio-note' }, '負担率のメモ（参照した資料など）'), note)),
+        wageBox(year, ids),
+        h('div', { class: 'field' }, h('label', { for: 'ratio-note' }, '負担率のメモ（任意）'), note)),
       h('div', { class: 'actions sticky-actions' }, save),
     ];
   };
@@ -2201,18 +2196,29 @@ function memberYearView(year) {
   return [...cards, ratioHistoryCard(year)];
 }
 
-// The ratio of the people in a year and where it comes from (2026-11-03): from the budget of the year.
+// The ratio of the people in a year and its basis: the source of the statistics and the values seen.
+// Values that add up to 100 were typed in as a ratio (no statistics yet).
 function ratioOf(year) {
   const y = state.budgetYears.find((x) => x.year === Number(year));
   if (!y) return null;
   const ids = budgetMemberIds();
   const pc = percents(y.ratio, ids);
-  const weights = ids.filter((id) => Number(y.ratio && y.ratio[id]) > 0);
-  return {
-    text: ids.map((id) => `${memberNick(id)} ${pc.get(id)}%`).join('・'),
-    pc,
-    basis: [y.ratio_note || '', weights.length ? `基準の値：${weights.map((id) => `${memberNick(id)} ${y.ratio[id]}`).join('・')}` : ''].filter(Boolean),
+  const survey = surveyYearFor(year);
+  const people = ids.map((id) => state.members.find((m) => m.id === id)).filter(Boolean);
+  const { items } = lookups(people, year);
+  const w = (id) => Number(y.ratio && y.ratio[id]);
+  const entered = ids.every((id) => w(id) > 0);
+  const fromStats = entered && Math.abs(ids.reduce((n, id) => n + w(id), 0) - 100) > 1e-9;
+  const area = (id) => {
+    const it = items.find((x) => x.member_id === id);
+    return it ? lookupText(survey, it).replace(`${reiwa(survey)} `, '') : '（性別・生まれ年が未設定）';
   };
+  const source = `厚生労働省「${reiwa(survey)}賃金構造基本統計調査」性、年齢階級別賃金（千円）`;
+  const basis = fromStats
+    ? [`出典：${source}`, `見た値：${ids.map((id) => `${memberNick(id)} ${area(id)} ${w(id)}千円`).join('・')}`]
+    : [`統計の値は未入力です${entered ? `（比率 ${ids.map((id) => w(id)).join(':')} を直接入力）` : ''}。`, `見る値：${source}の ${ids.map((id) => `${memberNick(id)} ${area(id)}`).join('・')}`];
+  if (y.ratio_note) basis.push(`メモ：${y.ratio_note}`);
+  return { text: ids.map((id) => `${memberNick(id)} ${pc.get(id)}%`).join('・'), pc, basis, fromStats };
 }
 
 function ratioLine(year) {
@@ -2227,7 +2233,8 @@ function ratioHistoryCard(year) {
   if (years.length === 0) return null;
   const ids = budgetMemberIds();
   return h('section', { class: 'card' },
-    h('h2', { class: 'with-icon' }, '負担率の推移', helpButton('負担率', '各年の予算に入れた二人の負担率です。予算の「今月分の提案」に使います。', '根拠は予算の編集画面の「負担率のメモ」と基準の値です。')),
+    h('h2', { class: 'with-icon' }, '負担率の推移', helpButton('負担率', '各年の予算に入れた二人の負担率です。予算の「今月分の提案」に使います。',
+      'Y年の負担率は、Y−2年の賃金構造基本統計調査の性、年齢階級別賃金で、二人それぞれの性別とY年の年齢階級の値の比です。', '根拠には出典と見た値を出します。値は予算の編集画面で入れます。')),
     h('div', { class: 'table-wrap' }, h('table', { class: 'table ratio-table' },
       h('thead', {}, h('tr', {}, h('th', {}, '年'), ids.map((id) => h('th', { class: `num person-name ${personClass(id)}` }, memberNick(id))), h('th', {}, '根拠'))),
       h('tbody', {}, years.map((y) => {
@@ -2235,7 +2242,7 @@ function ratioHistoryCard(year) {
         return h('tr', { class: String(y.year) === String(year) ? 'is-current' : '' },
           h('th', { scope: 'row' }, isAdmin() ? h('a', { href: `#/budget/${y.year}` }, `${y.year}年`) : `${y.year}年`),
           ids.map((id) => h('td', { class: 'num' }, `${r.pc.get(id)}%`)),
-          h('td', { class: 'small' }, r.basis.join('／') || '—'));
+          h('td', { class: `small${r.fromStats ? '' : ' warn-text'}` }, r.basis.join('／')));
       })))));
 }
 
