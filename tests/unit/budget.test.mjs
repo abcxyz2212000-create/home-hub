@@ -54,6 +54,7 @@ test('actual of a month: the shared account by 大項目 plus 立替; people\'s 
     { amount: -2000, category: '趣味・娯楽', counted: true, transfer: false, description: '本', personal_member_id: 'a' },
     { amount: 70000, category: '収入', counted: true, transfer: false, description: '入金', deposit_entry_id: 'd' },
     { amount: 42, category: '収入', counted: true, transfer: false, description: '預金利息' },
+    { amount: -1751, category: '食費', counted: true, transfer: false, description: '手入力', institution: 'なし' },
   ];
   const shared = {
     rules: [{ id: 'r1', member_id: 'a', label: '基本', amount: 70000, start_ym: '2026-01' },
@@ -62,12 +63,12 @@ test('actual of a month: the shared account by 大項目 plus 立替; people\'s 
       { member_id: 'b', ym: '2026-11', kind: 'charge', label: '管理費', amount: -3000 }],
   };
   const a = monthActual({ txs, shared, members, memberIds: ['a', 'b'], mapping: { 管理費: '住宅' }, contracts: [{ id: 'k', category: '住居' }], ym: '2026-11' });
-  assert.equal(a.spending.get('食費'), 11500);
+  assert.equal(a.spending.get('食費'), 13251, 'hand-typed lines count in the budget');
   assert.equal(a.spending.get('通信費'), 5000);
   assert.equal(a.spending.get('住宅'), 85350, '家賃 82,350 + 管理費 3,000');
   assert.equal(a.spending.has('日用品'), false);
   assert.equal(a.spending.has('趣味・娯楽'), false);
-  assert.equal(a.fromAccount, 16500);
+  assert.equal(a.fromAccount, 18251);
   assert.equal(a.fromAdvance, 85350);
   assert.equal(a.income, 70000 + 82350 + 3000);
 });
