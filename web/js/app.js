@@ -1815,10 +1815,18 @@ function noBudgetCard(year) {
 }
 
 // 予算・実績・差 of income, spending and savings.
-function budgetSummaryTable(b, actual, months) {
+// A month: that month's budget, actual and the difference. yearMonths (the months passed in the year):
+// the whole year's budget, the actual so far, and what is left of the budget.
+function budgetSummaryTable(b, actual, yearMonths = 0) {
   const p = proposal(b.rows, b.year, budgetMemberIds());
+  const months = yearMonths ? 12 : 1;
   const n = (v) => signedYen(v).replace('円', '');
   const line = ([label, plan, act, costLike]) => {
+    if (yearMonths) {
+      const left = plan - act; // spending: negative = over the year's budget
+      return h('tr', {}, h('th', { scope: 'row' }, label), h('td', { class: 'num' }, n(plan)), h('td', { class: 'num' }, n(act)),
+        h('td', { class: `num${costLike && left < 0 ? ' over' : ''}` }, n(left)));
+    }
     const diff = act - plan;
     const bad = costLike ? diff > 0 : diff < 0;
     return h('tr', {}, h('th', { scope: 'row' }, label), h('td', { class: 'num' }, n(plan)), h('td', { class: 'num' }, n(act)),
@@ -1829,7 +1837,10 @@ function budgetSummaryTable(b, actual, months) {
   const unpaid = actual.income - actual.paid;
   const sub = (label, v, cls = '') => h('tr', { class: 'sub' }, h('th', { scope: 'row' }, label), h('td', {}), h('td', { class: `num${cls}` }, n(v)), h('td', {}));
   return h('div', { class: 'table-wrap' }, h('table', { class: 'table budget-summary' },
-    h('thead', {}, h('tr', {}, h('th', {}, '（円）'), h('th', { class: 'num' }, '予算'), h('th', { class: 'num' }, '実績'), h('th', { class: 'num' }, '差'))),
+    h('thead', {}, h('tr', {}, h('th', {}, '（円）'),
+      h('th', { class: 'num' }, yearMonths ? '年間の予算' : '予算'),
+      h('th', { class: 'num' }, yearMonths ? (yearMonths < 12 ? `実績（1〜${yearMonths}月）` : '実績') : '実績'),
+      h('th', { class: 'num' }, yearMonths ? '予算の残り' : '差'))),
     h('tbody', {},
       line(['収入（二人の負担額）', p.total * months, actual.income, false]),
       sub('└ 入った額（入金＋立替）', actual.paid),
@@ -1919,7 +1930,7 @@ function budgetMonthView(ym) {
         action: editLink,
       }),
       txs.length === 0 ? h('p', { class: 'notice-text small' }, 'この月の明細はまだ取り込まれていません。') : null,
-      budgetSummaryTable(b, actual, 1)),
+      budgetSummaryTable(b, actual)),
     h('section', { class: 'card' },
       h('h2', { class: 'with-icon' }, '費目ごと', helpButton('費目ごと', 'バーは予算を使った割合です。予算を超えるとオレンジになります。', '立替は、設定 → その他 → 費目 で決めた大項目に入ります（契約からの立替は契約の画面で決めます）。')),
       budgetCategoryList(rows),
@@ -1962,14 +1973,13 @@ function budgetYearView(year) {
   return [
     h('section', { class: 'card' },
       cardHead('yen', `${Number(year)}年の予算と実績${last && last < 12 ? `（1〜${last}月）` : ''}`, {
-        help: ['予算は月の額 × 経過した月数です。', '実績の数え方は「月ごと」と同じです（収入は払うべき額で数えるので、入金の遅れに左右されません）。',
+        help: ['予算は1年分（月の額 × 12）、実績は今月までの合計です。予算の残り ＝ 年間の予算 − 実績（支出がマイナスなら年間の予算を超えています）。', '実績の数え方は「月ごと」と同じです（収入は払うべき額で数えるので、入金の遅れに左右されません）。',
           '年末の貯蓄の見込み ＝ 今月までの貯蓄の実績 ＋ 残りの月の貯蓄の予算。今月の支出は、明細を取り込むまで少なめに出ます。'],
         action: isAdmin() ? h('a', { class: 'button small', href: `#/budget/${year}` }, '予算を編集') : null,
       }),
       last === 0 ? h('p', { class: 'muted' }, 'まだこの年になっていません。') : budgetSummaryTable(b, total, last),
       last > 0 && last < 12 ? h('p', { class: 'savings-forecast' }, `年末の貯蓄の見込み ${signedYen(total.income - total.spendingTotal + plan.savings * (12 - last))}`,
-        h('span', { class: 'muted small' }, `（1〜${last}月の実績 ${signedYen(total.income - total.spendingTotal)} ＋ 残り${12 - last}か月の予算 ${signedYen(plan.savings * (12 - last))}）`)) : null,
-      h('p', { class: 'meta' }, `年間の予算：支出 ${yen(plan.spending * 12)}・貯蓄 ${yen(plan.savings * 12)}`)),
+        h('span', { class: 'muted small' }, `（1〜${last}月の実績 ${signedYen(total.income - total.spendingTotal)} ＋ 残り${12 - last}か月の予算 ${signedYen(plan.savings * (12 - last))}）`)) : null),
     last ? h('section', { class: 'card' },
       h('h2', {}, '支出の累計'),
       lineChart(series, '支出の予算と実績の累計'),
@@ -4128,7 +4138,7 @@ async function fullBackup(status) {
 
 // アプリの更新: the version this device runs (APP_VERSION, the same as the service worker's cache name) and a button that drops
 // the saved files and loads the newest version. Sign-in and notifications stay as they are.
-const APP_VERSION = 'v60'; // = CACHE in sw.js (checked by tests/unit/version.test.mjs)
+const APP_VERSION = 'v61'; // = CACHE in sw.js (checked by tests/unit/version.test.mjs)
 
 function appUpdateSection() {
   const version = h('span', { class: 'num' }, APP_VERSION);
