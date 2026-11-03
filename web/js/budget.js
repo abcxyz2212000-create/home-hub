@@ -165,3 +165,102 @@ export function compareRows(budgetRows, actualMap, months = 1) {
     return { category, budget, actual, diff: actual - budget, memo: r ? r.memo || '' : '' };
   }).filter((r) => r.budget !== 0 || r.actual !== 0);
 }
+
+// ---------------------------------------------------------------- per-category ratios (2026-11-03)
+//
+// A year can give some 費目 a ratio of their own (e.g. 電気代 70:30 because one person uses more). The
+// shared account pays such a line as usual; each person's 今月分 is then corrected by
+// line × (the category's ratio − the year's ratio), so the two corrections add up to 0.
+// A row of budget_years.category_ratios: { category, subcategory|null, ratio: { memberId: percent }, from: 'YYYY-MM' }.
+// Rows apply from their month `from` on, so setting one never changes past months.
+
+const YM_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
+
+// The row of a year that covers one statement line in month ym: a row for its 小項目 first, then one
+// for its whole 大項目. null if none.
+export function categoryRatioFor(rows, line, ym) {
+  const live = (rows || []).filter((r) => r && r.category === line.category && (!r.from || r.from <= ym));
+  return live.find((r) => r.subcategory && r.subcategory === line.subcategory) || live.find((r) => !r.subcategory) || null;
+}
+
+// What a category row is called on the screens: its 小項目, otherwise its 大項目.
+export function categoryRatioName(row) {
+  return row.subcategory || row.category;
+}
+
+// Check the rows typed in the budget editor. Returns an error in Japanese, or null.
+export function categoryRatiosError(rows, memberIds) {
+  const seen = new Set();
+  for (const r of rows) {
+    if (!MF_CATEGORIES.includes(r.category)) return '費目ごとの負担率：大項目を選んでください。';
+    if (r.subcategory && String(r.subcategory).length > 50) return '費目ごとの負担率：小項目は50文字以内で入力してください。';
+    const key = `${r.category}/${r.subcategory || ''}`;
+    if (seen.has(key)) return `費目ごとの負担率：「${categoryRatioName(r)}」が2回あります。`;
+    seen.add(key);
+    const v = memberIds.map((id) => Number(r.ratio && r.ratio[id]));
+    if (v.some((x) => !Number.isInteger(x) || x < 0 || x > 100)) return `費目ごとの負担率：「${categoryRatioName(r)}」の率は0〜100の整数で入力してください。`;
+    if (v.reduce((n, x) => n + x, 0) !== 100) return `費目ごとの負担率：「${categoryRatioName(r)}」の率は合計100にしてください。`;
+    if (r.from && !YM_RE.test(r.from)) return '費目ごとの負担率：開始月が正しくありません。';
+  }
+  return null;
+}
+
+// The corrections of every month as entries of kind 'adjust' (not stored: worked out from the lines).
+// txs: statement lines ({ date, amount, category, subcategory, counted, transfer, ... });
+// years: budget_years rows. Returns [{ member_id, ym, kind: 'adjust', label, amount, virtual: true }].
+export function categoryAdjustments({ txs, years, members, memberIds }) {
+  const byYear = new Map((years || []).map((y) => [String(y.year), y]));
+  const sums = new Map(); // `${ym}|${name}` -> { ym, name, raw: Map(id -> yen) }
+  for (const t of txs || []) {
+    if (!t.counted || t.transfer || t.deposit_entry_id || t.personal_member_id || t.category === '収入') continue;
+    if (transferMember(t, members || [])) continue;
+    const ym = String(t.date).slice(0, 7);
+    const year = byYear.get(ym.slice(0, 4));
+    if (!year || !Array.isArray(year.category_ratios) || year.category_ratios.length === 0) continue;
+    const row = categoryRatioFor(year.category_ratios, t, ym);
+    if (!row) continue;
+    const common = percents(year.ratio, memberIds);
+    const name = categoryRatioName(row);
+    const key = `${ym}|${name}`;
+    if (!sums.has(key)) sums.set(key, { ym, name, raw: new Map(memberIds.map((id) => [id, 0])) });
+    const s = sums.get(key);
+    for (const id of memberIds) s.raw.set(id, s.raw.get(id) + (-t.amount * ((Number(row.ratio[id]) || 0) - common.get(id))) / 100);
+  }
+  const out = [];
+  for (const { ym, name, raw } of sums.values()) {
+    const amounts = new Map(memberIds.map((id) => [id, Math.round(raw.get(id))]));
+    const diff = -[...amounts.values()].reduce((n, v) => n + v, 0); // keep the sum at 0
+    if (diff !== 0 && memberIds.length) {
+      const top = [...memberIds].sort((a, b) => Math.abs(raw.get(b)) - Math.abs(raw.get(a)))[0];
+      amounts.set(top, amounts.get(top) + diff);
+    }
+    for (const id of memberIds) {
+      if (amounts.get(id) !== 0) out.push({ member_id: id, ym, kind: 'adjust', label: `費目ごとの調整（${name}）`.slice(0, 50), amount: amounts.get(id), virtual: true });
+    }
+  }
+  return out.sort((a, b) => a.ym.localeCompare(b.ym));
+}
+
+// The first month any per-category ratio applies (to know which statement lines to load), or null.
+export function categoryRatiosStart(years) {
+  const froms = [];
+  for (const y of years || []) {
+    for (const r of Array.isArray(y.category_ratios) ? y.category_ratios : []) froms.push(r.from && r.from > `${y.year}-01` ? r.from : `${y.year}-01`);
+  }
+  return froms.length ? froms.sort()[0] : null;
+}
+
+// The 大項目 that have a per-category ratio in any year (to load only their statement lines).
+export function categoryRatioCategories(years) {
+  const out = new Set();
+  for (const y of years || []) for (const r of Array.isArray(y.category_ratios) ? y.category_ratios : []) if (r && r.category) out.add(r.category);
+  return [...out];
+}
+
+// PostgREST filter for the statement lines needed for the corrections, or null when there are none.
+export function categoryRatioQuery(years) {
+  const start = categoryRatiosStart(years);
+  const cats = categoryRatioCategories(years);
+  if (!start || cats.length === 0) return null;
+  return `date=gte.${start}-01&category=in.(${cats.map((c) => `"${encodeURIComponent(c)}"`).join(',')})`;
+}

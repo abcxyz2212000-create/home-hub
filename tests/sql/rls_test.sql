@@ -167,6 +167,17 @@ insert into public.shared_entries (member_id, ym, kind, label, amount)
   select id, '2026-02', 'deposit', '入金', 150000 from public.members where name = '佐藤 春子';
 insert into public.shared_entries (member_id, ym, kind, label, amount)
   select id, '2026-02', 'charge', '管理費', -3000 from public.members where name = '祖母';
+do $$ begin
+  insert into public.shared_entries (member_id, ym, kind, label, amount) select id, '2026-02', 'adjust', '調整', -100 from public.members where name = '佐藤 春子';
+  insert into public.shared_entries (member_id, ym, kind, label, amount) select id, '2026-02', 'adjust', '調整', 100 from public.members where name = '祖母';
+  begin insert into public.shared_entries (member_id, ym, kind, label, amount) select id, '2026-02', 'deposit', '入金', -1 from public.members where name = '祖母';
+    raise exception 'negative deposit accepted'; exception when check_violation then null; end;
+  begin insert into public.shared_entries (member_id, ym, kind, label, amount) select id, '2026-02', 'other', 'x', 1 from public.members where name = '祖母';
+    raise exception 'unknown kind accepted'; exception when check_violation then null; end;
+  delete from public.shared_entries where kind = 'adjust';
+  begin insert into public.budget_years (year, category_ratios) values (2099, '{}'::jsonb);
+    raise exception 'category_ratios accepted an object'; exception when check_violation then null; end;
+end $$;
 select pg_temp.login('adv@example.com');
 insert into public.shared_entries (member_id, ym, kind, label, amount)
   select id, '2026-03', 'charge', '立替', -2500 from public.members where name = '立替する人';
@@ -185,6 +196,8 @@ do $$ begin
     raise exception 'member recorded a deposit'; exception when insufficient_privilege then null; end;
   begin insert into public.shared_entries (member_id, ym, kind, label, amount) select id, '2026-03', 'charge', '立替', -1 from public.members where name = '祖母';
     raise exception 'member recorded for someone else'; exception when insufficient_privilege then null; end;
+  begin insert into public.shared_entries (member_id, ym, kind, label, amount) select id, '2026-03', 'adjust', '調整', -1 from public.members where name = '立替する人';
+    raise exception 'member recorded an adjustment'; exception when insufficient_privilege then null; end;
   update public.shared_entries set amount = -1 where label = '管理費';
   delete from public.shared_entries where label = '管理費';
   update public.shared_entries set amount = 1 where kind = 'deposit';

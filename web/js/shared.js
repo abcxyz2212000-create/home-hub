@@ -46,7 +46,10 @@ function monthParts(rules, entries, memberId, ym) {
     .map((r) => ({ label: r.label, amount: r.amount, rule: r }));
   const mine = entries.filter((e) => e.member_id === memberId && e.ym === ym)
     .sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')));
-  for (const e of mine.filter((x) => x.kind === 'charge')) items.push({ label: e.label, amount: e.amount, entry: e });
+  // 調整 (kind 'adjust'): a correction of what to pay (settlements, per-category ratios), neither 負担額 nor 立替
+  for (const e of mine.filter((x) => x.kind === 'charge' || x.kind === 'adjust')) {
+    items.push({ label: e.label, amount: e.amount, entry: e, ...(e.kind === 'adjust' ? { adjust: true } : {}) });
+  }
   const deposits = mine.filter((x) => x.kind === 'deposit');
   return {
     items,
@@ -146,9 +149,10 @@ export function ruleSchedule(rule) {
 // = recurring minus items (rent etc. paid from a personal account), 臨時の立替 = one-off minus items.
 // 残り = carry + 負担額 − (入金 + 立替) is the same number as the statement's balance.
 export function contribution(st) {
-  const burdenItems = st.items.filter((i) => i.amount > 0);
-  const regular = st.items.filter((i) => i.amount < 0 && i.rule);
-  const temp = st.items.filter((i) => i.amount < 0 && !i.rule);
+  // 調整 belongs to what to pay (今月分) whatever its sign; it is never 立替
+  const burdenItems = st.items.filter((i) => i.amount > 0 || i.adjust);
+  const regular = st.items.filter((i) => i.amount < 0 && i.rule && !i.adjust);
+  const temp = st.items.filter((i) => i.amount < 0 && !i.rule && !i.adjust);
   const sum = (list) => list.reduce((n, i) => n + i.amount, 0);
   const burden = sum(burdenItems);
   const regularTotal = -sum(regular);

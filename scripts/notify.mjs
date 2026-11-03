@@ -15,6 +15,7 @@ import { CONFIG } from '../web/js/config.js';
 import { collectEvents, dueNotifications, notificationText, todayJST } from '../web/js/events.js';
 import { dueFor } from '../web/js/chores.js';
 import { participantIds, statement, contribution } from '../web/js/shared.js';
+import { categoryAdjustments, categoryRatioQuery } from '../web/js/budget.js';
 import { missingImports, latestBalance, DEFAULT_LOW_BALANCE } from '../web/js/bank.js';
 import { lowBalanceAlert, importAlert, choresAlert, householdAlert } from '../web/js/alerts.js';
 import { loadVapidKeys, sendPush } from './webpush.mjs';
@@ -193,8 +194,13 @@ async function main() {
     // shared account: from the 25th, once a month. Amounts and names never go to the log.
     if (Number(today.slice(8, 10)) >= SHARED_REMIND_DAY) {
       if (!shared) {
-        const [rules, entries] = await Promise.all([db.select('shared_rules'), db.select('shared_entries')]);
-        shared = { rules, entries, ids: participantIds(rules, entries) };
+        const [rules, entries, years] = await Promise.all([db.select('shared_rules'), db.select('shared_entries'), db.select('budget_years')]);
+        const ids = participantIds(rules, entries);
+        // per-category ratios: corrections worked out from the statement lines (not stored)
+        const q = categoryRatioQuery(years);
+        const txs = q ? await db.select('transactions', `&${q}`) : [];
+        const adjust = categoryAdjustments({ txs, years, members, memberIds: ids });
+        shared = { rules, entries: [...entries, ...adjust], ids };
       }
       const ym = today.slice(0, 7);
       const key = `shared:${ym}:${g}`;

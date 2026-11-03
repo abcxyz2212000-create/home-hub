@@ -74,6 +74,7 @@ export function createMock() {
       if (v.startsWith('lt.') && !(String(row[k]) < v.slice(3))) return false;
       if (v.startsWith('gte.') && !(String(row[k]) >= v.slice(4))) return false;
       if (v === 'is.null' && !(row[k] === null || row[k] === undefined)) return false;
+      if (v.startsWith('in.(') && !v.slice(4, -1).split(',').map((x) => x.replace(/^"|"$/g, '')).includes(String(row[k]))) return false;
     }
     return true;
   };
