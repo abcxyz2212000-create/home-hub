@@ -82,11 +82,14 @@ export function planBaseChange(rules, memberId, from, amount, prevYM) {
   return { end: r ? { id: r.id, end_ym: prevYM } : null, update: null, create };
 }
 
-// 大項目 of one 立替 line (an item of a statement).
+// 大項目 of one 立替 line (an item of a statement). mapping (setting budget_category_of):
+// 'contract:<id>' -> 大項目 for 立替 from a contract, '<費目>' -> 大項目 for the others.
+// A contract without its own falls back to its 費目 label, then to its 種類.
 export function advanceCategory(item, mapping, contracts) {
-  const own = mapping && mapping[item.label];
-  if (own) return own;
+  const m = mapping || {};
   const contractId = item.rule && item.rule.contract_id;
+  if (contractId && m[`contract:${contractId}`]) return m[`contract:${contractId}`];
+  if (m[item.label]) return m[item.label];
   const c = contractId ? contracts.find((x) => x.id === contractId) : null;
   if (c && CONTRACT_KIND_CATEGORY[c.category]) return CONTRACT_KIND_CATEGORY[c.category];
   return '未分類';

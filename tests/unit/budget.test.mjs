@@ -39,6 +39,8 @@ test('category of a 立替: its own choice, then the contract kind, else 未分�
   assert.equal(advanceCategory({ label: '家賃', rule: { contract_id: 'k' } }, {}, contracts), '住宅');
   assert.equal(advanceCategory({ label: '家賃', rule: { contract_id: 'k' } }, { 家賃: 'その他' }, contracts), 'その他');
   assert.equal(advanceCategory({ label: '管理費', entry: {} }, {}, contracts), '未分類');
+  assert.equal(advanceCategory({ label: 'dアニ', rule: { contract_id: 'k' } }, { 'contract:k': '通信費', dアニ: 'その他' }, contracts), '通信費', 'the contract\'s own first');
+  assert.equal(advanceCategory({ label: '管理費', entry: {} }, { 管理費: '住宅' }, contracts), '住宅');
 });
 
 test('actual of a month: the shared account by 大項目 plus 立替; people\'s money and transfers left out', () => {

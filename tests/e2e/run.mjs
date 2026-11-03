@@ -723,7 +723,6 @@ try {
   await page.getByLabel('住宅の備考').fill('更新料を按分');
   await page.getByLabel('通信費の月の予算（円）').fill('6000');
   await page.getByLabel('貯蓄の目標（月・円）').fill('4000');
-  await page.getByLabel('立替の大項目').first().waitFor().catch(() => {});
   await page.getByRole('button', { name: '保存' }).click();
   await page.getByText(`${ymNow.slice(0, 4)}年の予算を保存しました。`).waitFor();
   await page.locator('.budget-summary').waitFor();
@@ -733,6 +732,16 @@ try {
   assert.match(budgetText, /支出\s+96,000\s/);
   assert.match(budgetText, /住宅\s+[\d,]+円 \/ 90,000円/);
   assert.match(budgetText, /今月分の提案[\s\S]*月 100,000円/);
+  assert.match(budgetText, /大項目が決まっていない立替があります（[^）]*管理費/);
+  // the 大項目 of a 費目 is chosen in the settings
+  await page.goto(`${appUrl}#/settings/other`);
+  await page.getByLabel('管理費の大項目').selectOption('住宅');
+  await page.locator('section', { hasText: '費目' }).getByRole('button', { name: '保存' }).first().click();
+  await page.getByText('費目を保存しました。').waitFor();
+  assert.equal(mock.db.settings.find((x) => x.key === 'budget_category_of').value.管理費, '住宅');
+  await page.goto(`${appUrl}#/flow/budget/${ymNow}`);
+  await page.locator('.budget-summary').waitFor();
+  assert.doesNotMatch(await page.locator('#view').innerText(), /大項目が決まっていない立替があります（[^）]*管理費/);
   const nextYM = ymAdd(ymNow, 1);
   const before = mock.db.shared_rules.length;
   await page.getByRole('button', { name: 'この額で切り替える' }).click();

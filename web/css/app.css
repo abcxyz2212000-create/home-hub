@@ -697,3 +697,7 @@ details.chore-group > summary { cursor: pointer; list-style: revert; }
 .wage-box { margin: 0.5rem 0 0.75rem; display: grid; gap: 0.35rem; }
 .wage-box p, .wage-box ul { margin: 0; }
 .wage-box ul { padding-left: 1.2rem; }
+.label-list li { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; }
+.label-list li span { grid-column: 1 / -1; }
+.label-list li .label-cat { min-width: 0; width: 100%; }
+@media (min-width: 560px) { .label-list li { grid-template-columns: minmax(0, 1fr) 12rem auto auto auto; } .label-list li span { grid-column: auto; } }
