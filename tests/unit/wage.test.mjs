@@ -86,7 +86,7 @@ test('the yearly script asks e-Stat for the classes it needs only, the app ID ne
     assert.equal(rows.length, 3);
     assert.equal(source.id, '0003426933');
     const q = calls[1].searchParams;
-    assert.deepEqual([q.get('cdTime'), q.get('cdArea'), q.get('cdTab'), q.get('statsDataId')], ['2024000000', '00000', '01', '0003426933']);
+    assert.deepEqual([q.get('cdTime'), q.get('cdArea'), q.get('statsDataId')], ['2024000000', null, '0003426933'], 'only the year is asked for; the rest is picked here');
     globalThis.fetch = async () => new Response('no', { status: 403 });
     await assert.rejects(fetchWages(2024, 'secret-app-id'), (e) => /HTTP 403/.test(e.message) && !e.message.includes('secret-app-id'));
   } finally {

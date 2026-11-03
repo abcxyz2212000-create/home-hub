@@ -51,11 +51,33 @@ async function estat(method, params, appId) {
   return res.json();
 }
 
+// Values of one table for one year: only the year is asked for (other classes are chosen here, as
+// e-Stat answers "no data" for some combinations), page by page.
 async function fromTable(statsDataId, surveyYear, appId, opts = {}) {
   const meta = await estat('getMetaInfo', { statsDataId }, appId);
-  const { fixed, usedYear } = chooseClasses(metaClasses(meta), surveyYear, opts);
-  const data = await estat('getStatsData', { statsDataId, metaGetFlg: 'Y', cntGetFlg: 'N', ...narrowParams(fixed) }, appId);
-  return { rows: parseEstat(data, usedYear), usedYear };
+  const classes = metaClasses(meta);
+  const chosen = chooseClasses(classes, surveyYear, opts);
+  const timeDim = Object.keys(chosen.fixed).find((d) => d === 'time');
+  const values = [];
+  let start = 1;
+  for (let page = 0; page < 20; page += 1) {
+    const q = { statsDataId, metaGetFlg: 'N', cntGetFlg: 'N', startPosition: String(start), limit: '100000' };
+    if (timeDim) q.cdTime = chosen.fixed.time;
+    const data = await estat('getStatsData', q, appId);
+    const d = data && data.GET_STATS_DATA;
+    if (!d || Number(d.RESULT && d.RESULT.STATUS) !== 0) throw new Error(`e-Stat getStatsData status ${d && d.RESULT ? d.RESULT.STATUS : '?'} (time ${chosen.fixed.time || '-'})`);
+    values.push(...[].concat((d.STATISTICAL_DATA.DATA_INF && d.STATISTICAL_DATA.DATA_INF.VALUE) || []));
+    const next = d.STATISTICAL_DATA.RESULT_INF && d.STATISTICAL_DATA.RESULT_INF.NEXT_KEY;
+    if (!next) break;
+    start = Number(next);
+  }
+  const json = { GET_STATS_DATA: { RESULT: { STATUS: 0 }, STATISTICAL_DATA: { CLASS_INF: { CLASS_OBJ: classes }, DATA_INF: { VALUE: values } } } };
+  const picked = classes.map((o) => `${o['@name']}=${chosen.fixed[o['@id']] ?? '*'}`).join(', ');
+  try {
+    return { rows: parseEstat(json, chosen.usedYear), usedYear: chosen.usedYear };
+  } catch (e) {
+    throw new Error(`${e.message} [${values.length} values; ${picked}]`);
+  }
 }
 
 const text = (v) => (v && typeof v === 'object' ? v.$ || '' : String(v || ''));
