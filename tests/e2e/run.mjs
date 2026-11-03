@@ -992,6 +992,9 @@ try {
   await page.reload();
   await page.locator('#bell .bell-count').waitFor();
   assert.equal(await page.locator('#bell .bell-count').innerText(), '1');
+  // the top bar: today's date and who is logged in
+  assert.match(await page.locator('#head-date').innerText(), /^\d{1,2}\/\d{1,2}\([日月火水木金土]\)$/);
+  assert.equal((await page.locator('#head-user').innerText()).trim(), '共通（管理者）');
   await page.locator('#bell').click();
   await page.getByText('共用口座の残高不足').waitFor();
   assert.match(await page.locator('#view').innerText(), /アプリ → 全員/);
