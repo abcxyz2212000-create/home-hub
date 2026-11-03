@@ -766,6 +766,26 @@ try {
   assert.doesNotMatch(nextRow, /負担率が未登録/);
   assert.match(await page.locator('.ratio-table').innerText(), /女 30～34歳 294.6千円[\s\S]*令和\d+年賃金構造基本統計調査 第6-1表（正社員・正職員）[\s\S]*📎令和2年_概況.pdf/, 'the basis is the source and the values seen');
 
+  step('per-category ratio: rows checked and saved from the coming January (the corrections are in the unit tests)');
+  await page.goto(`${appUrl}#/budget/${nextYear}`);
+  await page.locator('#budget-income').fill('100000');
+  await page.locator('#cat-ratio-add').click();
+  await page.locator('#cat-ratio-cat-0').selectOption('水道・光熱費');
+  await page.locator('#cat-ratio-sub-0').fill('電気代');
+  const pctInputs = page.locator('input[id^="cat-ratio-0-"]');
+  const pctPeople = await pctInputs.count();
+  await pctInputs.nth(0).fill('70');
+  await page.getByRole('button', { name: '保存', exact: true }).click();
+  await page.getByText('「電気代」の率は合計100にしてください', { exact: false }).waitFor();
+  for (let i = 0; i < pctPeople; i += 1) await pctInputs.nth(i).fill(pctPeople === 1 ? '100' : i === 0 ? '70' : i === 1 ? '30' : '0');
+  await page.getByRole('button', { name: '保存', exact: true }).click();
+  await page.waitForFunction(() => !location.hash.startsWith('#/budget/'));
+  const savedYear = mock.db.budget_years.find((y) => y.year === nextYear);
+  assert.deepEqual(savedYear.category_ratios.map((r) => [r.category, r.subcategory, r.from]), [['水道・光熱費', '電気代', `${nextYear}-01`]]);
+  await page.goto(`${appUrl}#/flow/budget/${nextYear}`);
+  await page.locator('.ratio-table').waitFor();
+  assert.match(await page.locator('#view').innerText(), new RegExp(`${nextYear}年 電気代：.*%（${nextYear}年1月から）`));
+
   step('contract amount by period: a new amount from this month, the old one kept for past months');
   await page.goto(`${appUrl}#/edit/contracts/${net.id}`);
   assert.equal(await page.getByLabel('新しい金額の適用開始月', { exact: true }).isVisible(), false, 'asked only when the amount changes');

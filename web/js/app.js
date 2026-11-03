@@ -17,7 +17,8 @@ import { parseOcrText, receiptMemo, recognizeImage } from './ocr.js';
 import { parseBankRows, monthEndBalances, latestBalance, missingImports, DEFAULT_LOW_BALANCE } from './bank.js';
 import { lowBalanceAlert, importAlert } from './alerts.js';
 import { surveyYearFor, reiwa, overviewUrl, lookups, lookupText } from './wage.js';
-import { MF_CATEGORIES, MAX_BUDGET, percents, proposal, baseRule, planBaseChange, advanceCategory, monthActual, compareRows, incomeOf, applyFrom } from './budget.js';
+import { MF_CATEGORIES, MAX_BUDGET, percents, proposal, baseRule, planBaseChange, advanceCategory, monthActual, compareRows, incomeOf, applyFrom,
+  categoryAdjustments, categoryRatioQuery, categoryRatiosError, categoryRatioName } from './budget.js';
 import * as push from './push.js';
 import { icon, LEDGER_ICONS } from './icons.js';
 import { timelineChart, barChart, lineChart, flowGraph, urgency } from './charts.js';
@@ -50,6 +51,7 @@ const state = {
   chores: [],
   sharedRules: [],
   sharedEntries: [],
+  adjustEntries: [], // per-category ratio corrections, worked out from the statement (not stored)
   depositReports: [], // 入金報告 (reference only)
   attachments: [], // images of one-off items and deposit reports
   balances: [], // account balances from the bank statement
@@ -348,7 +350,20 @@ async function loadAll() {
   state.budgets = budgets;
   state.budgetYears = budgetYears;
   state.budgetAttachments = budgetAttachments;
+  await loadAdjustments();
   state.loaded = true;
+}
+
+// The corrections of the per-category ratios (費目ごとの負担率): only the lines of those 大項目 are loaded.
+async function loadAdjustments() {
+  const q = categoryRatioQuery(state.budgetYears);
+  const txs = q ? await fetchAllPaged('transactions', `${q}&order=date.asc`) : [];
+  state.adjustEntries = categoryAdjustments({ txs, years: state.budgetYears, members: state.members, memberIds: budgetMemberIds() });
+}
+
+// The entries of the people with the per-category corrections: what the statements are worked out from.
+function allEntries() {
+  return state.adjustEntries.length ? [...state.sharedEntries, ...state.adjustEntries] : state.sharedEntries;
 }
 
 async function reloadLedger(ledger) {
@@ -831,8 +846,8 @@ function flowModel(period = thisYM()) {
     ? sharedMembers().map((m) => ({
       m,
       value: isYear
-        ? history(state.sharedRules, state.sharedEntries, m.id, months[11]).filter((r) => r.ym.startsWith(`${period}-`)).reduce((n, r) => n + r.charges, 0)
-        : statement(state.sharedRules, state.sharedEntries, m.id, ym).charges,
+        ? history(state.sharedRules, allEntries(), m.id, months[11]).filter((r) => r.ym.startsWith(`${period}-`)).reduce((n, r) => n + r.charges, 0)
+        : statement(state.sharedRules, allEntries(), m.id, ym).charges,
     })).filter((x) => x.value > 0)
     : [];
   const totals = new Map();
@@ -1091,6 +1106,7 @@ function mfImportBox() {
       const recorded = await recordDeposits(depositCandidates(saved, state.members));
       await saveSetting('mf_imported_at', new Date().toISOString());
       clearTxCache();
+      await loadAdjustments();
       toast(`取り込みました（追加 ${added}件、更新 ${rows.length - added}件${recorded ? `、個人との入出金の記録 ${recorded}件` : ''}）。`);
       input.value = '';
       state.mfBox = null;
@@ -1509,7 +1525,7 @@ function signedYen(n) {
 function sharedHomeCard() {
   const mine = me();
   if (!mine || !participantIds(state.sharedRules, state.sharedEntries).includes(mine.id)) return null;
-  const st = statement(state.sharedRules, state.sharedEntries, mine.id, thisYM());
+  const st = statement(state.sharedRules, allEntries(), mine.id, thisYM());
   return h('section', { class: 'card' },
     sectionHead('bank', `家計費（${Number(thisYM().slice(5))}月）`, { href: `#/flow/member/${thisYM()}`, text: '詳しく' }),
     h('div', { class: 'kpis kpis-3' },
@@ -1912,6 +1928,7 @@ function renderBudget(yearParam) {
     };
     for (const x of [...catInputs.flatMap((c) => [c.amount]), income, ...weights.map((w) => w.input)]) x.addEventListener('input', update);
     update();
+    const catRatios = categoryRatiosBox(year, ids, (base.year && base.year.category_ratios) || []);
 
     const save = h('button', { type: 'button', class: 'primary', onclick: (ev) => busy(ev.currentTarget, async () => {
       const bad = [];
@@ -1929,13 +1946,20 @@ function renderBudget(yearParam) {
         toast(`${bad.join('・')}は数字で入れてください（金額は1億円まで）。`, 'error');
         return;
       }
+      const categoryRatios = catRatios.read();
+      const crError = categoryRatiosError(categoryRatios, ids);
+      if (crError) {
+        toast(crError, 'error');
+        return;
+      }
       if (rows.length) await db.upsertRows('budgets', rows, 'year,category');
       const keep = new Set(rows.map((r) => r.category));
       for (const r of state.budgets.filter((x) => x.year === year && !keep.has(x.category))) await db.deleteWhere('budgets', 'id', r.id);
       const spending = rows.reduce((n, r) => n + r.monthly, 0);
-      const yearRow = { year, income_monthly: inc, savings_monthly: Math.max(-MAX_BUDGET, Math.min(MAX_BUDGET, inc - spending)), ratio: w, ratio_note: note.value.trim() || null };
+      const yearRow = { year, income_monthly: inc, savings_monthly: Math.max(-MAX_BUDGET, Math.min(MAX_BUDGET, inc - spending)), ratio: w, ratio_note: note.value.trim() || null, category_ratios: categoryRatios };
       await db.upsertRows('budget_years', [yearRow], 'year');
       [state.budgets, state.budgetYears] = await Promise.all([db.selectAll('budgets', 'year.asc'), db.selectAll('budget_years', 'year.asc')]);
+      await loadAdjustments();
       // each person's base amount follows the budget of a coming year from its January (never mid-year)
       const noBase = budgetMemberIds().every((id) => !state.sharedRules.some((r) => r.member_id === id && !r.contract_id && r.amount > 0));
       const from = applyFrom(year, thisYM()) || (noBase && year === Number(thisYM().slice(0, 4)) ? thisYM() : null);
@@ -1947,7 +1971,7 @@ function renderBudget(yearParam) {
     return [
       !src && prev.has ? h('section', { class: 'card notice' },
         h('p', {}, `${year - 1}年の予算があります。`),
-        h('button', { type: 'button', onclick: () => setBody(draw({ rows: prev.rows, year: { ...prev.year, ratio: cur.year ? cur.year.ratio : prev.year && prev.year.ratio, ratio_note: cur.year ? cur.year.ratio_note : null } })) }, `${year - 1}年の予算をコピーする`)) : null,
+        h('button', { type: 'button', onclick: () => setBody(draw({ rows: prev.rows, year: { ...prev.year, ratio: cur.year ? cur.year.ratio : prev.year && prev.year.ratio, ratio_note: cur.year ? cur.year.ratio_note : null, category_ratios: cur.year && (cur.year.category_ratios || []).length ? cur.year.category_ratios : ((prev.year && prev.year.category_ratios) || []).map((r) => ({ ...r, from: null })) } })) }, `${year - 1}年の予算をコピーする`)) : null,
       h('section', { class: 'card' },
         h('h2', { class: 'with-icon' }, '費目ごとの月の予算', helpButton('月の予算', '費目はマネーフォワードの大項目です。年に一度の支出（更新料など）は、12で割った額を入れます。', '空欄は予算なし（0円）です。')),
         h('div', { class: 'budget-edit' }, catInputs.map((x) => x.el)),
@@ -1965,6 +1989,7 @@ function renderBudget(yearParam) {
         shareOut,
         evidenceBox(year),
         h('div', { class: 'field' }, h('label', { for: 'ratio-note' }, '負担率のメモ（任意）'), note)),
+      catRatios.el,
       h('div', { class: 'actions sticky-actions' }, save),
     ];
   };
@@ -1972,6 +1997,51 @@ function renderBudget(yearParam) {
   const setBody = (nodes) => body.replaceChildren(...nodes.flat().filter(Boolean));
   setBody(draw(src || { rows: [], year: cur.year ? { ...cur.year, income_monthly: null } : null }));
   setView(`${year}年の予算`, pageHead({ title: `${year}年の予算`, icon: 'flow', back }), body);
+}
+
+// 費目ごとの負担率 in the budget editor. Rows that already apply (from an earlier month) cannot be
+// changed, so that past months stay as they were; new rows apply from the month the budget would.
+// Returns { el, read: () => rows }.
+function categoryRatiosBox(year, ids, initial) {
+  const current = thisYM();
+  const startOf = () => applyFrom(year, current) || (year === Number(current.slice(0, 4)) ? current : null);
+  const fixed = initial.filter((r) => r.from && r.from < current);
+  const list = h('div', { class: 'cat-ratio-list' });
+  const editable = [];
+  const subOptions = h('datalist', { id: 'cat-ratio-subs' }, ['電気代', 'ガス代', '水道代'].map((v) => h('option', { value: v })));
+  const addRow = (r = {}) => {
+    const n = editable.length;
+    const cat = h('select', { 'aria-label': '大項目', id: `cat-ratio-cat-${n}` }, h('option', { value: '' }, '（大項目）'),
+      MF_CATEGORIES.filter((c) => c !== '未分類').map((c) => h('option', { value: c, selected: c === r.category }, c)));
+    const sub = h('input', { type: 'text', maxlength: 50, value: r.subcategory || '', placeholder: '小項目（任意）', 'aria-label': '小項目', id: `cat-ratio-sub-${n}`, list: 'cat-ratio-subs' });
+    const pcts = ids.map((id) => ({ id, input: h('input', { type: 'text', inputmode: 'numeric', class: 'num', value: r.ratio && r.ratio[id] !== undefined ? String(r.ratio[id]) : '', 'aria-label': `${memberNick(id)}の率（％）`, id: `cat-ratio-${n}-${id}` }) }));
+    const item = { cat, sub, pcts, from: r.from || null, el: null };
+    item.el = h('div', { class: 'cat-ratio-row' }, cat, sub,
+      pcts.map((p) => h('label', { class: 'cat-ratio-pct' }, h('span', { class: `person-name ${personClass(p.id)}` }, memberNick(p.id)), p.input, '%')),
+      h('button', { type: 'button', class: 'link', onclick: () => { item.removed = true; item.el.remove(); } }, '削除'));
+    editable.push(item);
+    list.append(item.el);
+  };
+  for (const r of initial.filter((x) => !fixed.includes(x))) addRow(r);
+  const start = startOf();
+  const add = start ? h('button', { type: 'button', id: 'cat-ratio-add', onclick: () => addRow() }, '＋ 費目を足す') : null;
+  const el = h('section', { class: 'card' },
+    h('h2', {}, '費目ごとの負担率', helpButton('費目ごとの負担率', 'ある費目だけ負担率を変えたいとき（電気代は一人が多く使う、など）に設定します。', '共用口座からはいつもどおり払い、各人の今月分を「その月のその費目の額 ×（費目の率 − その年の負担率）」だけ増減します。二人の増減の合計は0です。',
+      '小項目を入れるとその小項目だけ、空欄なら大項目全体が対象です。両方あるときは小項目を優先します。', '始まった設定は変えられません（過去の月を変えないため）。変えるときは翌年の予算で設定します。')),
+    fixed.length ? h('ul', { class: 'plain small' }, fixed.map((r) => h('li', {}, `${categoryRatioName(r)}：${ids.map((id) => `${memberNick(id)} ${r.ratio[id]}%`).join('・')}（${ymLabel(r.from)}から）`))) : null,
+    list, subOptions,
+    add || h('p', { class: 'meta' }, '過去の年には新しく設定できません。'),
+    start ? h('p', { class: 'meta' }, `新しく足した設定は${ymLabel(start)}から使います。`) : null);
+  const read = () => [
+    ...fixed,
+    ...editable.filter((x) => !x.removed && (x.cat.value || x.sub.value.trim() || x.pcts.some((p) => p.input.value.trim()))).map((x) => ({
+      category: x.cat.value,
+      subcategory: x.sub.value.trim() || null,
+      ratio: Object.fromEntries(x.pcts.map((p) => [p.id, p.input.value.trim() === '' ? NaN : Number(p.input.value.trim())])),
+      from: x.from && x.from >= current ? x.from : start,
+    })),
+  ];
+  return { el, read };
 }
 
 // ---- tab 3: 流れ図 (people -> shared account -> cards -> payees), the balance of the shared account
@@ -2142,8 +2212,9 @@ function memberMonthView(ym) {
   const current = thisYM();
   const members = sharedMembers();
   const { sharedRules: rules, sharedEntries: entries } = state;
+  const all = allEntries(); // with the per-category corrections
   if (members.length === 0) return [memberIntroCard(), personalCard()];
-  const sts = members.map((m) => ({ m, st: statement(rules, entries, m.id, ym) }));
+  const sts = members.map((m) => ({ m, st: statement(rules, all, m.id, ym) }));
   const cs = sts.map(({ m, st }) => ({ m, st, c: contribution(st) }));
 
   // per-member cards: 計画 (先月の残り + 今月分 = 払う額), 実績 (入金 + 立替 = 払った額), 残り = 払う額 − 払った額
@@ -2199,7 +2270,7 @@ function memberMonthView(ym) {
     ? h('p', { class: 'muted' }, 'この月の立替・入金の記録はありません（定例だけです）。')
     : h('div', { class: 'list' }, monthEntries.map((e) => h('a', { class: 'list-item', href: `#/shared-entry/${e.id}` },
       h('div', { class: 'list-body' },
-        h('div', { class: 'list-title' }, personChip(e.member_id), ` ${e.kind === 'deposit' ? '入金' : e.label}`,
+        h('div', { class: 'list-title' }, personChip(e.member_id), ` ${e.kind === 'deposit' ? '入金' : e.kind === 'adjust' ? `調整：${e.label}` : e.label}`,
           attachmentsOf('entry', e.id).length ? h('span', { class: 'tag tag-attach' }, '添付あり') : null),
         [e.paid_on ? dateText(e.paid_on) : null, e.memo].filter(Boolean).length
           ? h('div', { class: 'muted small' }, [e.paid_on ? dateText(e.paid_on) : null, e.memo].filter(Boolean).join('　')) : null),
@@ -2210,7 +2281,7 @@ function memberMonthView(ym) {
   const start = firstYM(rules, entries);
   const end = ym > current ? ym : current;
   const series = members.map((m, i) => {
-    const byYM = new Map(history(rules, entries, m.id, end).map((r) => [r.ym, r.balance]));
+    const byYM = new Map(history(rules, all, m.id, end).map((r) => [r.ym, r.balance]));
     const points = [];
     for (let x = start; x <= end; x = ymAdd(x, 1)) points.push({ x, y: byYM.get(x) ?? 0 });
     return { label: nick(m), color: personColor(m.id) || `var(--series-${i + 1})`, points };
@@ -2251,7 +2322,8 @@ function memberMonthView(ym) {
 
 function memberYearView(year) {
   const members = sharedMembers();
-  const { sharedRules: rules, sharedEntries: entries } = state;
+  const rules = state.sharedRules;
+  const entries = allEntries(); // with the per-category corrections
   if (members.length === 0) return [memberIntroCard()];
   const cards = members.map((m) => {
     const last12 = year === thisYM().slice(0, 4) ? thisYM() : `${year}-12`; // future months are not shown
@@ -2359,7 +2431,21 @@ function ratioHistoryCard(year) {
           h('td', { class: `small${r && r.fromStats ? '' : ' warn-text'}` }, !r ? '負担率が未登録' : r.fromStats ? r.sourceShort : r.direct ? `統計の値は未入力（比率 ${r.direct}）` : '統計の値は未入力'),
           h('td', { class: 'small' }, links.length ? links : '—'));
       })))),
-    anyOff ? h('p', { class: 'meta warn-text' }, '※ 実際の額（率から計算した額ではない）') : null); // the rows above are built first
+    anyOff ? h('p', { class: 'meta warn-text' }, '※ 実際の額（率から計算した額ではない）') : null, // the rows above are built first
+    categoryRatioLines(years, ids));
+}
+
+// 費目ごとの負担率 of each year, under the table of the ratios.
+function categoryRatioLines(years, ids) {
+  const lines = [];
+  for (const y of years) {
+    const row = state.budgetYears.find((x) => x.year === y);
+    for (const r of (row && Array.isArray(row.category_ratios) ? row.category_ratios : [])) {
+      lines.push(`${y}年 ${categoryRatioName(r)}：${ids.map((id) => `${memberNick(id)} ${r.ratio[id]}%`).join('・')}${r.from ? `（${ymLabel(r.from)}から）` : ''}`);
+    }
+  }
+  if (lines.length === 0) return null;
+  return h('div', {}, h('h3', { class: 'small' }, '費目ごとの負担率'), h('ul', { class: 'plain small' }, lines.map((t) => h('li', {}, t))));
 }
 
 function accountTotalsCard(flow, unit = '月額') {
@@ -2903,7 +2989,7 @@ function sharedRulesCSV() {
 
 function sharedEntriesCSV() {
   const head = ['ID', '月', '日付', '人', '種類', '費目', '金額（円）', 'メモ', '添付'];
-  const rows = state.sharedEntries.map((e) => [e.id, e.ym, e.paid_on || '', memberNick(e.member_id), e.kind === 'deposit' ? '入金' : '臨時', e.label, e.amount, e.memo || '', attachmentsOf('entry', e.id).length]);
+  const rows = state.sharedEntries.map((e) => [e.id, e.ym, e.paid_on || '', memberNick(e.member_id), e.kind === 'deposit' ? '入金' : e.kind === 'adjust' ? '調整' : '臨時', e.label, e.amount, e.memo || '', attachmentsOf('entry', e.id).length]);
   return toCSV([head, ...rows]);
 }
 

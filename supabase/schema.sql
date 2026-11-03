@@ -294,7 +294,7 @@ create table if not exists public.shared_entries (
   id uuid primary key default gen_random_uuid(),
   member_id uuid not null references public.members (id) on delete restrict,
   ym text not null check (ym ~ '^[0-9]{4}-(0[1-9]|1[0-2])$'),
-  kind text not null check (kind in ('charge', 'deposit')),
+  kind text not null check (kind in ('charge', 'deposit', 'adjust')),
   label text not null check (char_length(label) between 1 and 50),
   amount integer not null check (amount between -100000000 and 100000000 and amount <> 0),
   memo text check (char_length(memo) <= 2000),
@@ -302,7 +302,7 @@ create table if not exists public.shared_entries (
   updated_at timestamptz not null default now(),
   created_by uuid references public.members (id) on delete set null,
   updated_by uuid references public.members (id) on delete set null,
-  check (kind = 'charge' or amount > 0)
+  check (kind <> 'deposit' or amount > 0)
 );
 create index if not exists shared_entries_member_ym_idx on public.shared_entries (member_id, ym);
 
@@ -379,6 +379,12 @@ alter table public.transactions add column if not exists deposit_ignored boolean
 alter table public.contracts add column if not exists price_history jsonb not null default '[]'::jsonb check (jsonb_typeof(price_history) = 'array');
 -- 立替 by date (2026-11-01): the day it was paid (its month decides the month of the one-off item).
 alter table public.shared_entries add column if not exists paid_on date;
+-- 調整 (2026-11-03): a correction of what a person pays (settlements, per-category ratios), either sign;
+-- neither 負担額 nor 立替. Only administrators write it (the member policies allow 'charge' only).
+alter table public.shared_entries drop constraint if exists shared_entries_kind_check;
+alter table public.shared_entries add constraint shared_entries_kind_check check (kind in ('charge', 'deposit', 'adjust'));
+alter table public.shared_entries drop constraint if exists shared_entries_check;
+alter table public.shared_entries add constraint shared_entries_check check (kind <> 'deposit' or amount > 0);
 -- Deposit reports (入金報告, 2026-11-01): what a member says they paid in, with the bank's completion
 -- screen. Kept for reference only; the deposit records come from the statement.
 create table if not exists public.deposit_reports (
@@ -427,6 +433,8 @@ create table if not exists public.budget_years (
 -- the monthly income of the year (what the two put in): each person's base = income x ratio,
 -- savings = income - spending budget (2026-11-03)
 alter table public.budget_years add column if not exists income_monthly integer check (income_monthly between 0 and 100000000);
+-- 費目ごとの負担率 (2026-11-03): [{ category, subcategory|null, ratio: { member_id: percent }, from: 'YYYY-MM' }]
+alter table public.budget_years add column if not exists category_ratios jsonb not null default '[]'::jsonb check (jsonb_typeof(category_ratios) = 'array');
 -- Evidence of a year's budget (the wage statistics the ratio was taken from, 2026-11-03): files in the
 -- private storage bucket "evidence".
 create table if not exists public.budget_attachments (

@@ -691,6 +691,11 @@ details.chore-group > summary { cursor: pointer; list-style: revert; }
 .budget-edit-row { display: grid; grid-template-columns: 5.5rem 6.5rem minmax(0, 1fr); gap: 0.4rem; align-items: center; }
 .budget-edit-row .budget-cat { font-size: 0.85rem; }
 .budget-edit-row select { grid-column: 2 / 4; }
+.cat-ratio-list { display: grid; gap: 0.6rem; margin-bottom: 0.6rem; }
+.cat-ratio-row { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; padding-bottom: 0.6rem; border-bottom: 1px solid var(--line); }
+.cat-ratio-row select, .cat-ratio-row input[type="text"]:not(.num) { flex: 1 1 8rem; min-width: 0; }
+.cat-ratio-pct { display: inline-flex; align-items: center; gap: 0.25rem; font-size: 0.85rem; }
+.cat-ratio-pct input { width: 3.5rem; }
 @media (min-width: 560px) { .budget-edit-row { grid-template-columns: 8rem 9rem 1fr; } }
 .budget-summary td, .budget-summary th { white-space: nowrap; }
 .budget-edit-row input.num { text-align: right; }
