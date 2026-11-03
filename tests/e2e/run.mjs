@@ -813,6 +813,12 @@ try {
   await page.goto(`${appUrl}#/settings/data`);
   await page.getByRole('heading', { name: '設定', exact: true }).waitFor();
 
+  step('app update: the version on this device and a button that loads the newest one');
+  await page.getByRole('heading', { name: 'アプリの更新' }).waitFor();
+  assert.match(await page.locator('#app-update').locator('xpath=ancestor::section').innerText(), /今のバージョン：v\d+/);
+  await Promise.all([page.waitForEvent('load'), page.locator('#app-update').click()]);
+  await page.getByRole('heading', { name: '設定', exact: true }).waitFor();
+
   step('full backup ZIP');
   const [zipDl] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: '全データを書き出す（ZIP）' }).click()]);
   const zipPath = join(OUT, 'backup.zip');
