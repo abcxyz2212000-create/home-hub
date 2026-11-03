@@ -754,6 +754,16 @@ try {
   await page.locator('.ratio-table').waitFor();
   await page.goto(`${appUrl}#/flow/budget/${ymNow.slice(0, 4)}`);
   await page.locator('.ratio-table').waitFor();
+  // a year can have its ratio before its budget
+  const nextYear = Number(ymNow.slice(0, 4)) + 1;
+  const ratioPerson = (await page.locator('input[id^="ratio-"]').count()) ? null : mock.db.budget_years[0] && Object.keys(mock.db.budget_years[0].ratio)[0];
+  mock.db.budget_years.push({ id: crypto.randomUUID(), year: nextYear, savings_monthly: 0, income_monthly: null, ratio: { [ratioPerson]: 300 }, ratio_note: null, created_at: nowIso, updated_at: nowIso });
+  await page.goto(`${appUrl}#/flow/budget/${nextYear}`);
+  await page.reload();
+  await page.getByText(`${nextYear}年の予算はまだありません。`).waitFor();
+  const nextRow = await page.locator('.ratio-table tr', { hasText: `${nextYear}年` }).innerText();
+  assert.match(nextRow, /100%/, 'the ratio is shown without a budget');
+  assert.doesNotMatch(nextRow, /負担率が未登録/);
   assert.match(await page.locator('.ratio-table').innerText(), /女 30～34歳 294.6千円[\s\S]*令和\d+年賃金構造基本統計調査 第6-1表（正社員・正職員）[\s\S]*📎令和2年_概況.pdf/, 'the basis is the source and the values seen');
 
   step('contract amount by period: a new amount from this month, the old one kept for past months');
