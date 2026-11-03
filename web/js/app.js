@@ -16,6 +16,7 @@ import { compressImage } from './image.js';
 import { parseOcrText, receiptMemo, recognizeImage } from './ocr.js';
 import { parseBankRows, monthEndBalances, latestBalance, missingImports, DEFAULT_LOW_BALANCE } from './bank.js';
 import { lowBalanceAlert, importAlert } from './alerts.js';
+import { MF_CATEGORIES, MAX_BUDGET, percents, proposal, baseRule, planBaseChange, advanceCategory, monthActual, compareRows } from './budget.js';
 import * as push from './push.js';
 import { icon, LEDGER_ICONS } from './icons.js';
 import { timelineChart, barChart, lineChart, flowGraph, urgency } from './charts.js';
@@ -51,6 +52,8 @@ const state = {
   depositReports: [], // 入金報告 (reference only)
   attachments: [], // images of one-off items and deposit reports
   balances: [], // account balances from the bank statement
+  budgets: [], // budget per 大項目 and year
+  budgetYears: [], // savings target and ratio per year
   tx: new Map(), // ym -> statement lines (null while loading)
   txYear: new Map(), // 'YYYY' -> statement lines of the year (null while loading)
   money: { tab: 'member', member: null, ext: null, flow: null }, // お金の流れ: the open tab and each tab's month or year
@@ -311,7 +314,7 @@ function recordLink(ledger, record) {
 // ---------------------------------------------------------------- data loading
 
 async function loadAll() {
-  const [accounts, cards, contracts, items, memberships, photos, settings, members, chores, sharedRules, sharedEntries, depositReports, attachments, balances] = await Promise.all([
+  const [accounts, cards, contracts, items, memberships, photos, settings, members, chores, sharedRules, sharedEntries, depositReports, attachments, balances, budgets, budgetYears] = await Promise.all([
     db.selectAll('accounts'),
     db.selectAll('cards'),
     db.selectAll('contracts'),
@@ -326,6 +329,8 @@ async function loadAll() {
     db.selectAll('deposit_reports', 'paid_on.asc'),
     db.selectAll('shared_attachments', 'created_at.asc'),
     db.selectAll('account_balances', 'date.asc'),
+    db.selectAll('budgets', 'year.asc'),
+    db.selectAll('budget_years', 'year.asc'),
   ]);
   state.data = { accounts, cards, contracts, items, memberships };
   state.photos = photos;
@@ -337,6 +342,8 @@ async function loadAll() {
   state.depositReports = depositReports;
   state.attachments = attachments;
   state.balances = balances;
+  state.budgets = budgets;
+  state.budgetYears = budgetYears;
   state.loaded = true;
 }
 
@@ -361,6 +368,8 @@ function resetState() {
   state.sharedEntries = [];
   state.depositReports = [];
   state.attachments = [];
+  state.budgets = [];
+  state.budgetYears = [];
   clearTxCache();
   state.personal = null;
   for (const url of photoUrls.values()) URL.revokeObjectURL(url);
@@ -380,7 +389,7 @@ function setNav(page) {
     const active = target === page || (target === 'ledgers' && ['list', 'view', 'edit'].includes(page))
       || (target === 'settings' && page === 'member')
       || (target === 'chores' && ['chore', 'chore-edit'].includes(page))
-      || (target === 'flow' && ['shared', 'shared-entry', 'shared-rule', 'tx', 'deposit-report'].includes(page));
+      || (target === 'flow' && ['shared', 'shared-entry', 'shared-rule', 'tx', 'deposit-report', 'budget'].includes(page));
     a.classList.toggle('active', active);
     if (active) a.setAttribute('aria-current', 'page');
     else a.removeAttribute('aria-current');
@@ -437,6 +446,7 @@ async function render() {
   else if (page === 'shared-entry') renderSharedEntry(a, b);
   else if (page === 'deposit-report') renderDepositReport(a, b);
   else if (page === 'shared-rule') renderSharedRule(a);
+  else if (page === 'budget') renderBudget(a);
   else if (page === 'tx') renderTx(a);
   else if (page === 'chores') renderChores(a);
   else if (page === 'chore') renderChore(a);
@@ -1525,7 +1535,7 @@ function sharedAccountPicker() {
 // balance of the shared account, then two tabs, each with its own month or year:
 //   ext    共用口座の入出金      the shared account's money in and out (people's accounts included)
 //   member 個人の入金・立替      what each member puts in (当月分, deposits, 立替, balance)
-const MONEY_TABS = { member: '個人の入金・立替', ext: '共用口座の入出金', flow: '流れ図' };
+const MONEY_TABS = { member: '個人の入金・立替', ext: '共用口座の入出金', budget: '予算', flow: '流れ図' };
 
 // 'YYYY-MM' (a month) or 'YYYY' (a year); anything else -> null.
 function moneyPeriod(v) {
@@ -1544,8 +1554,326 @@ function renderMoney(tabParam, periodParam) {
   const isYear = period.length === 4;
   const content = tab === 'ext' ? (isYear ? extYearView(period) : extMonthView(period))
     : tab === 'flow' ? flowView(period)
+      : tab === 'budget' ? (isYear ? budgetYearView(period) : budgetMonthView(period))
       : (isYear ? memberYearView(period) : memberMonthView(period));
   setView('お金', pageHead({ title: 'お金', icon: 'flow', tabs, tab, sub: periodNav(tab, period) }), alertCards(), ...[content].flat().filter(Boolean));
+}
+
+// ---------------------------------------------------------------- tab: 予算 (予実管理, 2026-11-03)
+//
+// Budget per 大項目 for the year, actual = shared account (by 大項目) + 立替 (by the 大項目 chosen for the
+// label). The proposal of 今月分 = (spending budget + savings target) x share; the base amount changes
+// only when an administrator presses the button (from the month chosen; past months stay).
+
+function budgetOf(year) {
+  return {
+    rows: state.budgets.filter((r) => r.year === Number(year)),
+    year: state.budgetYears.find((y) => y.year === Number(year)) || null,
+  };
+}
+
+function budgetMapping() {
+  const m = state.settings.budget_category_of;
+  return m && typeof m === 'object' && !Array.isArray(m) ? m : {};
+}
+
+function budgetMemberIds() {
+  return sharedMembers().map((m) => m.id);
+}
+
+function budgetActual(txs, ym) {
+  return monthActual({
+    txs, shared: { rules: state.sharedRules, entries: state.sharedEntries }, members: state.members, memberIds: budgetMemberIds(),
+    mapping: budgetMapping(), contracts: state.data.contracts, ym,
+  });
+}
+
+function noBudgetCard(year) {
+  return h('section', { class: 'card' },
+    h('h2', { class: 'with-icon' }, icon('yen'), `${Number(year)}年の予算`),
+    h('p', { class: 'muted' }, `${Number(year)}年の予算はまだありません。`),
+    isAdmin() ? h('a', { class: 'button primary', href: `#/budget/${year}` }, '予算を作る') : h('p', { class: 'muted small' }, '予算は管理者が作ります。'));
+}
+
+// 予算・実績・差 of income, spending and savings.
+function budgetSummaryTable(b, actual, months) {
+  const p = proposal(b.rows, b.year, budgetMemberIds());
+  const lines = [
+    ['収入', p.total * months, actual.income, false],
+    ['支出', p.spending * months, actual.spendingTotal, true],
+    ['貯蓄', p.savings * months, actual.income - actual.spendingTotal, false],
+  ];
+  return h('div', { class: 'table-wrap' }, h('table', { class: 'table budget-summary' },
+    h('thead', {}, h('tr', {}, h('th', {}, '（円）'), h('th', { class: 'num' }, '予算'), h('th', { class: 'num' }, '実績'), h('th', { class: 'num' }, '差'))),
+    h('tbody', {}, lines.map(([label, plan, act, costLike]) => {
+      const diff = act - plan;
+      const bad = costLike ? diff > 0 : diff < 0;
+      const n = (v) => signedYen(v).replace('円', '');
+      return h('tr', {}, h('th', { scope: 'row' }, label), h('td', { class: 'num' }, n(plan)), h('td', { class: 'num' }, n(act)),
+        h('td', { class: `num${bad ? ' over' : ''}` }, diff > 0 ? `+${n(diff)}` : n(diff)));
+    }))));
+}
+
+// One row per 大項目 with a bar of how much of its budget was used (orange beyond 100%).
+function budgetCategoryList(rows) {
+  if (rows.length === 0) return h('p', { class: 'muted' }, '予算も実績もありません。');
+  return h('div', { class: 'budget-list' }, rows.map((r) => {
+    const pct = r.budget > 0 ? Math.round((r.actual / r.budget) * 100) : r.actual > 0 ? null : 0;
+    const fill = h('span', { class: 'progress-fill' });
+    fill.style.width = `${pct === null ? 100 : Math.max(0, Math.min(100, pct))}%`;
+    const over = r.diff > 0;
+    return h('div', { class: `budget-row${over ? ' is-over' : ''}` },
+      h('div', { class: 'budget-row-head' },
+        h('span', { class: 'budget-cat' }, r.category),
+        h('span', { class: 'num' }, `${yen(r.actual)} / ${r.budget ? yen(r.budget) : '予算なし'}`)),
+      h('div', { class: 'progress', role: 'meter', 'aria-label': `${r.category} ${pct === null ? '予算なし' : `${pct}%`}`, 'aria-valuemin': 0, 'aria-valuemax': 100, 'aria-valuenow': pct === null ? 100 : Math.min(100, Math.max(0, pct)) }, fill),
+      h('div', { class: 'budget-row-foot muted small' },
+        h('span', {}, r.memo || ''),
+        h('span', { class: over ? 'over' : '' }, r.budget ? (over ? `${yen(r.diff)} 超過` : `残り ${yen(-r.diff)}`) : '')));
+  }));
+}
+
+function proposalCard(b, ym) {
+  const ids = budgetMemberIds();
+  if (ids.length === 0) return null;
+  const p = proposal(b.rows, b.year, ids);
+  const pc = percents(b.year && b.year.ratio, ids);
+  const from = h('input', { type: 'month', id: 'proposal-from', value: ym > thisYM() ? ym : ymAdd(thisYM(), 1) });
+  const rows = ids.map((id) => {
+    const base = baseRule(state.sharedRules, id, ym);
+    const now = base ? base.amount : 0;
+    const next = p.perMember.get(id);
+    return h('tr', {},
+      h('th', { scope: 'row', class: `person-name ${personClass(id)}` }, memberNick(id), h('span', { class: 'muted small' }, ` ${pc.get(id)}%`)),
+      h('td', { class: 'num' }, yen(next)),
+      h('td', { class: 'num' }, base ? yen(now) : '—'),
+      h('td', { class: 'num' }, next === now ? '同じ' : signedYen(next - now)));
+  });
+  const apply = isAdmin() ? h('button', { type: 'button', class: 'primary', onclick: (ev) => busy(ev.currentTarget, async () => {
+    if (!YM_RE.test(from.value)) {
+      toast('切り替える月を選んでください。', 'error');
+      return;
+    }
+    if (!confirm(`${ymLabel(from.value)}から、各人の基本の額を提案の額に切り替えます。それより前の月は変わりません。よろしいですか？`)) return;
+    for (const id of ids) {
+      const plan = planBaseChange(state.sharedRules, id, from.value, p.perMember.get(id), ymAdd(from.value, -1));
+      if (plan.end) await db.updateRow('shared_rules', plan.end.id, { end_ym: plan.end.end_ym });
+      if (plan.update) await db.updateRow('shared_rules', plan.update.id, { amount: plan.update.amount });
+      if (plan.create) await db.insertRows('shared_rules', [plan.create]);
+    }
+    state.sharedRules = await db.selectAll('shared_rules', 'start_ym.asc');
+    toast(`${ymLabel(from.value)}からの基本の額を切り替えました。`);
+    render();
+  }) }, 'この額で切り替える') : null;
+  return h('section', { class: 'card' },
+    h('h2', { class: 'with-icon' }, icon('user'), '今月分の提案', helpButton('今月分の提案',
+      '（支出の予算 ＋ 貯蓄の目標）を負担率で分けた額です。100円単位にしています。',
+      '「この額で切り替える」を押すと、選んだ月から各人の定例項目「基本」の額が変わります。それより前の月は変わりません。')),
+    h('p', { class: 'muted small' }, `支出 ${yen(p.spending)} ＋ 貯蓄 ${yen(p.savings)} ＝ 月 ${yen(p.total)}`),
+    h('div', { class: 'table-wrap' }, h('table', { class: 'table' },
+      h('thead', {}, h('tr', {}, h('th', {}, ''), h('th', { class: 'num' }, '提案'), h('th', { class: 'num' }, `今の額（${Number(ym.slice(5))}月）`), h('th', { class: 'num' }, '差'))),
+      h('tbody', {}, rows))),
+    apply ? h('div', { class: 'field' }, h('label', { for: 'proposal-from' }, '切り替える月'), from) : null,
+    apply ? h('div', { class: 'actions' }, apply) : null);
+}
+
+function budgetMonthView(ym) {
+  const year = ym.slice(0, 4);
+  const b = budgetOf(year);
+  const editLink = isAdmin() ? h('a', { class: 'button small', href: `#/budget/${year}` }, '予算を編集') : null;
+  if (b.rows.length === 0 && !b.year) return [noBudgetCard(year)];
+  const txs = sharedAccountId() ? monthTransactions(ym) : [];
+  if (txs === null) return [h('section', { class: 'card' }, h('p', { class: 'muted' }, '読み込み中…'))];
+  const actual = budgetActual(txs, ym);
+  const rows = compareRows(b.rows, actual.spending);
+  const unmapped = actual.advances.filter((a) => a.category === '未分類');
+  return [
+    h('section', { class: 'card' },
+      cardHead('yen', `${ymLabel(ym)}の予算と実績`, {
+        help: ['実績は、共用口座の明細（マネーフォワードの大項目別。振替・対象外・二人との入出金・○○負担は除く）と、二人の立替（定例・臨時）の合計です。',
+          '収入は二人が家計に入れた額（入金＋立替）です。貯蓄 ＝ 収入 − 支出。',
+          txs.length === 0 ? 'この月の明細はまだ取り込まれていません（立替だけの集計です）。' : ''].filter(Boolean),
+        action: editLink,
+      }),
+      txs.length === 0 ? h('p', { class: 'notice-text small' }, 'この月の明細はまだ取り込まれていません。') : null,
+      budgetSummaryTable(b, actual, 1)),
+    h('section', { class: 'card' },
+      h('h2', { class: 'with-icon' }, '費目ごと', helpButton('費目ごと', 'バーは予算を使った割合です。予算を超えるとオレンジになります。', '立替は、設定した大項目に入ります（予算の編集画面で変えられます）。')),
+      budgetCategoryList(rows),
+      unmapped.length ? h('p', { class: 'warn-text small' }, `大項目が決まっていない立替があります（${[...new Set(unmapped.map((a) => a.label))].join('・')}）。${isAdmin() ? '予算の編集画面で選べます。' : ''}`) : null),
+    proposalCard(b, ym),
+  ];
+}
+
+function budgetYearView(year) {
+  const b = budgetOf(year);
+  if (b.rows.length === 0 && !b.year) return [noBudgetCard(year)];
+  const txs = sharedAccountId() ? yearTransactions(year) : [];
+  if (txs === null) return [h('section', { class: 'card' }, h('p', { class: 'muted' }, '読み込み中…'))];
+  const current = thisYM();
+  const last = year < current.slice(0, 4) ? 12 : year > current.slice(0, 4) ? 0 : Number(current.slice(5));
+  const months = Array.from({ length: last }, (_, i) => `${year}-${String(i + 1).padStart(2, '0')}`);
+  const perMonth = months.map((ym) => ({ ym, a: budgetActual(txs.filter((t) => t.date.startsWith(ym)), ym) }));
+  const total = { spending: new Map(), income: 0, spendingTotal: 0 };
+  for (const { a } of perMonth) {
+    total.income += a.income;
+    total.spendingTotal += a.spendingTotal;
+    for (const [k, v] of a.spending) total.spending.set(k, (total.spending.get(k) || 0) + v);
+  }
+  const plan = proposal(b.rows, b.year, budgetMemberIds());
+  let cumPlan = 0;
+  let cumAct = 0;
+  const series = [
+    { label: '予算（累計）', color: 'var(--muted)', points: months.map((ym) => ({ x: ym, y: (cumPlan += plan.spending) })) },
+    { label: '実績（累計）', color: 'var(--accent)', points: perMonth.map(({ ym, a }) => ({ x: ym, y: (cumAct += a.spendingTotal) })) },
+  ];
+  const legend = h('div', { class: 'legend' }, series.map((s) => {
+    const sw = h('span', { class: 'swatch' });
+    sw.style.background = s.color;
+    return h('span', {}, sw, s.label);
+  }));
+  return [
+    h('section', { class: 'card' },
+      cardHead('yen', `${Number(year)}年の予算と実績${last && last < 12 ? `（1〜${last}月）` : ''}`, {
+        help: ['予算は月の額 × 経過した月数です。', '実績の数え方は「月ごと」と同じです。'],
+        action: isAdmin() ? h('a', { class: 'button small', href: `#/budget/${year}` }, '予算を編集') : null,
+      }),
+      last === 0 ? h('p', { class: 'muted' }, 'まだこの年になっていません。') : budgetSummaryTable(b, total, last),
+      h('p', { class: 'meta' }, `年間の予算：支出 ${yen(plan.spending * 12)}・貯蓄 ${yen(plan.savings * 12)}`)),
+    last ? h('section', { class: 'card' },
+      h('h2', {}, '支出の累計'),
+      lineChart(series, '支出の予算と実績の累計'),
+      legend,
+      h('div', { class: 'table-wrap' }, h('table', { class: 'table year-table budget-months' },
+        h('thead', {}, h('tr', {}, h('th', {}, '月'), h('th', { class: 'num' }, '支出'), h('th', { class: 'num' }, '予算との差'), h('th', { class: 'num' }, '貯蓄'))),
+        h('tbody', {}, perMonth.map(({ ym, a }) => h('tr', {},
+          h('th', { scope: 'row' }, h('a', { href: `#/flow/budget/${ym}` }, `${Number(ym.slice(5))}月`)),
+          h('td', { class: 'num' }, yen(a.spendingTotal)),
+          h('td', { class: `num${a.spendingTotal > plan.spending ? ' over' : ''}` }, signedYen(a.spendingTotal - plan.spending)),
+          h('td', { class: 'num' }, signedYen(a.income - a.spendingTotal)))))))) : null,
+    last ? h('section', { class: 'card' }, h('h2', {}, '費目ごと（累計）'), budgetCategoryList(compareRows(b.rows, total.spending, last))) : null,
+  ];
+}
+
+// ---- budget editor (administrators)
+
+function parseYen(v, { min = 0, max = MAX_BUDGET } = {}) {
+  const t = String(v ?? '').replace(/[,，円\s]/g, '');
+  if (t === '') return 0;
+  if (!/^-?\d+$/.test(t)) return null;
+  const n = Number(t);
+  return n >= min && n <= max ? n : null;
+}
+
+function renderBudget(yearParam) {
+  const year = /^\d{4}$/.test(yearParam || '') && Number(yearParam) >= 2000 && Number(yearParam) <= 2100 ? Number(yearParam) : Number(thisYM().slice(0, 4));
+  const back = `#/flow/budget/${year === Number(thisYM().slice(0, 4)) ? thisYM() : `${year}-01`}`;
+  if (!isAdmin()) {
+    setView('予算', pageHead({ title: '予算', icon: 'flow', back }), h('section', { class: 'card' }, h('p', {}, '予算は管理者が設定します。')));
+    return;
+  }
+  const cur = budgetOf(year);
+  const prev = budgetOf(year - 1);
+  const ids = budgetMemberIds();
+  const src = cur.rows.length || cur.year ? cur : null;
+  const draw = (base) => {
+    const byCat = new Map(base.rows.map((r) => [r.category, r]));
+    const cats = [...MF_CATEGORIES.filter((c) => c !== '未分類'), ...base.rows.map((r) => r.category).filter((c) => !MF_CATEGORIES.includes(c))];
+    const catInputs = cats.map((c) => {
+      const r = byCat.get(c);
+      const amount = h('input', { type: 'text', inputmode: 'numeric', value: r && r.monthly ? String(r.monthly) : '', 'aria-label': `${c}の月の予算（円）`, class: 'num' });
+      const memo = h('input', { type: 'text', maxlength: 1000, value: (r && r.memo) || '', 'aria-label': `${c}の備考`, placeholder: '備考' });
+      return { c, amount, memo, el: h('div', { class: 'budget-edit-row' }, h('span', { class: 'budget-cat' }, c), amount, memo) };
+    });
+    const sumOut = h('p', { class: 'meta', role: 'status' });
+    const savings = h('input', { type: 'text', inputmode: 'numeric', id: 'budget-savings', value: base.year ? String(base.year.savings_monthly || 0) : '0' });
+    const weights = ids.map((id) => ({ id, input: h('input', { type: 'text', inputmode: 'decimal', id: `ratio-${id}`, value: base.year && base.year.ratio && base.year.ratio[id] !== undefined ? String(base.year.ratio[id]) : '' }) }));
+    const pctOut = h('p', { class: 'meta', role: 'status' });
+    const note = h('textarea', { id: 'ratio-note', maxlength: 1000, rows: 2 }, (base.year && base.year.ratio_note) || '');
+    const readWeights = () => Object.fromEntries(weights.map((w) => [w.id, Number(w.input.value.replace(/[,，\s]/g, ''))]).filter(([, v]) => Number.isFinite(v) && v > 0));
+    const update = () => {
+      const total = catInputs.reduce((n, x) => n + (parseYen(x.amount.value) || 0), 0);
+      const s = parseYen(savings.value, { min: -MAX_BUDGET }) || 0;
+      sumOut.textContent = `支出の予算 月 ${yen(total)}（年 ${yen(total * 12)}）／ 支出 ＋ 貯蓄 ＝ 月 ${yen(total + s)}`;
+      const pc = percents(readWeights(), ids);
+      pctOut.textContent = `負担率 ${ids.map((id) => `${memberNick(id)} ${pc.get(id)}%`).join(' : ')}`;
+    };
+    for (const x of [...catInputs.flatMap((c) => [c.amount]), savings, ...weights.map((w) => w.input)]) x.addEventListener('input', update);
+    update();
+
+    // 大項目 of each 立替 label
+    const mapping = { ...budgetMapping() };
+    const labels = [...new Set([
+      ...state.sharedRules.filter((r) => r.amount < 0).map((r) => r.label),
+      ...state.sharedEntries.filter((e) => e.kind === 'charge' && e.amount < 0).map((e) => e.label),
+    ])].sort((a, b) => a.localeCompare(b, 'ja'));
+    const labelSelects = labels.map((l) => {
+      const rule = state.sharedRules.find((r) => r.label === l && r.contract_id);
+      const auto = advanceCategory({ label: l, rule }, {}, state.data.contracts);
+      const sel = h('select', { 'aria-label': `${l}の大項目` },
+        h('option', { value: '' }, `自動（${auto}）`),
+        MF_CATEGORIES.map((c) => h('option', { value: c, selected: mapping[l] === c }, c)));
+      return { l, sel, el: h('div', { class: 'budget-edit-row' }, h('span', { class: 'budget-cat' }, l), sel) };
+    });
+
+    const save = h('button', { type: 'button', class: 'primary', onclick: (ev) => busy(ev.currentTarget, async () => {
+      const bad = [];
+      const rows = [];
+      for (const x of catInputs) {
+        const v = parseYen(x.amount.value);
+        if (v === null) bad.push(x.c);
+        else if (v > 0 || x.memo.value.trim()) rows.push({ year, category: x.c, monthly: v, memo: x.memo.value.trim() || null });
+      }
+      const s = parseYen(savings.value, { min: -MAX_BUDGET });
+      if (s === null) bad.push('貯蓄の目標');
+      const w = readWeights();
+      if (weights.some((x) => x.input.value.trim() && !(Number(x.input.value.replace(/[,，\s]/g, '')) > 0))) bad.push('負担率');
+      if (bad.length) {
+        toast(`${bad.join('・')}は数字で入れてください（金額は1億円まで）。`, 'error');
+        return;
+      }
+      if (rows.length) await db.upsertRows('budgets', rows, 'year,category');
+      const keep = new Set(rows.map((r) => r.category));
+      for (const r of state.budgets.filter((x) => x.year === year && !keep.has(x.category))) await db.deleteWhere('budgets', 'id', r.id);
+      await db.upsertRows('budget_years', [{ year, savings_monthly: s, ratio: w, ratio_note: note.value.trim() || null }], 'year');
+      const nextMap = { ...budgetMapping() };
+      for (const x of labelSelects) {
+        if (x.sel.value) nextMap[x.l] = x.sel.value;
+        else delete nextMap[x.l];
+      }
+      await saveSetting('budget_category_of', nextMap);
+      [state.budgets, state.budgetYears] = await Promise.all([db.selectAll('budgets', 'year.asc'), db.selectAll('budget_years', 'year.asc')]);
+      toast(`${year}年の予算を保存しました。`);
+      location.hash = back;
+    }) }, '保存');
+
+    return [
+      !src && (prev.rows.length || prev.year) ? h('section', { class: 'card notice' },
+        h('p', {}, `${year - 1}年の予算があります。`),
+        h('button', { type: 'button', onclick: () => setBody(draw(prev)) }, `${year - 1}年の予算をコピーする`)) : null,
+      h('section', { class: 'card' },
+        h('h2', { class: 'with-icon' }, '費目ごとの月の予算', helpButton('月の予算', '費目はマネーフォワードの大項目です。年に一度の支出（更新料など）は、12で割った額を入れます。', '空欄は予算なし（0円）です。')),
+        h('div', { class: 'budget-edit' }, catInputs.map((x) => x.el)),
+        sumOut),
+      h('section', { class: 'card' },
+        h('h2', {}, '貯蓄と負担率'),
+        h('div', { class: 'field' }, h('label', { for: 'budget-savings' }, '貯蓄の目標（月・円）'), savings),
+        weights.map((w) => h('div', { class: 'field' },
+          h('div', { class: 'label-row' }, h('label', { for: `ratio-${w.id}` }, `${memberNick(w.id)}の基準の値`),
+            helpButton('基準の値', '負担率は、二人の基準の値の比で決まります。', '比率（57 と 43）をそのまま入れても、統計の金額（294.6 と 258.1 など）を入れても構いません。')),
+          w.input)),
+        pctOut,
+        h('div', { class: 'field' }, h('label', { for: 'ratio-note' }, '負担率のメモ（参照した資料など）'), note)),
+      labels.length ? h('section', { class: 'card' },
+        h('h2', { class: 'with-icon' }, '立替の大項目', helpButton('立替の大項目', '個人のお金で払った共通の支出（立替）を、どの大項目の実績に入れるかを選びます。', '「自動」は、契約の種類から決めた大項目です（契約でない立替は未分類）。')),
+        h('div', { class: 'budget-edit' }, labelSelects.map((x) => x.el))) : null,
+      h('div', { class: 'actions sticky-actions' }, save),
+    ];
+  };
+  const body = h('div', {});
+  const setBody = (nodes) => body.replaceChildren(...nodes.flat().filter(Boolean));
+  setBody(draw(src || { rows: [], year: null }));
+  setView(`${year}年の予算`, pageHead({ title: `${year}年の予算`, icon: 'flow', back }), body);
 }
 
 // ---- tab 3: 流れ図 (people -> shared account -> cards -> payees), the balance of the shared account

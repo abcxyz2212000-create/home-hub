@@ -696,6 +696,41 @@ try {
   await page.getByText('残高を取り込みました（2日分）。').waitFor();
   assert.equal(mock.db.account_balances.length, 2, 'importing again does not duplicate');
 
+  step('budget: set per 大項目, actual from the statement and 立替, 今月分 proposed and switched from next month');
+  await page.goto(`${appUrl}#/flow/budget/${ymNow}`);
+  await page.getByText(`${ymNow.slice(0, 4)}年の予算はまだありません。`).waitFor();
+  await page.getByRole('link', { name: '予算を作る' }).click();
+  await page.getByLabel('住宅の月の予算（円）').fill('90,000');
+  await page.getByLabel('住宅の備考').fill('更新料を按分');
+  await page.getByLabel('通信費の月の予算（円）').fill('6000');
+  await page.getByLabel('貯蓄の目標（月・円）').fill('4000');
+  const ratioInputs = page.locator('input[id^="ratio-"]');
+  const people = await ratioInputs.count();
+  for (let i = 0; i < people; i += 1) await ratioInputs.nth(i).fill(i === 0 ? '294.6' : '258.1');
+  if (people === 2) assert.match(await page.locator('#view').innerText(), /負担率 \S+ 53% : \S+ 47%/);
+  await page.getByLabel('立替の大項目').first().waitFor().catch(() => {});
+  await page.getByRole('button', { name: '保存' }).click();
+  await page.getByText(`${ymNow.slice(0, 4)}年の予算を保存しました。`).waitFor();
+  await page.locator('.budget-summary').waitFor();
+  assert.deepEqual(mock.db.budgets.map((b) => [b.category, b.monthly, b.memo]).sort(), [['住宅', 90000, '更新料を按分'], ['通信費', 6000, null]]);
+  assert.equal(mock.db.budget_years[0].savings_monthly, 4000);
+  const budgetText = await page.locator('#view').innerText();
+  assert.match(budgetText, /支出\s+96,000\s/);
+  assert.match(budgetText, /住宅\s+[\d,]+円 \/ 90,000円/);
+  assert.match(budgetText, /今月分の提案[\s\S]*月 100,000円/);
+  const nextYM = ymAdd(ymNow, 1);
+  const before = mock.db.shared_rules.length;
+  await page.getByRole('button', { name: 'この額で切り替える' }).click();
+  await page.getByText(`${ymLabel(nextYM)}からの基本の額を切り替えました。`).waitFor();
+  const switched = mock.db.shared_rules.filter((r) => r.start_ym === nextYM && r.amount > 0 && !r.contract_id);
+  assert.equal(switched.length, people, 'a new base amount for each person from next month');
+  assert.equal(switched.reduce((n, r) => n + r.amount, 0), 100000);
+  assert.ok(mock.db.shared_rules.length >= before + people);
+  assert.ok(mock.db.shared_rules.filter((r) => r.end_ym === ymNow).length >= 1, 'the old amount ends this month');
+  await page.getByRole('link', { name: '年間' }).click();
+  await page.getByText('支出の累計').waitFor();
+  await page.screenshot({ path: join(OUT, 'budget.png'), fullPage: true });
+
   step('contract amount by period: a new amount from this month, the old one kept for past months');
   await page.goto(`${appUrl}#/edit/contracts/${net.id}`);
   assert.equal(await page.getByLabel('新しい金額の適用開始月', { exact: true }).isVisible(), false, 'asked only when the amount changes');
@@ -907,6 +942,7 @@ try {
     ['edit-contract', '#/edit/contracts/new'], ['chores-today', '#/chores/today'], ['chores-load', '#/chores/load'], ['chores-list', '#/chores/list'],
     ['money-member-month', `#/flow/member/${ymNow}`], ['money-member-year', `#/flow/member/${yearNow}`], ['money-ext-month', `#/flow/ext/${ymNow}`],
     ['money-ext-year', `#/flow/ext/${yearNow}`], ['money-flow-month', `#/flow/flow/${ymNow}`], ['money-flow-year', `#/flow/flow/${yearNow}`],
+    ['money-budget-month', `#/flow/budget/${ymNow}`], ['money-budget-year', `#/flow/budget/${yearNow}`], ['budget-edit', `#/budget/${yearNow}`],
     ['advance-new', `#/shared-entry/new/advance:${hanako.id}:${ymNow}`], ['report-new', `#/deposit-report/new/${hanako.id}`],
     ['settings-account', '#/settings/account'], ['settings-users', '#/settings/users'], ['settings-data', '#/settings/data'], ['settings-other', '#/settings/other'],
   ];

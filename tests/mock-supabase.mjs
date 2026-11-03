@@ -18,7 +18,7 @@ const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '
 const DEFAULTS = {
   status: 'active', links: [], tags: [], notify_days: {}, mf_linked: false, family_card: false, etc_card: false, auto_renew: false, shared_cost: false, price_history: [],
 };
-const TABLES = ['accounts', 'cards', 'contracts', 'items', 'memberships', 'item_photos', 'settings', 'push_subscriptions', 'notification_log', 'members', 'audit_log', 'chores', 'shared_rules', 'shared_entries', 'transactions', 'deposit_reports', 'shared_attachments', 'account_balances'];
+const TABLES = ['accounts', 'cards', 'contracts', 'items', 'memberships', 'item_photos', 'settings', 'push_subscriptions', 'notification_log', 'members', 'audit_log', 'chores', 'shared_rules', 'shared_entries', 'transactions', 'deposit_reports', 'shared_attachments', 'account_balances', 'budgets', 'budget_years'];
 const TABLE_DEFAULTS = {
   members: { role: 'member', active: true, email: null, nickname: null, transfer_names: null, gender: null, notify_hour: null },
   settings: {}, notification_log: {}, push_subscriptions: {}, audit_log: {},
@@ -26,6 +26,7 @@ const TABLE_DEFAULTS = {
   shared_rules: { end_ym: null, memo: null, month_of_year: null, contract_id: null },
   shared_entries: { memo: null, paid_on: null },
   deposit_reports: { memo: null },
+  budgets: { memo: null }, budget_years: { savings_monthly: 0, ratio: {}, ratio_note: null },
   shared_attachments: { entry_id: null, report_id: null, bytes: 0 },
   transactions: { contract_id: null, account_id: null, card_id: null, memo: null, counted: true, transfer: false, personal_member_id: null, needs_review: false, settled_entry_id: null, deposit_entry_id: null, deposit_ignored: false },
 };

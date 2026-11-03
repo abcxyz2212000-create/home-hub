@@ -401,6 +401,27 @@ create table if not exists public.account_balances (
   created_at timestamptz not null default now(),
   unique (account_id, date)
 );
+-- Budget (予実管理, 2026-11-03): a monthly amount per 費目 (MoneyForward's 大項目) for each year, and
+-- per year the monthly savings target and the ratio of the people ({ member id: weight }).
+create table if not exists public.budgets (
+  id uuid primary key default gen_random_uuid(),
+  year integer not null check (year between 2000 and 2100),
+  category text not null check (char_length(category) between 1 and 50),
+  monthly integer not null default 0 check (monthly between 0 and 100000000),
+  memo text check (char_length(memo) <= 1000),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (year, category)
+);
+create table if not exists public.budget_years (
+  id uuid primary key default gen_random_uuid(),
+  year integer not null unique check (year between 2000 and 2100),
+  savings_monthly integer not null default 0 check (savings_monthly between -100000000 and 100000000),
+  ratio jsonb not null default '{}'::jsonb check (jsonb_typeof(ratio) = 'object'),
+  ratio_note text check (char_length(ratio_note) <= 1000),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
 -- Images attached to a one-off item (receipt) or a deposit report (completion screen), stored in the
 -- item-photos bucket.
 create table if not exists public.shared_attachments (
@@ -601,7 +622,7 @@ begin
   end loop;
   execute 'drop trigger if exists item_photos_stamp on public.item_photos';
   execute 'create trigger item_photos_stamp before insert or update on public.item_photos for each row execute function public.stamp_row()';
-  foreach t in array array['settings', 'members'] loop
+  foreach t in array array['settings', 'members', 'budgets', 'budget_years'] loop
     execute format('drop trigger if exists %I_touch on public.%I', t, t);
     execute format('create trigger %I_touch before update on public.%I for each row execute function public.touch_updated_at()', t, t);
   end loop;
@@ -614,7 +635,7 @@ begin
 
   foreach t in array array['members', 'accounts', 'cards', 'contracts', 'items', 'memberships',
                            'item_photos', 'settings', 'push_subscriptions', 'notification_log', 'audit_log', 'chores', 'shared_rules', 'shared_entries', 'transactions',
-                           'deposit_reports', 'shared_attachments', 'account_balances'] loop
+                           'deposit_reports', 'shared_attachments', 'account_balances', 'budgets', 'budget_years'] loop
     execute format('alter table public.%I enable row level security', t);
     execute format('revoke all on public.%I from anon, authenticated', t);
     -- service_role (used only by the daily GitHub Actions job) bypasses RLS but still needs table
@@ -665,6 +686,14 @@ begin
   drop policy if exists admin_write on public.account_balances;
   create policy member_read on public.account_balances for select to authenticated using (public.is_member());
   create policy admin_write on public.account_balances for all to authenticated using (public.is_admin()) with check (public.is_admin());
+  -- budget: everyone reads, administrators set it
+  foreach t in array array['budgets', 'budget_years'] loop
+    execute format('grant select, insert, update, delete on public.%I to authenticated', t);
+    execute format('drop policy if exists member_read on public.%I', t);
+    execute format('drop policy if exists admin_write on public.%I', t);
+    execute format('create policy member_read on public.%I for select to authenticated using (public.is_member())', t);
+    execute format('create policy admin_write on public.%I for all to authenticated using (public.is_admin()) with check (public.is_admin())', t);
+  end loop;
   -- deposit reports: a member reports only their own
   create policy member_insert on public.deposit_reports for insert to authenticated
     with check (public.is_admin() or (public.is_member() and member_id = public.current_member_id()));
