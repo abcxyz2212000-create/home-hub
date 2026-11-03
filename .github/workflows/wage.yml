@@ -1,9 +1,8 @@
-# Yearly (1 December, Japan time): the ratio of the people for next year's budget from the wage
-# statistics (厚生労働省 賃金構造基本統計調査, via the e-Stat API). The result is a proposal that an
-# administrator adopts on the budget screen.
-# Required repository secrets: SUPABASE_SERVICE_ROLE_KEY, ESTAT_APP_ID; VAPID_PRIVATE_KEY to notify.
-# Logs of a public repository are public: scripts/wage.mjs never prints names, ages, values or the app ID.
-name: 負担率の案（毎年12月）
+# Yearly (1 December, Japan time): remind the administrators to set next year's ratio of the budget
+# from the wage statistics (厚生労働省 賃金構造基本統計調査), with what to look up.
+# Required repository secrets: SUPABASE_SERVICE_ROLE_KEY, VAPID_PRIVATE_KEY.
+# Logs of a public repository are public: scripts/wage.mjs never prints names or ages.
+name: 負担率の確認（毎年12月）
 
 on:
   schedule:
@@ -19,18 +18,17 @@ permissions:
   contents: read
 
 jobs:
-  wage:
+  remind:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Ratio proposal
+      - name: Remind
         run: node scripts/wage.mjs
         env:
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-          ESTAT_APP_ID: ${{ secrets.ESTAT_APP_ID }}
           VAPID_PRIVATE_KEY: ${{ secrets.VAPID_PRIVATE_KEY }}
           BUDGET_YEAR: ${{ github.event.inputs.budget_year }}

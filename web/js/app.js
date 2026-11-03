@@ -16,7 +16,7 @@ import { compressImage } from './image.js';
 import { parseOcrText, receiptMemo, recognizeImage } from './ocr.js';
 import { parseBankRows, monthEndBalances, latestBalance, missingImports, DEFAULT_LOW_BALANCE } from './bank.js';
 import { lowBalanceAlert, importAlert } from './alerts.js';
-import { ESTAT_DB_URL, surveyYearFor, reiwa, overviewUrl, lookups, sourceText, SEX_LABEL } from './wage.js';
+import { surveyYearFor, reiwa, overviewUrl, lookups, lookupText } from './wage.js';
 import { MF_CATEGORIES, MAX_BUDGET, percents, proposal, baseRule, planBaseChange, advanceCategory, monthActual, compareRows } from './budget.js';
 import * as push from './push.js';
 import { icon, LEDGER_ICONS } from './icons.js';
@@ -1756,35 +1756,26 @@ function budgetYearView(year) {
   ];
 }
 
-// ---- budget editor (administrators)
-
-// The ratio from the wage statistics: the yearly proposal (if any) and what to look up by hand.
+// The ratio from the wage statistics: what to look up for each person, and where.
 function wageBox(year, ids, use) {
   const survey = surveyYearFor(year);
   const people = ids.map((id) => state.members.find((m) => m.id === id)).filter(Boolean);
   const { items, problems } = lookups(people, year);
-  const p = state.settings.ratio_proposal;
-  const mine = p && typeof p === 'object' && p.budget_year === year ? p : null;
-  const noteOf = (prop) => `${reiwa(prop.survey_year)}賃金構造基本統計調査（一般労働者・性、年齢階級別の賃金${prop.source ? `、e-Stat ${prop.source.id}` : ''}）：${prop.values.map((v) => `${memberNick(v.member_id)} ${sourceText(prop, v)}`).join('／')}`;
+  const note = () => `${reiwa(survey)}賃金構造基本統計調査（一般労働者・性、年齢階級別の賃金）：${items.map((it) => `${memberNick(it.member_id)} ${lookupText(survey, it)}`).join('／')}`;
   return h('div', { class: 'wage-box notice-text' },
     h('div', { class: 'label-row' }, h('strong', {}, '賃金統計から決める'),
       helpButton('賃金統計の負担率', `${year}年の予算には、${reiwa(survey)}（${survey}年）の賃金構造基本統計調査を使います（2年前の結果）。`,
-        '二人それぞれの性別と、その年の年齢階級の「賃金（所定内給与額、千円）」を比べます。年齢は ユーザーマスターの生まれ年から求めます。',
-        '毎年12月1日に自動で取りに行き、案を管理者に通知します。')),
-    mine && !mine.error ? [
-      h('p', {}, `案（${new Date(mine.created_at).toLocaleDateString('ja-JP')} 取得）：`),
-      mine.survey_year < survey ? h('p', { class: 'warn-text small' }, `${reiwa(survey)}の結果がまだ e-Stat から取れないため、${reiwa(mine.survey_year)}の結果です。`) : null,
-      h('ul', { class: 'small' }, mine.values.map((v) => h('li', {}, `${memberNick(v.member_id)}：${sourceText(mine, v)}`))),
-      h('button', { type: 'button', class: 'small', onclick: () => use(Object.fromEntries(mine.values.map((v) => [v.member_id, v.value])), noteOf(mine)) }, 'この値を使う'),
-    ] : null,
-    mine && mine.error ? h('p', { class: 'warn-text small' }, '自動では取れませんでした。下の資料で数字を確かめて、基準の値に入れてください。') : null,
-    h('p', { class: 'small' }, `見る値（${reiwa(survey)}・一般労働者・全国・産業計）：`),
-    items.length ? h('ul', { class: 'small' }, items.map((it) => h('li', {}, `${memberNick(it.member_id)}：${SEX_LABEL[it.sex]} ${it.ageClass}`))) : null,
+        '「結果の概況」の「性、年齢階級別賃金」の表で、二人それぞれの性別と年齢階級の賃金（千円）を見て、基準の値に入れます。年齢はユーザーマスターの生まれ年から求めます。',
+        '毎年12月1日に、管理者へ確認の通知が届きます。')),
+    items.length ? [h('p', { class: 'small' }, `見る値（${reiwa(survey)}・性、年齢階級別賃金）：`),
+      h('ul', { class: 'small' }, items.map((it) => h('li', {}, `${memberNick(it.member_id)}：${lookupText(survey, it).replace(`${reiwa(survey)} `, '')}`)))] : null,
     problems.length ? h('p', { class: 'warn-text small' }, `${problems.join('')}設定 → ユーザー で入れてください。`) : null,
     h('p', { class: 'small' },
-      h('a', { href: overviewUrl(survey), target: '_blank', rel: 'noopener noreferrer' }, `${reiwa(survey)}の結果の概況（厚生労働省）`), '　',
-      h('a', { href: ESTAT_DB_URL, target: '_blank', rel: 'noopener noreferrer' }, 'e-Stat の表')));
+      h('a', { href: overviewUrl(survey), target: '_blank', rel: 'noopener noreferrer' }, `${reiwa(survey)}の結果の概況（厚生労働省）`)),
+    items.length ? h('button', { type: 'button', class: 'small', onclick: () => use({}, note()) }, 'メモに出典を書く') : null);
 }
+
+// ---- budget editor (administrators)
 
 function parseYen(v, { min = 0, max = MAX_BUDGET } = {}) {
   const t = String(v ?? '').replace(/[,，円\s]/g, '');
