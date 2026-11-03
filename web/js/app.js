@@ -2112,7 +2112,7 @@ function progressBar(done, due, cls) {
   fill.style.width = `${pct}%`;
   return h('div', { class: 'progress-wrap' },
     h('div', { class: `progress ${cls || ''}`, role: 'meter', 'aria-valuemin': 0, 'aria-valuemax': 100, 'aria-valuenow': pct, 'aria-label': `支払済 ${pct}%` }, fill),
-    h('div', { class: 'progress-caption muted small' }, `支払済 ${yen(done)}／${yen(Math.max(0, due))}`));
+    h('div', { class: 'progress-caption muted small' }, `払った額 ${yen(done)}／払う額 ${yen(Math.max(0, due))}（${pct}%）`));
 }
 
 function memberMonthView(ym) {
@@ -2123,18 +2123,20 @@ function memberMonthView(ym) {
   const sts = members.map((m) => ({ m, st: statement(rules, entries, m.id, ym) }));
   const cs = sts.map(({ m, st }) => ({ m, st, c: contribution(st) }));
 
-  // per-member cards in the order of the calculation:
-  // 先月の残り + 今月分 = 合計, − 入金 − 立替 = 残り（来月へ）
-  const minus = (n) => (n ? `−${yen(n)}` : yen(0));
+  // per-member cards: 計画 (先月の残り + 今月分 = 払う額), 実績 (入金 + 立替 = 払った額), 残り = 払う額 − 払った額
   const plus = (n) => (n < 0 ? `−${yen(-n)}` : `＋${yen(n)}`);
+  const band = (text) => [h('dt', { class: 'band' }, text), h('dd', { class: 'band' })];
   const cards = h('div', { class: 'shared-cards' }, cs.map(({ m, c }) => h('section', { class: `card shared-card ${personClass(m.id)}` },
     h('h3', { class: 'with-icon' }, icon('user'), nick(m)),
     h('dl', { class: 'shared-figures' },
+      band('計画（払う額）'),
       h('dt', {}, '先月の残り'), h('dd', { class: 'num' }, signedYen(c.carry)),
       h('dt', {}, '今月分'), h('dd', { class: 'num' }, plus(c.burden)),
-      h('dt', { class: 'subtotal' }, '合計'), h('dd', { class: 'num subtotal' }, signedYen(c.carry + c.burden)),
-      h('dt', {}, '入金'), h('dd', { class: 'num' }, minus(c.deposit)),
-      h('dt', {}, '立替'), h('dd', { class: 'num' }, minus(c.advance)),
+      h('dt', { class: 'subtotal' }, '＝ 払う額'), h('dd', { class: 'num subtotal' }, signedYen(c.carry + c.burden)),
+      band('実績（払った額）'),
+      h('dt', {}, '入金'), h('dd', { class: 'num' }, yen(c.deposit)),
+      h('dt', {}, '立替'), h('dd', { class: 'num' }, yen(c.advance)),
+      h('dt', { class: 'subtotal' }, '＝ 払った額'), h('dd', { class: 'num subtotal' }, yen(c.done)),
       h('dt', { class: 'total' }, '残り（来月へ）'), h('dd', { class: `num big total${c.remaining > 0 ? ' due' : ''}` }, signedYen(c.remaining))),
     progressBar(c.done, c.carry + c.burden, personClass(m.id)),
     advanceButton(m.id, ym))));
@@ -2157,16 +2159,15 @@ function memberMonthView(ym) {
   const table = h('div', { class: 'table-wrap' }, h('table', { class: 'table shared-table' },
     h('thead', {}, h('tr', {}, h('th', {}, ''), cs.map(({ m }) => h('th', { class: `num person-name ${personClass(m.id)}` }, nick(m))))),
     h('tbody', {},
-      row('先月の残り', (c) => h('td', { class: 'num' }, signedYen(c.carry)), 'sub'),
-      groupRow('今月分'),
-      burdenLabels.map((l) => row(l, (c) => amountCell(c.burdenItems, l, 1), 'item')),
-      row('今月分（計）', (c) => h('td', { class: 'num' }, yen(c.burden)), 'subtotal'),
-      row('合計', (c) => h('td', { class: 'num' }, signedYen(c.carry + c.burden)), 'subtotal'),
-      groupRow('支払い'),
+      groupRow('計画（払う額）'),
+      row('先月の残り', (c) => h('td', { class: 'num' }, signedYen(c.carry)), 'item'),
+      burdenLabels.map((l) => row(`今月分: ${l}`, (c) => amountCell(c.burdenItems, l, 1), 'item')),
+      row('＝ 払う額', (c) => h('td', { class: 'num' }, signedYen(c.carry + c.burden)), 'subtotal'),
+      groupRow('実績（払った額）'),
       row('入金', (c) => h('td', { class: 'num' }, c.deposit ? yen(c.deposit) : '—'), 'item'),
       regularLabels.map((l) => row(`立替（定例）: ${l}`, (c) => amountCell(c.regular, l, -1), 'item')),
       tempLabels.map((l) => row(`立替（臨時）: ${l}`, (c) => amountCell(c.temp, l, -1), 'item')),
-      row('支払済（計）', (c) => h('td', { class: 'num' }, yen(c.done)), 'subtotal'),
+      row('＝ 払った額', (c) => h('td', { class: 'num' }, yen(c.done)), 'subtotal'),
       row('残り（来月へ）', (c) => h('td', { class: 'num' }, signedYen(c.remaining)), 'total'))));
 
   const monthEntries = entries.filter((e) => e.ym === ym)
@@ -2214,13 +2215,14 @@ function memberMonthView(ym) {
         '「今月分」は、各人がその月に家計に出す額です。共用口座への「入金」か、共通の支払いを自分のお金で払う「立替」で支払います。',
         '立替（定例）は、個人の口座から払っている家賃などの契約から自動で入ります。立替（臨時）は「立替を記録」から入れます。',
         '入金はマネーフォワードの明細から自動で記録します（取り込みは管理者）。振り込んだら「入金を報告」で報告できます。',
-        '残り（来月へ） = 先月の残り + 今月分 − 入金 − 立替。マイナスは多く払っている分で、来月に回ります。')),
+        '計画（払う額）＝ 先月の残り ＋ 今月分。実績（払った額）＝ 入金 ＋ 立替。',
+        '残り（来月へ）＝ 払う額 − 払った額。マイナスは多く払っている分で、来月に回ります。')),
       cards,
       ratioLine(ym.slice(0, 4))),
     h('section', { class: 'card' },
       h('h2', { class: 'with-icon' }, `${ymLabel(ym)}の内訳`, helpButton('内訳',
         '今月分は基本の額と、その月の追加分（個人負担の精算・共用口座からの受け取りなど）です。',
-        '支払いは入金と立替（定例・臨時）です。残り = 先月の残り + 今月分 − 支払済。')),
+        '実績は入金と立替（定例・臨時）です。残り ＝ 払う額 − 払った額。')),
       table,
       h('h3', {}, 'この月の立替・入金など'),
       entryList,

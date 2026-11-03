@@ -713,3 +713,5 @@ details.chore-group > summary { cursor: pointer; list-style: revert; }
 .evidence-box label.button { position: relative; overflow: hidden; justify-self: start; }
 .evidence-box label.button input[type=file] { position: absolute; width: 1px; height: 1px; opacity: 0; }
 .ratio-table td .linklike { margin-right: 0.5rem; }
+.shared-figures dt.band { grid-column: 1 / -1; margin-top: 0.4rem; padding: 0.15rem 0.5rem; border-radius: 4px; background: var(--accent-soft); color: var(--ink-2); font-size: 0.78rem; font-weight: 700; }
+.shared-figures dd.band { display: none; }
