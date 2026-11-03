@@ -64,8 +64,9 @@ const list = (v) => (Array.isArray(v) ? v : v ? [v] : []);
 // Which class of each dimension to use (e-Stat CLASS_OBJ list): the year, 全国 / totals, 所定内給与額; sex
 // and age group are kept whole. Returns { fixed: { dim: code }, sexDim, ageDim, sexOf: Map, ageOf: Map }.
 // Throws (English message) when the table does not look as expected.
-export function chooseClasses(classObjs, surveyYear) {
+export function chooseClasses(classObjs, surveyYear, { orEarlier = false } = {}) {
   const fixed = {};
+  let usedYear = Number(surveyYear);
   let sexDim = null;
   let ageDim = null;
   const sexOf = new Map();
@@ -80,8 +81,15 @@ export function chooseClasses(classObjs, surveyYear) {
       const hit = classes.find((c) => c.name.normalize('NFKC').replace(/\s/g, '').startsWith(`${y}年`))
         || classes.find((c) => c.name.normalize('NFKC').includes(reiwa(surveyYear)))
         || classes.find((c) => String(c.code).startsWith(y));
-      if (!hit) throw new Error(`year ${surveyYear} is not in the table (it has: ${classes.slice(-6).map((c) => `${c.code}=${c.name}`).join(', ')})`);
-      fixed[id] = hit.code;
+      let use = hit;
+      if (!use && orEarlier) {
+        // the latest year before it
+        const yearOf = (c) => Number((/(\d{4})/.exec(c.name.normalize('NFKC')) || /^(\d{4})/.exec(String(c.code)) || [])[1]);
+        use = classes.filter((c) => yearOf(c) && yearOf(c) < surveyYear).sort((x, z) => yearOf(z) - yearOf(x))[0];
+        if (use) usedYear = yearOf(use);
+      }
+      if (!use) throw new Error(`year ${surveyYear} is not in the table (it has: ${classes.slice(-6).map((c) => `${c.code}=${c.name}`).join(', ')})`);
+      fixed[id] = use.code;
     } else if (/性別/.test(name)) {
       sexDim = id;
       for (const c of classes) {
@@ -107,7 +115,7 @@ export function chooseClasses(classObjs, surveyYear) {
     }
   }
   if (!sexDim || !ageDim || sexOf.size < 2 || ageOf.size < 5) throw new Error('the table has no sex or age dimension');
-  return { fixed, sexDim, ageDim, sexOf, ageOf };
+  return { fixed, sexDim, ageDim, sexOf, ageOf, usedYear };
 }
 
 // Query parameters that narrow getStatsData to the chosen classes: { cdTime: ..., cdArea: ..., cdCat01: ... }.
@@ -129,10 +137,10 @@ export function metaClasses(json) {
 }
 
 // Reads the JSON of e-Stat getStatsData into [{ sex: 'male'|'female', ageClass, value }] for one year.
-export function parseEstat(json, surveyYear) {
+export function parseEstat(json, surveyYear, opts = {}) {
   const data = checkStatus(json, 'GET_STATS_DATA');
   const sd = data.STATISTICAL_DATA;
-  const { fixed, sexDim, ageDim, sexOf, ageOf } = chooseClasses(sd && sd.CLASS_INF && sd.CLASS_INF.CLASS_OBJ, surveyYear);
+  const { fixed, sexDim, ageDim, sexOf, ageOf } = chooseClasses(sd && sd.CLASS_INF && sd.CLASS_INF.CLASS_OBJ, surveyYear, opts);
   const out = [];
   for (const v of list(sd.DATA_INF && sd.DATA_INF.VALUE)) {
     if (!Object.entries(fixed).every(([dim, code]) => v[`@${dim}`] === code)) continue;
@@ -146,8 +154,8 @@ export function parseEstat(json, surveyYear) {
 }
 
 // The proposal kept in the settings (ratio_proposal): values per person, or an error.
-export function buildProposal({ budgetYear, members, table, error }) {
-  const surveyYear = surveyYearFor(budgetYear);
+export function buildProposal({ budgetYear, members, table, error, usedYear }) {
+  const surveyYear = usedYear || surveyYearFor(budgetYear);
   const { items, problems } = lookups(members, budgetYear);
   const base = { budget_year: budgetYear, survey_year: surveyYear, created_at: new Date().toISOString() };
   if (error) return { ...base, error: String(error).slice(0, 1000), problems };

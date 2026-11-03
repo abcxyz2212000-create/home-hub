@@ -51,11 +51,11 @@ async function estat(method, params, appId) {
   return res.json();
 }
 
-async function fromTable(statsDataId, surveyYear, appId) {
+async function fromTable(statsDataId, surveyYear, appId, opts = {}) {
   const meta = await estat('getMetaInfo', { statsDataId }, appId);
-  const { fixed } = chooseClasses(metaClasses(meta), surveyYear);
+  const { fixed, usedYear } = chooseClasses(metaClasses(meta), surveyYear, opts);
   const data = await estat('getStatsData', { statsDataId, metaGetFlg: 'Y', cntGetFlg: 'N', ...narrowParams(fixed) }, appId);
-  return parseEstat(data, surveyYear);
+  return { rows: parseEstat(data, usedYear), usedYear };
 }
 
 const text = (v) => (v && typeof v === 'object' ? v.$ || '' : String(v || ''));
@@ -79,27 +79,32 @@ export function candidateTables(listJson) {
     .filter((t) => t.s >= 0).sort((a, b) => b.s - a.s);
 }
 
-// Wage table of one survey year: { rows: [{ sex, ageClass, value }], source: { id, title } }.
-// First the database of all years (updated late), then the year's own tables.
+// Wage table of one survey year: { rows: [{ sex, ageClass, value }], usedYear, source: { id, title }, notes }.
+// 1. the database of all years, 2. the year's own tables, 3. the latest earlier year of the database
+// (the database is updated late; the year used is kept with the proposal and shown).
 export async function fetchWages(surveyYear, appId, statsDataId = ESTAT_STATS_DATA_ID) {
-  const errors = [];
+  const notes = [];
+  const DB = { id: statsDataId, title: '一般_都道府県別_年齢階級別DB' };
   try {
-    return { rows: await fromTable(statsDataId, surveyYear, appId), source: { id: statsDataId, title: '一般_都道府県別_年齢階級別DB' } };
+    return { ...(await fromTable(statsDataId, surveyYear, appId)), source: DB, notes };
   } catch (e) {
     if (/HTTP|status/.test(e.message)) throw e;
-    errors.push(`DB: ${e.message}`);
+    notes.push(`DB: ${e.message}`);
   }
   const list = await estat('getStatsList', { statsCode: '00450091', surveyYears: String(surveyYear), searchWord: '年齢階級' }, appId);
+  const found = [].concat((list && list.GET_STATS_LIST && list.GET_STATS_LIST.DATALIST_INF && list.GET_STATS_LIST.DATALIST_INF.TABLE_INF) || []);
   const cands = candidateTables(list).slice(0, 6);
+  notes.push(`search: ${found.length} table(s), ${cands.length} candidate(s)`);
   for (const t of cands) {
     try {
-      return { rows: await fromTable(t.id, surveyYear, appId), source: { id: t.id, title: `${t.name} ${t.title}`.trim() } };
+      return { ...(await fromTable(t.id, surveyYear, appId)), source: { id: t.id, title: `${t.name} ${t.title}`.trim() }, notes };
     } catch (e) {
-      errors.push(`${t.id} ${t.title}: ${e.message}`);
+      notes.push(`${t.id}: ${e.message}`);
     }
   }
-  if (cands.length === 0) errors.push('no table of the year found by search');
-  throw new Error(errors.join(' / ').slice(0, 900));
+  const earlier = await fromTable(statsDataId, surveyYear, appId, { orEarlier: true });
+  notes.push(`used ${earlier.usedYear} instead of ${surveyYear}`);
+  return { ...earlier, source: DB, notes };
 }
 
 async function main() {
@@ -122,8 +127,8 @@ async function main() {
 
   let proposal;
   try {
-    const { rows, source } = await fetchWages(surveyYear, env('ESTAT_APP_ID'));
-    proposal = { ...buildProposal({ budgetYear, members: people, table: rows }), source };
+    const { rows, source, usedYear, notes } = await fetchWages(surveyYear, env('ESTAT_APP_ID'));
+    proposal = { ...buildProposal({ budgetYear, members: people, table: rows, usedYear }), source, notes: notes.join(' / ').slice(0, 1000) };
   } catch (e) {
     proposal = buildProposal({ budgetYear, members: people, error: e.message });
   }
