@@ -4124,6 +4124,31 @@ async function fullBackup(status) {
   status.textContent = `バックアップを書き出しました（写真${state.photos.length}枚・添付画像${state.attachments.length}枚を含む）。`;
 }
 
+// アプリの更新: the version this device runs (APP_VERSION, the same as the service worker's cache name) and a button that drops
+// the saved files and loads the newest version. Sign-in and notifications stay as they are.
+const APP_VERSION = 'v58'; // = CACHE in sw.js (checked by tests/unit/version.test.mjs)
+
+function appUpdateSection() {
+  const version = h('span', { class: 'num' }, APP_VERSION);
+  const button = h('button', { type: 'button', id: 'app-update', onclick: (ev) => busy(ev.currentTarget, async () => {
+    if (!confirm('最新のアプリを読み込み直します。入力中の内容は消えます。よろしいですか？')) return;
+    try {
+      if ('serviceWorker' in navigator) {
+        const reg = await navigator.serviceWorker.getRegistration();
+        if (reg) await reg.update();
+      }
+      if ('caches' in window) await Promise.all((await caches.keys()).filter((k) => k.startsWith('homehub-')).map((k) => caches.delete(k)));
+    } catch (e) {
+      console.error('app update failed', e);
+    }
+    location.reload();
+  }) }, '最新のアプリに更新');
+  return h('section', { class: 'card' },
+    h('h2', { class: 'with-icon' }, icon('refresh'), 'アプリの更新', helpButton('アプリの更新', '端末に保存されたアプリのファイルを消して、最新版を読み込み直します。', '新しい機能が出ないときに押してください。ログインや通知の設定はそのままです。')),
+    h('p', {}, '今のバージョン：', version),
+    h('div', { class: 'actions' }, button));
+}
+
 function backupSection() {
   const status = h('p', { class: 'small', role: 'status' });
   const last = state.settings.last_backup_at;
@@ -4404,7 +4429,7 @@ function renderSettings(tabParam) {
   const content = {
     account: () => [accountSection(), notifySection()],
     users: () => [membersSection()],
-    data: () => [backupSection(), importSection(), usageSection()],
+    data: () => [appUpdateSection(), backupSection(), importSection(), usageSection()],
     other: () => [sharedAccountSection(), alertSettingsSection(), expenseLabelsSection(), shortcutSection()],
   }[tab]();
   setView('設定', pageHead({ title: '設定', icon: 'settings', tabs, tab }), ...content);
