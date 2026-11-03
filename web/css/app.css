@@ -701,3 +701,7 @@ details.chore-group > summary { cursor: pointer; list-style: revert; }
 .label-list li span { grid-column: 1 / -1; }
 .label-list li .label-cat { min-width: 0; width: 100%; }
 @media (min-width: 560px) { .label-list li { grid-template-columns: minmax(0, 1fr) 12rem auto auto auto; } .label-list li span { grid-column: auto; } }
+.ratio-line { display: flex; align-items: center; gap: 0.3rem; margin-top: 0.5rem; }
+.ratio-table tr.is-current th, .ratio-table tr.is-current td { font-weight: 700; }
+.ratio-table td.small { min-width: 12rem; }
+.ratio-table th { white-space: nowrap; }

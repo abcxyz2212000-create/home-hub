@@ -2141,7 +2141,8 @@ function memberMonthView(ym) {
         '立替（定例）は、個人の口座から払っている家賃などの契約から自動で入ります。立替（臨時）は「立替を記録」から入れます。',
         '入金はマネーフォワードの明細から自動で記録します（取り込みは管理者）。振り込んだら「入金を報告」で報告できます。',
         '残り（来月へ） = 先月の残り + 今月分 − 入金 − 立替。マイナスは多く払っている分で、来月に回ります。')),
-      cards),
+      cards,
+      ratioLine(ym.slice(0, 4))),
     h('section', { class: 'card' },
       h('h2', { class: 'with-icon' }, `${ymLabel(ym)}の内訳`, helpButton('内訳',
         '今月分は基本の額と、その月の追加分（個人負担の精算・共用口座からの受け取りなど）です。',
@@ -2197,7 +2198,45 @@ function memberYearView(year) {
             h('td', { class: 'num' }, yen(total('advance'))), h('td', { class: 'num' }, signedYen(last.c.remaining)))))),
       h('p', { class: 'meta' }, `前年からの残り ${signedYen(rows[0].c.carry)}`));
   });
-  return cards;
+  return [...cards, ratioHistoryCard(year)];
+}
+
+// The ratio of the people in a year and where it comes from (2026-11-03): from the budget of the year.
+function ratioOf(year) {
+  const y = state.budgetYears.find((x) => x.year === Number(year));
+  if (!y) return null;
+  const ids = budgetMemberIds();
+  const pc = percents(y.ratio, ids);
+  const weights = ids.filter((id) => Number(y.ratio && y.ratio[id]) > 0);
+  return {
+    text: ids.map((id) => `${memberNick(id)} ${pc.get(id)}%`).join('・'),
+    pc,
+    basis: [y.ratio_note || '', weights.length ? `基準の値：${weights.map((id) => `${memberNick(id)} ${y.ratio[id]}`).join('・')}` : ''].filter(Boolean),
+  };
+}
+
+function ratioLine(year) {
+  const r = ratioOf(year);
+  if (!r) return null;
+  return h('p', { class: 'meta ratio-line' }, `${Number(year)}年の負担率 ${r.text}`,
+    helpButton(`${Number(year)}年の負担率の根拠`, ...(r.basis.length ? r.basis : ['根拠のメモはまだありません。']), '負担率は予算の「今月分の提案」に使います。'));
+}
+
+function ratioHistoryCard(year) {
+  const years = [...state.budgetYears].sort((a, b) => b.year - a.year);
+  if (years.length === 0) return null;
+  const ids = budgetMemberIds();
+  return h('section', { class: 'card' },
+    h('h2', { class: 'with-icon' }, '負担率の推移', helpButton('負担率', '各年の予算に入れた二人の負担率です。予算の「今月分の提案」に使います。', '根拠は予算の編集画面の「負担率のメモ」と基準の値です。')),
+    h('div', { class: 'table-wrap' }, h('table', { class: 'table ratio-table' },
+      h('thead', {}, h('tr', {}, h('th', {}, '年'), ids.map((id) => h('th', { class: `num person-name ${personClass(id)}` }, memberNick(id))), h('th', {}, '根拠'))),
+      h('tbody', {}, years.map((y) => {
+        const r = ratioOf(y.year);
+        return h('tr', { class: String(y.year) === String(year) ? 'is-current' : '' },
+          h('th', { scope: 'row' }, isAdmin() ? h('a', { href: `#/budget/${y.year}` }, `${y.year}年`) : `${y.year}年`),
+          ids.map((id) => h('td', { class: 'num' }, `${r.pc.get(id)}%`)),
+          h('td', { class: 'small' }, r.basis.join('／') || '—'));
+      })))));
 }
 
 function accountTotalsCard(flow, unit = '月額') {
