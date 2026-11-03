@@ -1771,6 +1771,7 @@ function budgetSummaryTable(b, actual, months) {
     ['支出', p.spending * months, actual.spendingTotal, true],
     ['貯蓄', p.savings * months, actual.income - actual.spendingTotal, false],
   ];
+  const unpaid = actual.income - actual.paid;
   return h('div', { class: 'table-wrap' }, h('table', { class: 'table budget-summary' },
     h('thead', {}, h('tr', {}, h('th', {}, '（円）'), h('th', { class: 'num' }, '予算'), h('th', { class: 'num' }, '実績'), h('th', { class: 'num' }, '差'))),
     h('tbody', {}, lines.map(([label, plan, act, costLike]) => {
@@ -1779,7 +1780,11 @@ function budgetSummaryTable(b, actual, months) {
       const n = (v) => signedYen(v).replace('円', '');
       return h('tr', {}, h('th', { scope: 'row' }, label), h('td', { class: 'num' }, n(plan)), h('td', { class: 'num' }, n(act)),
         h('td', { class: `num${bad ? ' over' : ''}` }, diff > 0 ? `+${n(diff)}` : n(diff)));
-    }))));
+    }),
+    // cash: what came in, and what is still to come (late deposits)
+    h('tr', { class: 'sub' }, h('th', { scope: 'row' }, '（参考）払われた額'), h('td', { class: 'num' }, '—'), h('td', { class: 'num' }, signedYen(actual.paid).replace('円', '')), h('td', {})),
+    h('tr', { class: 'sub' }, h('th', { scope: 'row' }, unpaid >= 0 ? '（参考）未入金' : '（参考）前の月の分の入金'), h('td', { class: 'num' }, '—'),
+      h('td', { class: `num${unpaid > 0 ? ' due' : ''}` }, yen(Math.abs(unpaid)).replace('円', '')), h('td', {})))));
 }
 
 // One row per 大項目 with a bar of how much of its budget was used (orange beyond 100%).
@@ -1856,7 +1861,8 @@ function budgetMonthView(ym) {
     h('section', { class: 'card' },
       cardHead('yen', `${ymLabel(ym)}の予算と実績`, {
         help: ['実績は、共用口座の明細（マネーフォワードの大項目別。振替・対象外・二人との入出金・○○負担は除く）と、二人の立替（定例・臨時）の合計です。',
-          '収入は二人が家計に入れた額（入金＋立替）です。貯蓄 ＝ 収入 − 支出。',
+          '収入は、二人がその月に払うべき額（各人の今月分）の合計です。入金が遅れても、その月の収入として数えます。貯蓄 ＝ 収入 − 支出。',
+          '（参考）払われた額は、その月に実際に入った額（入金＋立替）です。未入金 ＝ 収入 − 払われた額（マイナスのときは、前の月の分がこの月に払われた額）。',
           txs.length === 0 ? 'この月の明細はまだ取り込まれていません（立替だけの集計です）。' : ''].filter(Boolean),
         action: editLink,
       }),
@@ -1881,9 +1887,10 @@ function budgetYearView(year) {
   const last = year < current.slice(0, 4) ? 12 : year > current.slice(0, 4) ? 0 : Number(current.slice(5));
   const months = Array.from({ length: last }, (_, i) => `${year}-${String(i + 1).padStart(2, '0')}`);
   const perMonth = months.map((ym) => ({ ym, a: budgetActual(txs.filter((t) => t.date.startsWith(ym)), ym) }));
-  const total = { spending: new Map(), income: 0, spendingTotal: 0 };
+  const total = { spending: new Map(), income: 0, paid: 0, spendingTotal: 0 };
   for (const { a } of perMonth) {
     total.income += a.income;
+    total.paid += a.paid;
     total.spendingTotal += a.spendingTotal;
     for (const [k, v] of a.spending) total.spending.set(k, (total.spending.get(k) || 0) + v);
   }
@@ -1902,10 +1909,13 @@ function budgetYearView(year) {
   return [
     h('section', { class: 'card' },
       cardHead('yen', `${Number(year)}年の予算と実績${last && last < 12 ? `（1〜${last}月）` : ''}`, {
-        help: ['予算は月の額 × 経過した月数です。', '実績の数え方は「月ごと」と同じです。'],
+        help: ['予算は月の額 × 経過した月数です。', '実績の数え方は「月ごと」と同じです（収入は払うべき額で数えるので、入金の遅れに左右されません）。',
+          '年末の貯蓄の見込み ＝ 今月までの貯蓄の実績 ＋ 残りの月の貯蓄の予算。今月の支出は、明細を取り込むまで少なめに出ます。'],
         action: isAdmin() ? h('a', { class: 'button small', href: `#/budget/${year}` }, '予算を編集') : null,
       }),
       last === 0 ? h('p', { class: 'muted' }, 'まだこの年になっていません。') : budgetSummaryTable(b, total, last),
+      last > 0 && last < 12 ? h('p', { class: 'savings-forecast' }, `年末の貯蓄の見込み ${signedYen(total.income - total.spendingTotal + plan.savings * (12 - last))}`,
+        h('span', { class: 'muted small' }, `（1〜${last}月の実績 ${signedYen(total.income - total.spendingTotal)} ＋ 残り${12 - last}か月の予算 ${signedYen(plan.savings * (12 - last))}）`)) : null,
       h('p', { class: 'meta' }, `年間の予算：支出 ${yen(plan.spending * 12)}・貯蓄 ${yen(plan.savings * 12)}`)),
     last ? h('section', { class: 'card' },
       h('h2', {}, '支出の累計'),

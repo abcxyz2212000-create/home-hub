@@ -122,7 +122,8 @@ export function advanceCategory(item, mapping, contracts) {
 
 // Actual of one month. txs: the shared account's lines of the month; shared: { rules, entries };
 // memberIds: the people who put money in; mapping: { label: 大項目 }.
-// Returns { spending: Map(大項目 -> yen), fromAccount, fromAdvance, spendingTotal, income, advances: [{ member_id, label, category, amount }] }.
+// Returns { spending: Map(大項目 -> yen), fromAccount, fromAdvance, spendingTotal, income (今月分 of the people),
+// paid (入金 + 立替 of the month), unpaid (income - paid), advances: [{ member_id, label, category, amount }] }.
 export function monthActual({ txs, shared, members, memberIds, mapping, contracts, ym }) {
   const spending = new Map();
   const add = (k, v) => spending.set(k, (spending.get(k) || 0) + v);
@@ -137,11 +138,13 @@ export function monthActual({ txs, shared, members, memberIds, mapping, contract
     fromAccount += v;
   }
   let fromAdvance = 0;
-  let income = 0;
+  let income = 0; // what the people were to pay this month (今月分): late deposits do not move it
+  let paid = 0; // what they actually paid this month (入金 + 立替)
   const advances = [];
   for (const id of memberIds) {
     const c = contribution(statement(shared.rules, shared.entries, id, ym));
-    income += c.done;
+    income += c.burden;
+    paid += c.done;
     for (const it of [...c.regular, ...c.temp]) {
       const category = advanceCategory(it, mapping, contracts);
       add(category, -it.amount);
@@ -149,7 +152,8 @@ export function monthActual({ txs, shared, members, memberIds, mapping, contract
       advances.push({ member_id: id, label: it.label, category, amount: -it.amount });
     }
   }
-  return { spending, fromAccount, fromAdvance, spendingTotal: fromAccount + fromAdvance, income, advances };
+  // unpaid: what is still to come in for this month (negative when earlier months were paid late)
+  return { spending, fromAccount, fromAdvance, spendingTotal: fromAccount + fromAdvance, income, paid, unpaid: income - paid, advances };
 }
 
 // Rows of the budget table: every 大項目 with a budget or an actual, in MoneyForward's order.

@@ -744,6 +744,9 @@ try {
   assert.doesNotMatch(await page.locator('#view').innerText(), /大項目が決まっていない立替があります（[^）]*管理費/);
   await page.getByRole('link', { name: '年間' }).click();
   await page.getByText('支出の累計').waitFor();
+  const yearBudgetText = await page.locator('#view').innerText();
+  assert.match(yearBudgetText, /（参考）払われた額/);
+  if (Number(ymNow.slice(5)) < 12) assert.match(yearBudgetText, /年末の貯蓄の見込み [−\d,]+円/);
   await page.screenshot({ path: join(OUT, 'budget.png'), fullPage: true });
 
   // the ratio and where it comes from, on the budget tab (月ごと and 年間) and not on the people's tab
