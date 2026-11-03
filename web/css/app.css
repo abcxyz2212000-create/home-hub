@@ -679,3 +679,18 @@ details.chore-group > summary { cursor: pointer; list-style: revert; }
 .kind-paper { background: #fff6df; color: #8a6200; }
 .kind-home { background: #e8f1ec; color: #2c6b4a; }
 .kind-other { background: #e6f2f7; color: #186a86; }
+/* budget (2026-11-03) */
+.budget-summary td.over, .budget-months td.over, .budget-row-foot .over { color: var(--critical-ink); font-weight: 600; }
+.budget-list { display: grid; gap: 0.75rem; }
+.budget-row-head { display: flex; justify-content: space-between; gap: 0.5rem; align-items: baseline; margin-bottom: 0.25rem; }
+.budget-cat { font-weight: 600; }
+.budget-row .progress { margin: 0; }
+.budget-row.is-over .progress-fill { background: var(--critical); }
+.budget-row-foot { display: flex; justify-content: space-between; gap: 0.5rem; margin-top: 0.2rem; min-height: 1em; }
+.budget-edit { display: grid; gap: 0.4rem; }
+.budget-edit-row { display: grid; grid-template-columns: 5.5rem 6.5rem minmax(0, 1fr); gap: 0.4rem; align-items: center; }
+.budget-edit-row .budget-cat { font-size: 0.85rem; }
+.budget-edit-row select { grid-column: 2 / 4; }
+@media (min-width: 560px) { .budget-edit-row { grid-template-columns: 8rem 9rem 1fr; } }
+.budget-summary td, .budget-summary th { white-space: nowrap; }
+.budget-edit-row input.num { text-align: right; }

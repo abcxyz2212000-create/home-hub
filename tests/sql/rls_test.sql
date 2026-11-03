@@ -224,6 +224,30 @@ end $$;
 select pg_temp.login('owner@example.com');
 delete from public.account_balances;
 
+-- budget: administrators set it, everyone reads
+select pg_temp.login('owner@example.com');
+insert into public.budgets (year, category, monthly, memo) values (2027, '住宅', 93550, '更新料を按分');
+insert into public.budget_years (year, savings_monthly, ratio) values (2027, 100000, '{"a": 57, "b": 43}');
+select pg_temp.login('adv@example.com');
+do $$ begin
+  if (select count(*) from public.budgets) <> 1 or (select count(*) from public.budget_years) <> 1 then raise exception 'member cannot read the budget'; end if;
+  begin insert into public.budgets (year, category, monthly) values (2027, '食費', 1);
+    raise exception 'member set a budget'; exception when insufficient_privilege then null; end;
+  update public.budget_years set savings_monthly = 0;
+  if (select savings_monthly from public.budget_years) <> 100000 then raise exception 'member changed the savings target'; end if;
+end $$;
+select pg_temp.login('owner@example.com');
+do $$ begin
+  begin insert into public.budgets (year, category, monthly) values (2027, '住宅', 1);
+    raise exception 'duplicate category accepted'; exception when unique_violation then null; end;
+  begin insert into public.budgets (year, category, monthly) values (2027, '食費', -1);
+    raise exception 'negative budget accepted'; exception when check_violation then null; end;
+  begin insert into public.budget_years (year, ratio) values (2028, '[1]');
+    raise exception 'ratio must be an object'; exception when check_violation then null; end;
+end $$;
+delete from public.budgets;
+delete from public.budget_years;
+
 -- each person sets only their own notification hour
 select pg_temp.login('adv@example.com');
 select public.set_my_notify_hour(21);
