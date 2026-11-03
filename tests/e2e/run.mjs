@@ -154,7 +154,8 @@ try {
   step('home: my deposits, today\'s chores, deadlines, shortcuts (nothing else)');
   await page.goto(appUrl);
   await page.getByRole('img', { name: /今日から60日先までの期限/ }).waitFor();
-  assert.match(await page.locator('.page-head h1').innerText(), /\d+月\d+日（.）/);
+  assert.match(await page.locator('.page-head h1').innerText(), /^\d{1,2}\/\d{1,2}\([日月火水木金土]\)$/, 'the same date as the top bar');
+  assert.equal(await page.locator('.home-head-info .home-user').innerText(), await page.locator('#head-user').innerText(), 'the same person as the top bar');
   assert.equal(await page.locator('.kpis').count(), 0, 'no summary numbers');
   assert.equal(await page.getByRole('img', { name: /お金の流れ|固定費/ }).count(), 0, 'no money charts on the home screen');
   const home = await page.locator('#view').innerText();
