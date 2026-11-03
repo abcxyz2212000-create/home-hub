@@ -746,11 +746,13 @@ try {
   await page.getByText('支出の累計').waitFor();
   await page.screenshot({ path: join(OUT, 'budget.png'), fullPage: true });
 
-  // the ratio and where it comes from, on the people's tab
+  // the ratio and where it comes from, on the budget tab (月ごと and 年間) and not on the people's tab
   await page.goto(`${appUrl}#/flow/member/${ymNow}`);
-  await page.locator('.ratio-line').waitFor();
-  assert.match(await page.locator('.ratio-line').innerText(), new RegExp(`${ymNow.slice(0, 4)}年の負担率 .*%`));
-  await page.goto(`${appUrl}#/flow/member/${ymNow.slice(0, 4)}`);
+  await page.locator('.shared-card').first().waitFor();
+  assert.equal(await page.locator('.ratio-table').count(), 0);
+  await page.getByRole('link', { name: '予算と負担率', exact: true }).click();
+  await page.locator('.ratio-table').waitFor();
+  await page.goto(`${appUrl}#/flow/budget/${ymNow.slice(0, 4)}`);
   await page.locator('.ratio-table').waitFor();
   assert.match(await page.locator('.ratio-table').innerText(), /女 30～34歳 294.6千円[\s\S]*令和\d+年賃金構造基本統計調査 第6-1表（正社員・正職員）[\s\S]*📎令和2年_概況.pdf/, 'the basis is the source and the values seen');
 

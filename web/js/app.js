@@ -1540,7 +1540,7 @@ function sharedAccountPicker() {
 // balance of the shared account, then two tabs, each with its own month or year:
 //   ext    共用口座の入出金      the shared account's money in and out (people's accounts included)
 //   member 個人の入金・立替      what each member puts in (当月分, deposits, 立替, balance)
-const MONEY_TABS = { member: '個人の入金・立替', ext: '共用口座の入出金', budget: '予算', flow: '流れ図' };
+const MONEY_TABS = { member: '個人の入金・立替', ext: '共用口座の入出金', budget: '予算と負担率', flow: '流れ図' };
 
 // 'YYYY-MM' (a month) or 'YYYY' (a year); anything else -> null.
 function moneyPeriod(v) {
@@ -1685,7 +1685,7 @@ function budgetMonthView(ym) {
   const year = ym.slice(0, 4);
   const b = budgetOf(year);
   const editLink = isAdmin() ? h('a', { class: 'button small', href: `#/budget/${year}` }, '予算を編集') : null;
-  if (b.rows.length === 0 && !b.year) return [noBudgetCard(year)];
+  if (b.rows.length === 0 && !b.year) return [noBudgetCard(year), ratioHistoryCard(year)];
   const txs = sharedAccountId() ? monthTransactions(ym) : [];
   if (txs === null) return [h('section', { class: 'card' }, h('p', { class: 'muted' }, '読み込み中…'))];
   const actual = budgetActual(txs, ym);
@@ -1707,12 +1707,13 @@ function budgetMonthView(ym) {
       unmapped.length ? h('p', { class: 'warn-text small' }, `大項目が決まっていない立替があります（${[...new Set(unmapped.map((a) => a.label))].join('・')}）。`,
         isAdmin() ? h('a', { href: '#/settings/other' }, '設定 → その他 → 費目で選ぶ') : null) : null),
     proposalCard(b, ym),
+    ratioHistoryCard(year),
   ];
 }
 
 function budgetYearView(year) {
   const b = budgetOf(year);
-  if (b.rows.length === 0 && !b.year) return [noBudgetCard(year)];
+  if (b.rows.length === 0 && !b.year) return [noBudgetCard(year), ratioHistoryCard(year)];
   const txs = sharedAccountId() ? yearTransactions(year) : [];
   if (txs === null) return [h('section', { class: 'card' }, h('p', { class: 'muted' }, '読み込み中…'))];
   const current = thisYM();
@@ -1757,6 +1758,7 @@ function budgetYearView(year) {
           h('td', { class: `num${a.spendingTotal > plan.spending ? ' over' : ''}` }, signedYen(a.spendingTotal - plan.spending)),
           h('td', { class: 'num' }, signedYen(a.income - a.spendingTotal)))))))) : null,
     last ? h('section', { class: 'card' }, h('h2', {}, '費目ごと（累計）'), budgetCategoryList(compareRows(b.rows, total.spending, last))) : null,
+    ratioHistoryCard(year),
   ];
 }
 
@@ -2218,8 +2220,7 @@ function memberMonthView(ym) {
         '入金はマネーフォワードの明細から自動で記録します（取り込みは管理者）。振り込んだら「入金を報告」で報告できます。',
         '計画（払う額）＝ 先月の残り ＋ 今月分。実績（払った額）＝ 入金 ＋ 立替。',
         '残り（来月へ）＝ 払う額 − 払った額。マイナスは多く払っている分で、来月に回ります。')),
-      cards,
-      ratioLine(ym.slice(0, 4))),
+      cards),
     h('section', { class: 'card' },
       h('h2', { class: 'with-icon' }, `${ymLabel(ym)}の内訳`, helpButton('内訳',
         '今月分は基本の額と、その月の追加分（個人負担の精算・共用口座からの受け取りなど）です。',
@@ -2269,7 +2270,7 @@ function memberYearView(year) {
             h('td', { class: 'num' }, yen(total('advance'))), h('td', { class: 'num' }, signedYen(last.c.remaining)))))),
       h('p', { class: 'meta' }, `前年からの残り ${signedYen(rows[0].c.carry)}`));
   });
-  return [...cards, ratioHistoryCard(year)];
+  return cards;
 }
 
 // The ratio of the people in a year and its basis: the source of the statistics and the values seen.
@@ -2304,16 +2305,6 @@ function ratioOf(year) {
   };
 }
 
-function ratioLine(year) {
-  const r = ratioOf(year);
-  if (!r) return null;
-  return h('p', { class: 'meta ratio-line' }, `${Number(year)}年の負担率 ${r.text}`,
-    helpButton(`${Number(year)}年の負担率の根拠`, ...(r.basis.length ? r.basis : ['根拠のメモはまだありません。']), '負担率は予算の「今月分の提案」に使います。'),
-    evidenceLinks(year));
-}
-
-// Each year's ratio and each person's monthly 負担額 (the base amount used that year; December's when it
-// changed during the year), with the basis of the ratio.
 function ratioHistoryCard(year) {
   const ids = budgetMemberIds();
   const baseYears = state.sharedRules.filter((r) => !r.contract_id && r.amount > 0 && !r.month_of_year).map((r) => Number(r.start_ym.slice(0, 4)));
