@@ -92,3 +92,16 @@ test('the yearly script asks e-Stat for the classes it needs only, the app ID ne
     globalThis.fetch = orig;
   }
 });
+
+test('the year is found however the table writes it, and the error tells which years there are', () => {
+  const objs = (names) => [
+    { '@id': 'tab', '@name': '表章項目', CLASS: [{ '@code': '01', '@name': '所定内給与額' }] },
+    { '@id': 'cat01', '@name': '性別', CLASS: [{ '@code': '2', '@name': '男' }, { '@code': '3', '@name': '女' }] },
+    { '@id': 'cat02', '@name': '年齢階級', CLASS: ['20～24歳', '25～29歳', '30～34歳', '35～39歳', '40～44歳'].map((n, i) => ({ '@code': String(i), '@name': n })) },
+    { '@id': 'time', '@name': '時間軸（年次）', CLASS: names },
+  ];
+  assert.equal(chooseClasses(objs([{ '@code': 'a', '@name': '令和6年' }]), 2024).fixed.time, 'a');
+  assert.equal(chooseClasses(objs([{ '@code': 'b', '@name': '２０２４年' }]), 2024).fixed.time, 'b');
+  assert.equal(chooseClasses(objs([{ '@code': '2024000000', '@name': '?' }]), 2024).fixed.time, '2024000000');
+  assert.throws(() => chooseClasses(objs([{ '@code': '2023000000', '@name': '2023年' }]), 2024), /it has: 2023000000=2023年/);
+});
