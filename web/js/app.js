@@ -1815,8 +1815,7 @@ function noBudgetCard(year) {
 }
 
 // 予算・実績・差 of income, spending and savings.
-// period: { kind: 'month' | 'year', endYM } for the labels of the unpaid lines.
-function budgetSummaryTable(b, actual, months, period) {
+function budgetSummaryTable(b, actual, months) {
   const p = proposal(b.rows, b.year, budgetMemberIds());
   const n = (v) => signedYen(v).replace('円', '');
   const line = ([label, plan, act, costLike]) => {
@@ -1828,21 +1827,15 @@ function budgetSummaryTable(b, actual, months, period) {
   // the breakdown of the income (both people together): what came in + what has not come in yet
   // (when earlier months were paid late, what came in includes them and they are taken off)
   const unpaid = actual.income - actual.paid;
-  const unpaidTotal = [...actual.remaining.values()].reduce((x, v) => x + v, 0);
   const sub = (label, v, cls = '') => h('tr', { class: 'sub' }, h('th', { scope: 'row' }, label), h('td', {}), h('td', { class: `num${cls}` }, n(v)), h('td', {}));
   return h('div', { class: 'table-wrap' }, h('table', { class: 'table budget-summary' },
     h('thead', {}, h('tr', {}, h('th', {}, '（円）'), h('th', { class: 'num' }, '予算'), h('th', { class: 'num' }, '実績'), h('th', { class: 'num' }, '差'))),
     h('tbody', {},
       line(['収入（二人の負担額）', p.total * months, actual.income, false]),
       sub('└ 入った額（入金＋立替）', actual.paid),
-      unpaid >= 0 ? sub(`└ ${period.kind === 'year' ? '今年' : 'この月'}の分の未入金`, unpaid, unpaid > 0 ? ' due' : '') : sub('└ 前の月の分の入金', unpaid),
+      unpaid >= 0 ? sub('└ まだ入っていない額', unpaid, unpaid > 0 ? ' due' : '') : sub('└ 前の月の分の入金', unpaid),
       line(['支出', p.spending * months, actual.spendingTotal, true]),
-      line(['貯蓄', p.savings * months, actual.income - actual.spendingTotal, false]),
-      // what is still unpaid in all (the 残り of the people's tab added up), with what came from before
-      sub(`（参考）${period.kind === 'year' ? '前の年から' : '前の月まで'}の未入金`, actual.carry, actual.carry > 0 ? ' due' : ''),
-      sub(`（参考）${Number(period.endYM.slice(5))}月末の未入金の合計`, unpaidTotal, unpaidTotal > 0 ? ' due' : ''),
-      h('tr', { class: 'sub' }, h('td', { colspan: '4', class: 'unpaid-people' },
-        [...actual.remaining].map(([id, v]) => `${memberNick(id)} ${signedYen(v)}`).join('・'))))));
+      line(['貯蓄', p.savings * months, actual.income - actual.spendingTotal, false]))));
 }
 
 // One row per 大項目 with a bar of how much of its budget was used (orange beyond 100%).
@@ -1920,13 +1913,13 @@ function budgetMonthView(ym) {
       cardHead('yen', `${ymLabel(ym)}の予算と実績`, {
         help: ['実績は、共用口座の明細（マネーフォワードの大項目別。振替・対象外・二人との入出金・○○負担は除く）と、二人の立替（定例・臨時）の合計です。',
           '収入は、二人がその月に払うべき額（各人の今月分）の合計です。入金が遅れても、その月の収入として数えます。貯蓄 ＝ 収入 − 支出。',
-          '収入の内訳：入った額は、その月に二人から実際に入った額（入金＋立替）。この月の分の未入金は、二人の合計でまだ入っていない額（収入 − 入った額）。前の月の分がこの月にまとめて入ったときは「前の月の分の入金」として差し引きます。',
-          '（参考）前の月までの未入金 ＋ この月の分の未入金 ＝ 月末の未入金の合計。月末の未入金の合計は「個人の入金・立替」の各人の「残り」を足した額です。',
+          '収入の内訳：入った額は、その期間の負担額のうち二人から実際に入った額（入金＋立替）。まだ入っていない額は、その期間の負担額のうちまだ入っていない額（収入 − 入った額）です。前の期間の分は含みません。',
+          '前の月の分がこの月にまとめて入ったときは「前の月の分の入金」として差し引きます。',
           txs.length === 0 ? 'この月の明細はまだ取り込まれていません（立替だけの集計です）。' : ''].filter(Boolean),
         action: editLink,
       }),
       txs.length === 0 ? h('p', { class: 'notice-text small' }, 'この月の明細はまだ取り込まれていません。') : null,
-      budgetSummaryTable(b, actual, 1, { kind: 'month', endYM: ym })),
+      budgetSummaryTable(b, actual, 1)),
     h('section', { class: 'card' },
       h('h2', { class: 'with-icon' }, '費目ごと', helpButton('費目ごと', 'バーは予算を使った割合です。予算を超えるとオレンジになります。', '立替は、設定 → その他 → 費目 で決めた大項目に入ります（契約からの立替は契約の画面で決めます）。')),
       budgetCategoryList(rows),
@@ -1973,7 +1966,7 @@ function budgetYearView(year) {
           '年末の貯蓄の見込み ＝ 今月までの貯蓄の実績 ＋ 残りの月の貯蓄の予算。今月の支出は、明細を取り込むまで少なめに出ます。'],
         action: isAdmin() ? h('a', { class: 'button small', href: `#/budget/${year}` }, '予算を編集') : null,
       }),
-      last === 0 ? h('p', { class: 'muted' }, 'まだこの年になっていません。') : budgetSummaryTable(b, total, last, { kind: 'year', endYM: months[last - 1] }),
+      last === 0 ? h('p', { class: 'muted' }, 'まだこの年になっていません。') : budgetSummaryTable(b, total, last),
       last > 0 && last < 12 ? h('p', { class: 'savings-forecast' }, `年末の貯蓄の見込み ${signedYen(total.income - total.spendingTotal + plan.savings * (12 - last))}`,
         h('span', { class: 'muted small' }, `（1〜${last}月の実績 ${signedYen(total.income - total.spendingTotal)} ＋ 残り${12 - last}か月の予算 ${signedYen(plan.savings * (12 - last))}）`)) : null,
       h('p', { class: 'meta' }, `年間の予算：支出 ${yen(plan.spending * 12)}・貯蓄 ${yen(plan.savings * 12)}`)),
@@ -4135,7 +4128,7 @@ async function fullBackup(status) {
 
 // アプリの更新: the version this device runs (APP_VERSION, the same as the service worker's cache name) and a button that drops
 // the saved files and loads the newest version. Sign-in and notifications stay as they are.
-const APP_VERSION = 'v59'; // = CACHE in sw.js (checked by tests/unit/version.test.mjs)
+const APP_VERSION = 'v60'; // = CACHE in sw.js (checked by tests/unit/version.test.mjs)
 
 function appUpdateSection() {
   const version = h('span', { class: 'num' }, APP_VERSION);
