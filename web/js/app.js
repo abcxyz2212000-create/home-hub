@@ -467,6 +467,7 @@ async function render() {
   setNav(page);
   updateHeadInfo();
   updateBell();
+  refreshNoticesSoon(page);
   if (page === 'home') renderHome();
   else if (page === 'ledgers') renderLedgers();
   else if (page === 'list' && LEDGERS[a]) renderList(a);
@@ -502,6 +503,11 @@ const myRead = (n) => state.noticeReads.find((r) => r.notice_id === n.id && r.me
 const noticeRead = (n) => Boolean(myRead(n));
 const noticeHidden = (n) => Boolean(myRead(n) && myRead(n).hidden);
 const unreadNotices = () => state.notices.filter((n) => noticeDelivered(n) && noticeForMe(n) && !noticeRead(n));
+// changes (budget, ratios, records) wait for everyone's 「確認しました」
+const needsMyAck = (n) => Boolean(n.needs_ack) && noticeDelivered(n) && !(myRead(n) && myRead(n).acked_at);
+const pendingAcks = () => state.notices.filter(needsMyAck);
+// what the bell and ホーム ask me to look at: unread ones and changes I have not confirmed
+const attentionNotices = () => state.notices.filter((n) => (noticeDelivered(n) && noticeForMe(n) && !noticeRead(n)) || needsMyAck(n));
 
 // The top bar: today's date (Japan) and who is logged in. The date is checked every minute.
 function updateHeadInfo() {
@@ -528,14 +534,29 @@ function updateBell() {
   if (!bell) return;
   bell.hidden = !me();
   if (!me()) return;
-  const count = unreadNotices().length;
+  const count = attentionNotices().length;
   const badge = bell.querySelector('.bell-count');
   badge.hidden = count === 0;
   badge.textContent = count > 99 ? '99+' : String(count);
-  bell.setAttribute('aria-label', count ? `お知らせ（未読 ${count}件）` : 'お知らせ');
+  bell.setAttribute('aria-label', count ? `お知らせ（未読・確認待ち ${count}件）` : 'お知らせ');
+}
+
+// お知らせ change without this app (the job, the database, the other person): fetch them again at most
+// every 30 seconds when moving between pages, and redraw ホーム / お知らせ if something changed.
+let noticesFetchedAt = Date.now();
+function refreshNoticesSoon(page) {
+  if (Date.now() - noticesFetchedAt < 30000) return;
+  noticesFetchedAt = Date.now();
+  const before = JSON.stringify([state.notices.map((n) => [n.id, n.body, n.delivered_at]), state.noticeReads]);
+  reloadNotices().then(() => {
+    updateBell();
+    const changed = JSON.stringify([state.notices.map((n) => [n.id, n.body, n.delivered_at]), state.noticeReads]) !== before;
+    if (changed && ['home', 'notices'].includes(page) && route().page === page) render();
+  }).catch((e) => console.error('refresh notices failed', e));
 }
 
 async function reloadNotices() {
+  noticesFetchedAt = Date.now();
   [state.notices, state.noticeReads] = await Promise.all([db.selectAll('notices', 'deliver_at.desc'), db.selectAll('notice_reads', 'read_at.asc')]);
 }
 
@@ -552,15 +573,30 @@ async function setNoticeReads(list, values = {}) {
   updateBell();
 }
 
+// Who confirmed a change and when (everyone can see it).
+function ackStatus(n) {
+  const people = state.members.filter((m) => m.active && m.email).sort(meFirst);
+  return h('p', { class: 'ack-status small' }, '確認：', people.map((m, i) => {
+    const r = state.noticeReads.find((x) => x.notice_id === n.id && x.member_id === m.id && x.acked_at);
+    return h('span', { class: r ? 'acked' : 'not-acked' }, `${i ? '・' : ''}${nick(m)} ${r ? `済（${formatTime(r.acked_at)}）` : '未確認'}`);
+  }));
+}
+
 function noticeItem(n, { unread = false, pending = false, actions = [] } = {}) {
   const from = n.kind === 'system' || !n.from_member ? 'アプリ' : memberNick(n.from_member);
-  return h('div', { class: `notice${unread ? ' unread' : ''}` },
-    h('div', { class: 'notice-title' }, n.title),
+  const ack = needsMyAck(n) ? [['確認しました', async () => {
+    await setNoticeReads([n], { acked_at: new Date().toISOString() });
+    toast('確認しました。');
+    render();
+  }]] : [];
+  return h('div', { class: `notice${unread || needsMyAck(n) ? ' unread' : ''}${n.needs_ack ? ' needs-ack' : ''}` },
+    h('div', { class: 'notice-title' }, n.title, needsMyAck(n) ? h('span', { class: 'tag tag-ack' }, '確認待ち') : null),
     n.body ? h('p', { class: 'notice-body' }, n.body) : null,
+    n.needs_ack ? ackStatus(n) : null,
     h('div', { class: 'notice-actions muted small' },
       h('span', {}, `${from} → ${recipientsText(n)}・${pending ? `${formatTime(n.deliver_at)}に送る予定` : formatTime(n.deliver_at)}`),
       n.url && /^#\//.test(n.url) ? h('a', { href: n.url }, '開く') : null,
-      ...actions.map(([label, fn]) => h('button', { type: 'button', class: 'link', onclick: (ev) => busy(ev.currentTarget, fn) }, label)),
+      ...[...ack, ...actions].map(([label, fn]) => h('button', { type: 'button', class: label === '確認しました' ? 'small primary' : 'link', onclick: (ev) => busy(ev.currentTarget, fn) }, label)),
       pending ? h('button', { type: 'button', class: 'link', onclick: (ev) => busy(ev.currentTarget, async () => {
         if (!confirm('この予約を取り消しますか？')) return;
         await db.deleteWhere('notices', 'id', n.id);
@@ -583,15 +619,16 @@ function renderNotices(sub) {
   const showHidden = state.showHiddenNotices;
   const list = delivered.filter((n) => showHidden || !noticeHidden(n));
   const unread = new Set(unreadNotices().map((n) => n.id));
-  const clearable = list.filter((n) => !unread.has(n.id) && !noticeHidden(n));
+  const clearable = list.filter((n) => !unread.has(n.id) && !noticeHidden(n) && !needsMyAck(n));
   const actionsOf = (n) => {
-    if (unread.has(n.id)) return [];
+    if (unread.has(n.id) || needsMyAck(n)) return [];
     return noticeHidden(n)
       ? [['戻す', async () => { await setNoticeReads([n], { hidden: false }); render(); }]]
       : [['消す', async () => { await setNoticeReads([n], { hidden: true }); render(); }]];
   };
   setView('お知らせ', pageHead({ title: 'お知らせ', icon: 'bell', action: h('a', { class: 'button primary', href: '#/notices/new' }, 'メッセージを送る'),
-    help: ['お知らせ', 'アプリから端末に送った通知と、メッセージが並びます。二人とも全部見られます。', 'メッセージは送ってから10分ほどで、宛先の人の端末に通知が届きます（GitHub の都合で遅れることがあります）。予約したものは、その日時のあとに届きます。', '「消す」は自分の画面から消すだけで、相手には残ります。1年たったものは全員から消えます。'] }),
+    help: ['お知らせ', 'アプリから端末に送った通知と、メッセージが並びます。二人とも全部見られます。', 'メッセージは送ってから10分ほどで、宛先の人の端末に通知が届きます（GitHub の都合で遅れることがあります）。予約したものは、その日時のあとに届きます。', '予算・負担率・負担額・入金や立替の記録が変わると、全員に「確認待ち」のお知らせが届きます。内容を見て「確認しました」を押してください。確認するまで、毎日端末にお知らせします。',
+      '「消す」は自分の画面から消すだけで、相手には残ります。1年たったものは全員から消えます。'] }),
     pending.length ? h('section', { class: 'card' }, h('h2', {}, '予約中'), pending.map((n) => noticeItem(n, { pending: true }))) : null,
     h('section', { class: 'card' },
       h('div', { class: 'button-row notice-tools' },
@@ -616,11 +653,12 @@ function renderNotices(sub) {
 
 // ホーム: the unread お知らせ for me (or everyone), each can be marked as read here.
 function unreadNoticesCard() {
-  const list = unreadNotices();
+  const list = attentionNotices();
   if (list.length === 0) return null;
+  const waiting = pendingAcks().length;
   return h('section', { class: 'card unread-notices' },
-    sectionHead('bell', `未読のお知らせ（${list.length}件）`, { href: '#/notices', text: 'お知らせへ' }),
-    list.slice(0, 10).map((n) => noticeItem(n, { unread: true, actions: [['既読にする', async () => { await setNoticeReads([n]); render(); }]] })),
+    sectionHead('bell', `未読のお知らせ（${list.length}件${waiting ? `・うち確認待ち ${waiting}件` : ''}）`, { href: '#/notices', text: 'お知らせへ' }),
+    list.slice(0, 10).map((n) => noticeItem(n, { unread: !noticeRead(n), actions: noticeRead(n) ? [] : [['既読にする', async () => { await setNoticeReads([n]); render(); }]] })),
     list.length > 10 ? h('p', { class: 'muted small' }, `ほか${list.length - 10}件はお知らせで見られます。`) : null);
 }
 
@@ -2181,6 +2219,7 @@ function renderBudget(yearParam) {
       const noBase = budgetMemberIds().every((id) => !state.sharedRules.some((r) => r.member_id === id && !r.contract_id && r.amount > 0));
       const from = applyFrom(year, thisYM()) || (noBase && year === Number(thisYM().slice(0, 4)) ? thisYM() : null);
       const changed = from ? await applyBudgetToBase(rows, yearRow, from) : 0;
+      await reloadNotices(); // the change becomes an お知らせ for everyone (made by the database)
       toast(`${year}年の予算を保存しました。${changed ? `${ymLabel(from)}から各人の今月分（基本）を予算に合わせました。` : ''}`);
       location.hash = back;
     }) }, '保存');
@@ -4138,7 +4177,7 @@ async function fullBackup(status) {
 
 // アプリの更新: the version this device runs (APP_VERSION, the same as the service worker's cache name) and a button that drops
 // the saved files and loads the newest version. Sign-in and notifications stay as they are.
-const APP_VERSION = 'v61'; // = CACHE in sw.js (checked by tests/unit/version.test.mjs)
+const APP_VERSION = 'v62'; // = CACHE in sw.js (checked by tests/unit/version.test.mjs)
 
 function appUpdateSection() {
   const version = h('span', { class: 'num' }, APP_VERSION);

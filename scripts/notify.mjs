@@ -18,7 +18,7 @@ import { dueFor } from '../web/js/chores.js';
 import { participantIds, statement, contribution } from '../web/js/shared.js';
 import { categoryAdjustments, categoryRatioQuery } from '../web/js/budget.js';
 import { missingImports, latestBalance, DEFAULT_LOW_BALANCE } from '../web/js/bank.js';
-import { lowBalanceAlert, importAlert, choresAlert, householdAlert } from '../web/js/alerts.js';
+import { lowBalanceAlert, importAlert, choresAlert, householdAlert, confirmAlert } from '../web/js/alerts.js';
 import { loadVapidKeys, sendPush } from './webpush.mjs';
 
 const LOG_RETENTION_DAYS = 400;
@@ -160,6 +160,12 @@ async function main() {
   const threshold = Number.isFinite(Number(settings.low_balance_threshold)) && settings.low_balance_threshold !== null ? Number(settings.low_balance_threshold) : DEFAULT_LOW_BALANCE;
   const missing = sharedId ? missingImports(today, { mf: settings.mf_imported_at, bank: settings.bank_imported_at }) : [];
 
+  // changes (budget, ratios, records) and who confirmed them
+  const [changes, acks] = await Promise.all([
+    db.select('notices', '&kind=eq.change&needs_ack=is.true&delivered_at=not.is.null'),
+    db.select('notice_reads', '&acked_at=not.is.null'),
+  ]);
+
   let shared = null;
   const sharedData = async () => {
     if (!shared) {
@@ -192,6 +198,11 @@ async function main() {
       items.push({ mark: `import:${today}:${g}`, notice: `import:${today}`, to: [g], payload: { ...importAlert(missing), url: '#/flow/ext', tag: 'imports' }, log: 'import reminder' });
     }
     if (g === 'none') return items;
+    // changes this person has not confirmed: a reminder every day until they do (not kept as an お知らせ)
+    const unconfirmed = changes.filter((n) => !acks.some((r) => r.notice_id === n.id && r.member_id === g && r.acked_at));
+    if (unconfirmed.length) {
+      items.push({ mark: `ack:${today}:${g}`, notice: null, to: [g], payload: { ...confirmAlert(unconfirmed.length), url: '#/notices', tag: 'confirm' }, log: `unconfirmed changes: ${unconfirmed.length}` });
+    }
     // today's chores of this person. Names never go to the log.
     const list = dueFor(chores, today, g);
     if (list.length > 0) {
@@ -210,7 +221,7 @@ async function main() {
   };
 
   // お知らせ: one row per alert, whether or not the person has a device (a second run adds nothing)
-  const record = (it) => db.insertIgnore('notices', [{ kind: 'system', key: it.notice, to_members: it.to, title: it.payload.title, body: it.payload.body || '', url: it.payload.url || null, delivered_at: new Date().toISOString() }], 'key');
+  const record = (it) => !it.notice ? null : db.insertIgnore('notices', [{ kind: 'system', key: it.notice, to_members: it.to, title: it.payload.title, body: it.payload.body || '', url: it.payload.url || null, delivered_at: new Date().toISOString() }], 'key');
 
   for (const [g, devices] of ready) {
     const failuresBefore = failures;
@@ -234,7 +245,8 @@ async function main() {
 
   // messages (and scheduled ones) that are due: pushed to the devices of their recipients, every run
   const nowIso = new Date().toISOString();
-  const messages = await db.select('notices', `&kind=eq.message&delivered_at=is.null&deliver_at=lte.${encodeURIComponent(nowIso)}`);
+  // (kind 'change': a change of the budget, the ratios or the records, made by the database)
+  const messages = await db.select('notices', `&kind=in.(message,change)&delivered_at=is.null&deliver_at=lte.${encodeURIComponent(nowIso)}`);
   for (const n of messages) {
     const to = n.to_members && n.to_members.length ? n.to_members : members.map((m) => m.id);
     const from = members.find((m) => m.id === n.from_member);

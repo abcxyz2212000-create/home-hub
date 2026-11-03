@@ -120,6 +120,22 @@ test('daily run sends each due notification once and removes expired devices', a
     await run('node', [SCRIPT], { env: { ...env, NOTIFY_HOUR: '3' } });
     assert.equal(mock.pushes.filter((p) => p.id === 'dev3').length, toHaru.length, 'once');
 
+    // a change (made by the database) is pushed like a message; those who have not confirmed it get a
+    // reminder once a day at their hour, until they do
+    mock.db.notices.push({ id: 'c1', kind: 'change', key: 'change:budget:2027:x:1', from_member: null, to_members: [], title: '2027年の予算・負担率が変わりました', body: '二人の負担額の合計 月170,210円', needs_ack: true, deliver_at: new Date(Date.now() - 60000).toISOString(), delivered_at: null, created_at: new Date().toISOString() });
+    mock.db.notice_reads.push({ notice_id: 'c1', member_id: 'm-shin', acked_at: new Date().toISOString(), hidden: false });
+    const beforeHaru = mock.pushes.filter((p) => p.id === 'dev3').length;
+    const changeRun = await run('node', [SCRIPT], { env: { ...env, NOTIFY_HOUR: '3' } });
+    assert.doesNotMatch(changeRun.stdout + changeRun.stderr, /170,210|負担額/, 'changes never appear in public logs');
+    assert.equal(decrypt(mock.pushes.filter((p) => p.id === 'dev3').at(-1).body, ua, auth).title, '2027年の予算・負担率が変わりました');
+    const nextDay = fromDayNumber(toDayNumber(todayJST()) + 1);
+    await run('node', [SCRIPT], { env: { ...env, NOTIFY_DATE: nextDay, NOTIFY_HOUR: '22' } });
+    const haruNext = mock.pushes.filter((p) => p.id === 'dev3').slice(beforeHaru + 1).map((p) => decrypt(p.body, ua, auth));
+    assert.ok(haruNext.some((p) => p.title === '確認待ちの変更' && /1件/.test(p.body)), 'はる has not confirmed: reminded');
+    const shinNext = mock.pushes.filter((p) => p.id === 'dev2').map((p) => decrypt(p.body, ua, auth));
+    assert.ok(!shinNext.some((p) => p.title === '確認待ちの変更'), 'しん confirmed: no reminder');
+    assert.ok(!mock.db.notices.some((n) => n.title === '確認待ちの変更'), 'the reminder is not kept as an お知らせ');
+
     const t = await run('node', [SCRIPT], { env: { ...env, NOTIFY_TEST: '1' } });
     assert.match(t.stdout, /delivered to 3\/3/);
     assert.equal(decrypt(mock.pushes.at(-1).body, ua, auth).title, 'テスト通知');

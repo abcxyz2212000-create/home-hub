@@ -454,6 +454,7 @@ end $$;
 -- お知らせ: a member sends messages as themselves, everyone sees delivered ones, the sender sees and
 -- cancels their scheduled ones, system notices come from the job only
 reset role;
+delete from public.notices; -- the change notices of the records above are tested below
 insert into public.notices (kind, key, title, body) values ('system', 'lowbal:2026-03-01', '残高不足', 'x');
 set role authenticated;
 select pg_temp.login('adv@example.com');
@@ -503,6 +504,44 @@ do $$ begin
   if (select count(*) from public.notices) <> 1 then raise exception 'a delivered notice was deleted'; end if;
 end $$;
 reset role;
+delete from public.notices;
+
+-- 変更の通知: budget, ratio, base amounts and records become one お知らせ per person and thing (10 minutes),
+-- with the values before and after; a new change asks everyone again
+reset role;
+delete from public.notices;
+set role authenticated;
+select pg_temp.login('owner@example.com');
+do $$
+declare
+  haru uuid := (select id from public.members where name = '佐藤 春子');
+  n public.notices;
+begin
+  insert into public.budget_years (year, income_monthly, ratio) values (2031, 170210, jsonb_build_object(haru, 299.6));
+  insert into public.budgets (year, category, monthly) values (2031, '食費', 30000);
+  update public.budgets set monthly = 35000 where year = 2031 and category = '食費';
+  update public.budget_years set income_monthly = 180000, category_ratios = jsonb_build_array(jsonb_build_object('category', '水道・光熱費', 'subcategory', '電気代', 'ratio', jsonb_build_object(haru, 30), 'from', '2031-01')) where year = 2031;
+  update public.budget_years set updated_at = now() where year = 2031; -- nothing changed: no line
+  select * into n from public.notices where kind = 'change';
+  if (select count(*) from public.notices) <> 1 then raise exception 'one change notice per person and year expected'; end if;
+  if n.title <> '2031年の予算・負担率が変わりました' or not n.needs_ack or n.from_member is distinct from public.current_member_id() or n.to_members <> '{}' then raise exception 'change notice fields: %', row_to_json(n); end if;
+  if n.body not like '%二人の負担額の合計 月170,210円%' or n.body not like '%賃金・千円）：はる 299.6%' or n.body not like '%費目「食費」の予算 月30,000円 → 35,000円%'
+     or n.body not like '%二人の負担額の合計 月170,210円 → 180,000円%' or n.body not like '%費目ごとの負担率：電気代 はる 30%（2031年1月から）%' then
+    raise exception 'change notice body: %', n.body;
+  end if;
+  insert into public.notice_reads (notice_id, member_id, acked_at) values (n.id, public.current_member_id(), now());
+  insert into public.shared_entries (member_id, ym, kind, label, amount, memo) values (haru, '2031-01', 'adjust', '精算', -81600, '理由');
+  if (select body from public.notices where key like 'change:entries:%') <> '追加：はる 2031年1月 調整「精算」 −81,600円（理由）' then
+    raise exception 'entry change: %', (select body from public.notices where key like 'change:entries:%');
+  end if;
+  update public.budgets set monthly = 36000 where year = 2031;
+  if exists (select 1 from public.notice_reads where notice_id = n.id) then raise exception 'a new change must ask everyone again'; end if;
+end $$;
+reset role;
+delete from public.notices;
+delete from public.shared_entries where ym = '2031-01';
+delete from public.budgets where year = 2031;
+delete from public.budget_years where year = 2031;
 delete from public.notices;
 
 -- anonymous users get nothing

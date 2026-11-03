@@ -106,6 +106,9 @@ h3 { font-size: 0.95rem; margin: 1.25rem 0 0.5rem; }
 .notice-actions { display: flex; gap: 0.6rem; align-items: center; }
 .notice-tools { justify-content: flex-end; margin-bottom: 0.2rem; }
 .notice-tools:empty { display: none; }
+.ack-status { margin: 0.2rem 0; color: var(--muted); }
+.ack-status .not-acked { color: var(--critical-ink); font-weight: 600; }
+.tag-ack { background: var(--notice-bg); color: var(--critical-ink); font-size: 0.72rem; font-weight: 700; border-radius: 999px; padding: 0.05rem 0.5rem; }
 .recipients { display: flex; flex-wrap: wrap; gap: 0.4rem 1rem; }
 .recipients label { display: inline-flex; align-items: center; gap: 0.3rem; font-weight: 400; }
 

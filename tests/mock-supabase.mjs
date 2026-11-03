@@ -28,8 +28,8 @@ const TABLE_DEFAULTS = {
   deposit_reports: { memo: null },
   budgets: { memo: null }, budget_years: { savings_monthly: 0, income_monthly: null, ratio: {}, ratio_note: null },
   shared_attachments: { entry_id: null, report_id: null, bytes: 0 },
-  notices: { key: null, from_member: null, to_members: [], body: '', url: null, delivered_at: null },
-  notice_reads: { hidden: false },
+  notices: { key: null, from_member: null, to_members: [], body: '', url: null, delivered_at: null, needs_ack: false },
+  notice_reads: { hidden: false, acked_at: null },
   transactions: { contract_id: null, account_id: null, card_id: null, memo: null, counted: true, transfer: false, personal_member_id: null, needs_review: false, settled_entry_id: null, deposit_entry_id: null, deposit_ignored: false },
 };
 const SET_NULL = {
@@ -73,6 +73,7 @@ export function createMock() {
       if (['select', 'order', 'on_conflict', 'limit', 'offset'].includes(k)) continue;
       if (v.startsWith('eq.') && String(row[k]) !== v.slice(3)) return false;
       if (v === 'not.is.null' && (row[k] === null || row[k] === undefined)) return false;
+      if (v === 'is.true' && row[k] !== true) return false;
       if (v.startsWith('lt.') && !(String(row[k]) < v.slice(3))) return false;
       if (v.startsWith('gte.') && !(String(row[k]) >= v.slice(4))) return false;
       if (v.startsWith('lte.') && !(String(row[k]) <= v.slice(4))) return false;
