@@ -716,8 +716,6 @@ try {
   await page.reload();
   await page.locator('.wage-box').waitFor();
   assert.match(await page.locator('.wage-box').innerText(), /見る値（令和\d+年・性、年齢階級別賃金）：[\s\S]*女 30～34歳/);
-  await page.getByRole('button', { name: 'メモに出典を書く' }).click();
-  assert.match(await page.getByLabel('負担率のメモ（参照した資料など）').inputValue(), /賃金構造基本統計調査.*女 30～34歳/);
   for (let i = 0; i < people; i += 1) await ratioInputs.nth(i).fill(i === 0 ? '294.6' : '258.1');
   await page.getByLabel('住宅の月の予算（円）').fill('90,000');
   await page.getByLabel('住宅の備考').fill('更新料を按分');
@@ -761,7 +759,7 @@ try {
   assert.match(await page.locator('.ratio-line').innerText(), new RegExp(`${ymNow.slice(0, 4)}年の負担率 .*%`));
   await page.goto(`${appUrl}#/flow/member/${ymNow.slice(0, 4)}`);
   await page.locator('.ratio-table').waitFor();
-  assert.match(await page.locator('.ratio-table').innerText(), /賃金構造基本統計調査/, 'the note of the ratio is its basis');
+  assert.match(await page.locator('.ratio-table').innerText(), /出典：厚生労働省「令和\d+年賃金構造基本統計調査」性、年齢階級別賃金（千円）[\s\S]*見た値：\S+ 女 30～34歳 294.6千円/, 'the basis is the source and the values seen');
 
   step('contract amount by period: a new amount from this month, the old one kept for past months');
   await page.goto(`${appUrl}#/edit/contracts/${net.id}`);
