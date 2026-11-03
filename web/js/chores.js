@@ -11,27 +11,6 @@ export const CYCLES = {
   year: { label: '年', perMonth: 1 / 12 },
   adhoc: { label: '随時', perMonth: 0 },
 };
-// Kind of work, from the name (falls back to the category), for the icon in the list (2026-11-03).
-// Order matters: the first match wins.
-export const CHORE_KINDS = [
-  { key: 'trash', label: 'ゴミ出し', icon: 'trash', words: ['ゴミ', 'ごみ', '資源'] },
-  { key: 'repair', label: '保守・修理', icon: 'tool', words: ['保守', '修理', '点検', '交換', 'メンテ'] },
-  { key: 'shop', label: '買い物・調達', icon: 'cart', words: ['買い物', '買出', '調達', '購入', '補充', '注文'] },
-  { key: 'clean', label: '掃除', icon: 'broom', words: ['清掃', '掃除', '拭き', '片付'] },
-  { key: 'laundry', label: '洗濯・衣類', icon: 'shirt', words: ['洗濯', 'クリーニング', '衣替え', 'アイロン', '干し', 'たたみ'] },
-  { key: 'cook', label: '料理・食事', icon: 'pot', words: ['料理', '調理', '炊', '献立', '弁当', '食器', '皿洗', '洗い物'] },
-  { key: 'paper', label: '手続き・書類', icon: 'doc', words: ['手続', '申請', '書類', '支払', '振込', '家計', '予約', '連絡'] },
-];
-const KIND_BY_CATEGORY = { 衣: 'laundry', 食: 'cook', 住: 'home', 事務: 'paper' };
-const HOME_KIND = { key: 'home', label: '住まい', icon: 'home', words: [] };
-export function choreKind(c) {
-  const name = String((c && c.name) || '');
-  const hit = CHORE_KINDS.find((k) => k.words.some((w) => name.includes(w)));
-  if (hit) return hit;
-  const key = KIND_BY_CATEGORY[c && c.category];
-  return CHORE_KINDS.find((k) => k.key === key) || (key === 'home' ? HOME_KIND : { key: 'other', label: 'その他', icon: 'chore', words: [] });
-}
-
 export const WEEKDAYS = ['日', '月', '火', '水', '木', '金', '土'];
 export const POINTS_PER_HOUR = 1000;
 

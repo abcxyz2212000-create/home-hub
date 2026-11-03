@@ -313,15 +313,6 @@ try {
   const split = await page.locator('table').innerText();
   assert.match(split, /合計\s+883点\s+1,150点|合計\s+1,150点\s+883点/, 'はなこ 733+150, 太郎 1000+150');
   assert.match(await page.locator('.balance').innerText(), /山田 太郎 が はなこ より 267点 多い/);
-  await page.getByRole('link', { name: '一覧', exact: true }).click();
-  await page.locator('.chore-group').first().waitFor();
-  const heads = await page.locator('.chore-group-head').allInnerTexts();
-  assert.ok(heads.length >= 2 && heads.some((t) => /山田 太郎/.test(t)) && heads.some((t) => /はなこ/.test(t)), `a card per person: ${heads}`);
-  const taroCard = await page.locator('.chore-group', { hasText: '山田 太郎' }).innerText();
-  assert.match(taroCard, /住\s+風呂掃除/, 'split by category inside the card');
-  assert.match(taroCard, /日未定/);
-  assert.equal(await page.locator('.chore-row', { hasText: '風呂掃除' }).locator('[role="img"]').getAttribute('aria-label'), '掃除', 'the icon shows the kind of work');
-  await page.screenshot({ path: join(OUT, 'chores-list.png'), fullPage: true });
   await page.goto(appUrl);
   await page.locator('.page-head').first().waitFor();
   assert.match(await page.locator('#view').innerText(), /今日の家事\n[\s\S]*ゴミ出し/);

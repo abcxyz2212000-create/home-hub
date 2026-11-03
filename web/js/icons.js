@@ -24,12 +24,6 @@ const PATHS = {
   chore: '<path d="M10 6h10M10 12h10M10 18h10"/><path d="M3.5 6l1.5 1.5L7.5 5M3.5 12l1.5 1.5 2.5-2.5M3.5 18l1.5 1.5 2.5-2.5"/>',
   user: '<circle cx="12" cy="8" r="4"/><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6"/>',
   out: '<path d="M14 4h6v6M20 4l-9 9"/><path d="M18 14v6H4V6h6"/>',
-  broom: '<path d="M15 3l-4.5 9"/><path d="M8 11.5l5.5 2.5-2 7H4.5z"/><path d="M7 21l1.5-4M10 21l1-3.5"/>',
-  trash: '<path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/><path d="M10 11v6M14 11v6"/>',
-  shirt: '<path d="M9 4l-5 3 2 4 2-1v10h8V10l2 1 2-4-5-3c-.5 1.5-1.5 2.2-3 2.2S9.5 5.5 9 4z"/>',
-  pot: '<path d="M4 10h16v5a5 5 0 0 1-5 5H9a5 5 0 0 1-5-5z"/><path d="M2 10h2M20 10h2M9 4c0 1.5 1 1.5 1 3M13 4c0 1.5 1 1.5 1 3"/>',
-  cart: '<path d="M3 4h2l2.5 11h10.5l2-8H6.3"/><circle cx="9" cy="19" r="1.5"/><circle cx="17" cy="19" r="1.5"/>',
-  tool: '<path d="M14.5 4a4 4 0 0 0-4.8 5.3L4 15v5h5l5.7-5.7A4 4 0 0 0 20 9.5l-2.6 2.6-3.5-3.5L16.5 6A4 4 0 0 0 14.5 4z"/>',
 };
 
 export const LEDGER_ICONS = { accounts: 'bank', cards: 'card', contracts: 'doc', items: 'box', memberships: 'ticket' };

@@ -23,7 +23,7 @@ import {
   ymAdd, ymLabel, participantIds, firstYM, history, statement, contribution, YM_RE, contractDeduction, planRuleSync, ruleSchedule,
 } from './shared.js';
 import {
-  CATEGORIES, GROUPS, CYCLES, WEEKDAYS, monthlyHours, basePoints, adjustedPoints, timesPerCycle, workload, choreSharers, isDueOn, scheduleText, choreKind,
+  CATEGORIES, GROUPS, CYCLES, WEEKDAYS, monthlyHours, basePoints, adjustedPoints, timesPerCycle, workload, choreSharers, isDueOn, scheduleText,
 } from './chores.js';
 
 const FREE_DB_BYTES = 500 * 1024 * 1024;
@@ -3702,36 +3702,22 @@ function assigneeText(c) {
   return ASSIGNEE_LABEL[c.assignee_type] || '未定';
 }
 
-// One chore in the list: the icon shows the kind of work; the person is the card around it.
-function choreRow(c) {
-  const h1 = monthlyHours(c);
-  const kind = choreKind(c);
-  const noDays = c.cycle !== 'adhoc' && c.cycle !== 'day' && !(Array.isArray(c.schedule) && c.schedule.length);
-  const when = scheduleText(c).replace('（やる日は未設定）', '');
-  const parts = [when];
+function choreSummary(c) {
+  const parts = [scheduleText(c)];
   if (c.cycle !== 'adhoc' && c.minutes !== null && c.minutes !== undefined) parts.push(`${Number(c.minutes)}分/回`);
-  return h('a', { class: 'list-item chore-row', href: `#/chore/${c.id}` },
-    h('span', { class: `icbox icbox-sm kind-${kind.key}`, title: kind.label, 'aria-label': kind.label, role: 'img' }, icon(kind.icon)),
-    h('div', { class: 'list-body' },
-      h('div', { class: 'list-title' }, c.name, c.status === 'closed' ? h('span', { class: 'badge badge-past' }, '停止') : null),
-      h('div', { class: 'muted small' }, parts.join('・'), noDays ? h('span', { class: 'tag tag-nodays' }, '日未定') : null)),
-    h('div', { class: 'chore-figure num' }, h('strong', {}, points(adjustedPoints(c))), h('span', { class: 'muted small' }, h1 === null ? '随時' : `${hours(h1)}/月`)),
-    icon('chevron', 'ic ic-sm list-chevron'));
+  parts.push(assigneeText(c));
+  return parts.join('・');
 }
 
-// Chores of one person (or 全員 / 未定), split by category.
-function choreGroupCard(title, list, cls, open = true) {
-  const total = list.reduce((n, c) => n + adjustedPoints(c), 0);
-  const cats = [...CATEGORIES, ...new Set(list.map((c) => c.category || 'その他').filter((x) => !CATEGORIES.includes(x)))];
-  const body = cats.map((cat) => {
-    const rows = list.filter((c) => (c.category || 'その他') === cat);
-    return rows.length ? [h('h4', { class: 'chore-cat' }, cat), h('div', { class: 'list' }, rows.map(choreRow))] : null;
-  });
-  const head = [h('span', { class: 'with-icon chore-owner' }, icon('user'), title),
-    h('span', { class: 'muted small' }, `${list.length}件・${points(total)}/月`)];
-  return open
-    ? h('section', { class: `card chore-group ${cls || ''}` }, h('h3', { class: 'chore-group-head' }, head), body)
-    : h('details', { class: `card chore-group ${cls || ''}` }, h('summary', { class: 'chore-group-head' }, head), body);
+function choreRow(c) {
+  const h1 = monthlyHours(c);
+  return h('a', { class: 'list-item', href: `#/chore/${c.id}` },
+    h('span', { class: 'icbox icbox-sm lg-chores' }, icon('chore')),
+    h('div', { class: 'list-body' },
+      h('div', { class: 'list-title' }, c.name, c.status === 'closed' ? h('span', { class: 'badge badge-past' }, '停止') : null),
+      h('div', { class: 'muted small' }, [c.category, choreSummary(c)].filter(Boolean).join('・'))),
+    h('div', { class: 'chore-figure num' }, h('strong', {}, points(adjustedPoints(c))), h('span', { class: 'muted small' }, h1 === null ? '随時' : `${hours(h1)}/月`)),
+    icon('chevron', 'ic ic-sm list-chevron'));
 }
 
 // Today's chores: mine first, then the others; "all" chores are everyone's.
@@ -3781,24 +3767,20 @@ function workloadSection() {
 const CHORE_TABS = { today: '今日', list: '一覧', load: '負担の割合' };
 
 function renderChores(tabParam) {
+  const who = h('select', { 'aria-label': '担当で絞り込み' }, h('option', { value: '' }, '担当: すべて'),
+    [...choreSharers(state.chores, state.members)].sort(meFirst).map((m) => h('option', { value: `member:${m.id}` }, nick(m))),
+    h('option', { value: 'all' }, '全員'), h('option', { value: 'tbd' }, '未定'));
   const cat = h('select', { 'aria-label': 'カテゴリで絞り込み' }, h('option', { value: '' }, 'カテゴリ: すべて'), CATEGORIES.map((c) => h('option', { value: c }, c)));
-  const list = h('div', { class: 'chore-groups' });
+  const list = h('div', { class: 'list' });
   const update = () => {
+    const [type, id] = who.value.split(':');
     const rows = state.chores
+      .filter((c) => !who.value || (type === 'member' ? c.assignee_type === 'member' && c.assignee_id === id : c.assignee_type === type))
       .filter((c) => !cat.value || c.category === cat.value)
-      .sort((a, b) => a.name.localeCompare(b.name, 'ja'));
-    const active = rows.filter((c) => c.status !== 'closed');
-    const people = [...choreSharers(state.chores, state.members)].sort(meFirst);
-    const known = new Set(people.map((m) => m.id));
-    const groups = [
-      ...people.map((m) => [nick(m), active.filter((c) => c.assignee_type === 'member' && c.assignee_id === m.id), `chore-person ${personClass(m.id)}`]),
-      ['全員', active.filter((c) => c.assignee_type === 'all'), ''],
-      ['担当未定', active.filter((c) => c.assignee_type === 'tbd' || (c.assignee_type === 'member' && !known.has(c.assignee_id))), ''],
-    ].filter(([, l]) => l.length).map(([t, l, cls]) => choreGroupCard(t, l, cls));
-    const closed = rows.filter((c) => c.status === 'closed');
-    if (closed.length) groups.push(choreGroupCard('停止中', closed, 'chore-closed', false));
-    list.replaceChildren(...(groups.length === 0 ? [h('p', { class: 'muted' }, '該当する家事はありません。')] : groups));
+      .sort((a, b) => (a.status === 'closed') - (b.status === 'closed') || CATEGORIES.indexOf(a.category) - CATEGORIES.indexOf(b.category) || a.name.localeCompare(b.name, 'ja'));
+    list.replaceChildren(...(rows.length === 0 ? [h('p', { class: 'muted' }, '該当する家事はありません。')] : rows.map(choreRow)));
   };
+  who.addEventListener('change', update);
   cat.addEventListener('change', update);
   update();
   const tab = CHORE_TABS[tabParam] ? tabParam : (state.choresTab || 'today');
@@ -3808,7 +3790,7 @@ function renderChores(tabParam) {
     pageHead({ title: '家事', icon: 'chores', tabs, tab, action: h('a', { class: 'button primary', href: '#/chore-edit/new' }, '＋ 追加') }),
     tab === 'today' ? todayChoresCard() : null,
     tab === 'load' ? workloadSection() : null,
-    tab === 'list' ? [h('div', { class: 'filters' }, cat), list] : null);
+    tab === 'list' ? [h('div', { class: 'filters filters-2' }, who, cat), list] : null);
 }
 
 function renderChore(id) {

@@ -661,21 +661,3 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 0.9rem; }
 .alert-card .alert-text { min-width: 0; }
 .alert-card .alert-title { font-weight: 700; margin: 0; }
 .alert-card .alert-body { margin: 0.25rem 0 0; }
-/* chores list by person (2026-11-03) */
-.chore-groups { display: grid; gap: 0.75rem; }
-.chore-group-head { display: flex; align-items: baseline; justify-content: space-between; gap: 0.5rem; margin: 0 0 0.25rem; font-size: 1.05rem; }
-details.chore-group > summary { cursor: pointer; list-style: revert; }
-.chore-person.person-male, .chore-person.person-female { border-top: 4px solid var(--person); }
-.chore-person .chore-owner { color: var(--person); }
-.chore-cat { margin: 0.75rem 0 0.35rem; font-size: 0.85rem; color: var(--muted); border-bottom: 1px solid var(--line); padding-bottom: 0.15rem; }
-.chore-closed { opacity: 0.75; }
-.tag-nodays { margin-left: 0.4rem; background: var(--bar-track); color: var(--muted); font-size: 0.7rem; }
-.kind-clean { background: #e6f2f7; color: #186a86; }
-.kind-trash { background: #eef3e6; color: #4d6b1f; }
-.kind-laundry { background: #efeafb; color: #5a3fa6; }
-.kind-cook { background: #fdf0e3; color: #a35a12; }
-.kind-shop { background: #fbe9f0; color: #a3305e; }
-.kind-repair { background: #eceff3; color: #45505f; }
-.kind-paper { background: #fff6df; color: #8a6200; }
-.kind-home { background: #e8f1ec; color: #2c6b4a; }
-.kind-other { background: #e6f2f7; color: #186a86; }

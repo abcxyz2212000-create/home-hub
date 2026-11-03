@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { monthlyHours, basePoints, adjustedPoints, workload, isDueOn, dueFor, timesPerCycle, scheduleText, choreKind } from '../../web/js/chores.js';
+import { monthlyHours, basePoints, adjustedPoints, workload, isDueOn, dueFor, timesPerCycle, scheduleText } from '../../web/js/chores.js';
 
 const close = (a, b) => assert.ok(Math.abs(a - b) < 1e-6, `${a} != ${b}`);
 
@@ -65,15 +65,4 @@ test('due dates', () => {
   const chores = [weekly, { cycle: 'day', assignee_type: 'all' }, { cycle: 'day', assignee_type: 'member', assignee_id: 'h' }, { cycle: 'day', assignee_type: 'tbd' }];
   assert.equal(dueFor(chores, '2026-11-03', 's').length, 2);
   assert.equal(dueFor(chores, '2026-11-03', 'h').length, 2);
-});
-
-test('kind of work from the name, the category when the name says nothing', () => {
-  const k = (name, category) => choreKind({ name, category }).key;
-  assert.equal(k('ゴミ出し（可燃・プラ）', '住'), 'trash');
-  assert.equal(k('清掃（洗濯機・洗濯用具）', '衣'), 'clean', 'cleaning the washer is cleaning');
-  assert.equal(k('クリーニング', '衣'), 'laundry');
-  assert.equal(k('保守・調達申請（キッチン関連）', '食'), 'repair');
-  assert.equal(k('夕食づくり', '食'), 'cook', 'from the category');
-  assert.equal(k('何か', '住'), 'home');
-  assert.equal(k('何か', null), 'other');
 });
