@@ -83,7 +83,10 @@ test('daily run sends each due notification once and removes expired devices', a
     assert.ok(!mock.pushes.filter((p) => p.id === 'dev1').map((p) => decrypt(p.body, ua, auth)).some((p) => p.title.startsWith('今日の家事')),
       'a device without a member gets no chore reminder');
     assert.doesNotMatch(first.stdout + first.stderr, /ゴミ出し|郵便物/, 'chore names never appear in public logs');
-    assert.equal(mock.db.notification_log.filter((l) => !l.key.startsWith('daily:')).length, 3, 'deadline to each person/device group + chores');
+    assert.equal(mock.db.notification_log.filter((l) => !/^(daily|notices):/.test(l.key)).length, 3, 'deadline to each person/device group + chores');
+    // お知らせ: one row per alert (the deadline once for everyone), also for はる who has no device yet
+    assert.deepEqual(mock.db.notices.map((n) => [n.kind, n.title, n.to_members.length ? n.to_members.join(',') : '全員']).sort(),
+      [['system', '今日の家事', 'm-haru'], ['system', '今日の家事', 'm-shin'], ['system', '契約の自動更新', '全員']].sort());
 
     await run('node', [SCRIPT], { env });
     assert.equal(mock.pushes.filter((p) => p.id === 'dev1').length, 1, 'no duplicate on the second run');
@@ -98,6 +101,24 @@ test('daily run sends each due notification once and removes expired devices', a
     assert.equal(mock.pushes.filter((p) => p.id === 'dev3').length, 2, 'deadline + her chores at (or after) her hour');
     await run('node', [SCRIPT], { env: { ...env, NOTIFY_HOUR: '23' } });
     assert.equal(mock.pushes.filter((p) => p.id === 'dev3').length, 2, 'once a day');
+
+    assert.equal(mock.db.notices.length, 3, 'no duplicate お知らせ');
+
+    // messages: due ones go to their recipients' devices at any hour, once; scheduled ones wait
+    const later = new Date(Date.now() + 86400000).toISOString();
+    mock.db.notices.push(
+      { id: 'n1', kind: 'message', from_member: 'm-shin', to_members: ['m-haru'], title: '買い物', body: '牛乳おねがい', deliver_at: new Date(Date.now() - 60000).toISOString(), delivered_at: null, created_at: new Date().toISOString() },
+      { id: 'n2', kind: 'message', from_member: 'm-shin', to_members: ['m-haru'], title: '予約', body: 'あとで', deliver_at: later, delivered_at: null, created_at: new Date().toISOString() },
+    );
+    const msgRun = await run('node', [SCRIPT], { env: { ...env, NOTIFY_HOUR: '3' } });
+    assert.doesNotMatch(msgRun.stdout + msgRun.stderr, /牛乳|買い物/, 'messages never appear in public logs');
+    const toHaru = mock.pushes.filter((p) => p.id === 'dev3').map((p) => decrypt(p.body, ua, auth));
+    assert.deepEqual(toHaru.at(-1), { title: '買い物', body: 'しんより：牛乳おねがい', url: '#/notices', tag: 'notice:n1' });
+    assert.ok(mock.db.notices.find((n) => n.id === 'n1').delivered_at);
+    assert.equal(mock.db.notices.find((n) => n.id === 'n2').delivered_at, null);
+    assert.equal(mock.pushes.filter((p) => p.id === 'dev2').length, 2, 'not sent to the sender');
+    await run('node', [SCRIPT], { env: { ...env, NOTIFY_HOUR: '3' } });
+    assert.equal(mock.pushes.filter((p) => p.id === 'dev3').length, toHaru.length, 'once');
 
     const t = await run('node', [SCRIPT], { env: { ...env, NOTIFY_TEST: '1' } });
     assert.match(t.stdout, /delivered to 3\/3/);

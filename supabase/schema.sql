@@ -860,6 +860,63 @@ create policy evidence_delete on storage.objects for delete to authenticated
   using (bucket_id = 'evidence' and public.is_admin());
 
 -- ---------------------------------------------------------------------------
+-- お知らせ (2026-11-03): what the app sent to devices (kind 'system') and messages people write to each
+-- other (kind 'message'), seen by everyone on one page. A message can be scheduled (deliver_at); the
+-- GitHub Actions job pushes it to the devices of its recipients and sets delivered_at.
+-- to_members: the recipients; empty = everyone. key: one system notice per alert (no duplicates).
+-- ---------------------------------------------------------------------------
+create table if not exists public.notices (
+  id uuid primary key default gen_random_uuid(),
+  kind text not null check (kind in ('system', 'message')),
+  key text unique check (char_length(key) <= 200),
+  from_member uuid references public.members (id) on delete set null,
+  to_members uuid[] not null default '{}',
+  title text not null check (char_length(title) between 1 and 100),
+  body text not null default '' check (char_length(body) <= 1000),
+  url text check (char_length(url) <= 300),
+  deliver_at timestamptz not null default now(),
+  delivered_at timestamptz,
+  created_at timestamptz not null default now()
+);
+create index if not exists notices_deliver_at_idx on public.notices (deliver_at);
+create table if not exists public.notice_reads (
+  notice_id uuid not null references public.notices (id) on delete cascade,
+  member_id uuid not null references public.members (id) on delete cascade,
+  read_at timestamptz not null default now(),
+  primary key (notice_id, member_id)
+);
+do $$
+declare
+  t text;
+begin
+  foreach t in array array['notices', 'notice_reads'] loop
+    execute format('alter table public.%I enable row level security', t);
+    execute format('revoke all on public.%I from anon, authenticated', t);
+    execute format('grant select, insert, update, delete on public.%I to service_role', t);
+    execute format('grant select, insert, delete on public.%I to authenticated', t);
+    execute format('drop policy if exists member_read on public.%I', t);
+    execute format('drop policy if exists member_insert on public.%I', t);
+    execute format('drop policy if exists member_delete on public.%I', t);
+  end loop;
+end;
+$$;
+-- everyone sees what was delivered; the sender also sees their scheduled messages
+create policy member_read on public.notices for select to authenticated
+  using (public.is_member() and (deliver_at <= now() or from_member = public.current_member_id()));
+-- people only write messages, as themselves (system notices come from the job)
+create policy member_insert on public.notices for insert to authenticated
+  with check (public.is_member() and kind = 'message' and from_member = public.current_member_id() and delivered_at is null);
+-- a scheduled message can be cancelled by its sender until it is delivered
+create policy member_delete on public.notices for delete to authenticated
+  using (public.is_member() and kind = 'message' and from_member = public.current_member_id() and delivered_at is null);
+-- read marks: everyone's are visible; each person adds and removes only their own
+create policy member_read on public.notice_reads for select to authenticated using (public.is_member());
+create policy member_insert on public.notice_reads for insert to authenticated
+  with check (public.is_member() and member_id = public.current_member_id());
+create policy member_delete on public.notice_reads for delete to authenticated
+  using (public.is_member() and member_id = public.current_member_id());
+
+-- ---------------------------------------------------------------------------
 -- Removal of the single-owner version. Run this section only after logging in with the new
 -- version has been confirmed (on a new project it does nothing).
 -- ---------------------------------------------------------------------------

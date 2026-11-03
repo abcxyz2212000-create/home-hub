@@ -9,8 +9,9 @@
 //   NOTIFY_DATE                optional YYYY-MM-DD, overrides today (tests only)
 //   NOTIFY_HOUR                optional 0-23, overrides the current hour in Japan (tests only)
 //
-// Runs every hour. Each person gets the day's notifications once, at their own hour (ユーザーマスターの
-// notify_hour, default 8) or at the first run after it when GitHub starts a run late.
+// Runs every 10 minutes. Each person gets the day's notifications once, at their own hour (ユーザーマスターの
+// notify_hour, default 8) or at the first run after it when GitHub starts a run late. Every notification
+// is also kept as an お知らせ (notices), and messages people wrote are pushed once they are due.
 import { CONFIG } from '../web/js/config.js';
 import { collectEvents, dueNotifications, notificationText, todayJST } from '../web/js/events.js';
 import { dueFor } from '../web/js/chores.js';
@@ -21,6 +22,7 @@ import { lowBalanceAlert, importAlert, choresAlert, householdAlert } from '../we
 import { loadVapidKeys, sendPush } from './webpush.mjs';
 
 const LOG_RETENTION_DAYS = 400;
+const NOTICE_RETENTION_DAYS = 365; // お知らせ are kept for a year
 const DEFAULT_HOUR = 8;
 const SHARED_REMIND_DAY = 25; // monthly shared account reminder from this day of the month (sent once per month)
 
@@ -57,6 +59,14 @@ function createClient(baseUrl, key) {
   return {
     select: (table, query = '') => call('GET', `${table}?select=*${query}`),
     insert: (table, rows) => call('POST', table, rows),
+    // rows whose unique column already exists are skipped
+    insertIgnore: async (table, rows, onConflict) => {
+      const res = await fetch(`${baseUrl}/rest/v1/${table}?on_conflict=${onConflict}`, {
+        method: 'POST', headers: { ...headers, Prefer: 'return=minimal,resolution=ignore-duplicates' }, body: JSON.stringify(rows),
+      });
+      if (!res.ok) throw new Error(`Supabase POST ${table} failed: HTTP ${res.status} ${await res.text()}`);
+    },
+    update: (table, query, values) => call('PATCH', `${table}?${query}`, values),
     remove: (table, query) => call('DELETE', `${table}?${query}`),
   };
 }
@@ -151,73 +161,90 @@ async function main() {
   const missing = sharedId ? missingImports(today, { mf: settings.mf_imported_at, bank: settings.bank_imported_at }) : [];
 
   let shared = null;
-  for (const [g, devices] of ready) {
-    const failuresBefore = failures;
+  const sharedData = async () => {
+    if (!shared) {
+      const [rules, entries, years] = await Promise.all([db.select('shared_rules'), db.select('shared_entries'), db.select('budget_years')]);
+      const ids = participantIds(rules, entries);
+      // per-category ratios: corrections worked out from the statement lines (not stored)
+      const q = categoryRatioQuery(years);
+      const txs = q ? await db.select('transactions', `&${q}`) : [];
+      const adjust = categoryAdjustments({ txs, years, members, memberIds: ids });
+      shared = { rules, entries: [...entries, ...adjust], ids };
+    }
+    return shared;
+  };
+
+  // The day's notifications of one person (g = member id, or 'none' for devices registered before the
+  // user master). mark: per-person key in notification_log; notice: one お知らせ per alert.
+  const itemsFor = async (g) => {
+    const items = [];
     // deadlines (same for everyone; the old household-wide key counts as already sent)
     for (const d of due) {
-      const key = `${d.key}:${g}`;
-      if (sent.has(d.key) || sent.has(key)) continue;
-      const delivered = await sendTo(devices, { ...notificationText(d.event, today), url: `#/view/${d.event.ledger}/${d.event.id}`, tag: d.key });
-      if (delivered > 0) await mark(key);
-      console.log(`- ${d.event.type} ${d.event.date} (stage ${d.stage}d): delivered to ${delivered} device(s)`);
+      items.push({ mark: `${d.key}:${g}`, old: d.key, notice: d.key, to: [], payload: { ...notificationText(d.event, today), url: `#/view/${d.event.ledger}/${d.event.id}`, tag: d.key },
+        log: `${d.event.type} ${d.event.date} (stage ${d.stage}d)` });
     }
     // low balance: everyone, once per balance date. Amounts never go to the log.
     if (lastBalance && lastBalance.balance < threshold) {
-      const key = `lowbal:${lastBalance.date}:${g}`;
-      if (!sent.has(key)) {
-        const delivered = await sendTo(devices, { ...lowBalanceAlert(lastBalance, threshold, today), url: '#/flow/ext', tag: 'low-balance' });
-        if (delivered > 0) await mark(key);
-        console.log(`- low balance: delivered to ${delivered} device(s)`);
-      }
+      items.push({ mark: `lowbal:${lastBalance.date}:${g}`, notice: `lowbal:${lastBalance.date}`, to: [], payload: { ...lowBalanceAlert(lastBalance, threshold, today), url: '#/flow/ext', tag: 'low-balance' }, log: 'low balance' });
     }
     // monthly imports not done: the person who imports, every day until done
     if (missing.length && g === settings.import_reminder_member) {
-      const key = `import:${today}:${g}`;
-      if (!sent.has(key)) {
-        const delivered = await sendTo(devices, { ...importAlert(missing), url: '#/flow/ext', tag: 'imports' });
-        if (delivered > 0) await mark(key);
-        console.log(`- import reminder: delivered to ${delivered} device(s)`);
-      }
+      items.push({ mark: `import:${today}:${g}`, notice: `import:${today}`, to: [g], payload: { ...importAlert(missing), url: '#/flow/ext', tag: 'imports' }, log: 'import reminder' });
     }
-    if (g === 'none') {
-      if (failures === failuresBefore) await mark(`daily:${today}:${g}`);
-      continue;
-    }
+    if (g === 'none') return items;
     // today's chores of this person. Names never go to the log.
     const list = dueFor(chores, today, g);
-    const choreKey = `chores:${today}:${g}`;
-    if (list.length > 0 && !sent.has(choreKey)) {
-      const delivered = await sendTo(devices, { ...choresAlert(list.map((c) => c.name)), url: '#/chores', tag: choreKey });
-      if (delivered > 0) await mark(choreKey);
-      console.log(`- chores: ${list.length} task(s) for a member, delivered to ${delivered} device(s)`);
+    if (list.length > 0) {
+      items.push({ mark: `chores:${today}:${g}`, notice: `chores:${today}:${g}`, to: [g], payload: { ...choresAlert(list.map((c) => c.name)), url: '#/chores', tag: `chores:${today}:${g}` }, log: `chores: ${list.length} task(s) for a member` });
     }
     // shared account: from the 25th, once a month. Amounts and names never go to the log.
     if (Number(today.slice(8, 10)) >= SHARED_REMIND_DAY) {
-      if (!shared) {
-        const [rules, entries, years] = await Promise.all([db.select('shared_rules'), db.select('shared_entries'), db.select('budget_years')]);
-        const ids = participantIds(rules, entries);
-        // per-category ratios: corrections worked out from the statement lines (not stored)
-        const q = categoryRatioQuery(years);
-        const txs = q ? await db.select('transactions', `&${q}`) : [];
-        const adjust = categoryAdjustments({ txs, years, members, memberIds: ids });
-        shared = { rules, entries: [...entries, ...adjust], ids };
-      }
+      const sh = await sharedData();
       const ym = today.slice(0, 7);
-      const key = `shared:${ym}:${g}`;
-      if (shared.ids.includes(g) && !sent.has(key)) {
-        const st = statement(shared.rules, shared.entries, g, ym);
-        const delivered = await sendTo(devices, {
-          ...householdAlert(ym, contribution(st)),
-          url: `#/flow/member/${ym}`,
-          tag: key,
-        });
-        if (delivered > 0) await mark(key);
-        console.log(`- shared account reminder for a member: delivered to ${delivered} device(s)`);
+      if (sh.ids.includes(g)) {
+        const st = statement(sh.rules, sh.entries, g, ym);
+        items.push({ mark: `shared:${ym}:${g}`, notice: `shared:${ym}:${g}`, to: [g], payload: { ...householdAlert(ym, contribution(st)), url: `#/flow/member/${ym}`, tag: `shared:${ym}:${g}` }, log: 'shared account reminder for a member' });
       }
     }
-    // done for today (if a push failed, the next hourly run tries again)
+    return items;
+  };
+
+  // お知らせ: one row per alert, whether or not the person has a device (a second run adds nothing)
+  const record = (it) => db.insertIgnore('notices', [{ kind: 'system', key: it.notice, to_members: it.to, title: it.payload.title, body: it.payload.body || '', url: it.payload.url || null, delivered_at: new Date().toISOString() }], 'key');
+
+  for (const [g, devices] of ready) {
+    const failuresBefore = failures;
+    for (const it of await itemsFor(g)) {
+      if (sent.has(it.mark) || (it.old && sent.has(it.old))) continue;
+      await record(it);
+      const delivered = await sendTo(devices, it.payload);
+      if (delivered > 0) await mark(it.mark);
+      console.log(`- ${it.log}: delivered to ${delivered} device(s)`);
+    }
+    // done for today (if a push failed, the next run tries again)
     if (failures === failuresBefore) await mark(`daily:${today}:${g}`);
   }
+  // people without a device: their notifications still go to お知らせ, at their hour
+  for (const m of members) {
+    // (a separate key: a device registered later that day still gets the day's pushes)
+    if (groups.has(m.id) || hourOf(m.id) > hour || sent.has(`notices:${today}:${m.id}`)) continue;
+    for (const it of await itemsFor(m.id)) await record(it);
+    await mark(`notices:${today}:${m.id}`);
+  }
+
+  // messages (and scheduled ones) that are due: pushed to the devices of their recipients, every run
+  const nowIso = new Date().toISOString();
+  const messages = await db.select('notices', `&kind=eq.message&delivered_at=is.null&deliver_at=lte.${encodeURIComponent(nowIso)}`);
+  for (const n of messages) {
+    const to = n.to_members && n.to_members.length ? n.to_members : members.map((m) => m.id);
+    const from = members.find((m) => m.id === n.from_member);
+    const devices = subscriptions.filter((sub) => to.includes(sub.member_id));
+    const delivered = await sendTo(devices, { title: n.title, body: `${from ? `${from.nickname || from.name}より：` : ''}${n.body}`.slice(0, 200), url: '#/notices', tag: `notice:${n.id}` });
+    await db.update('notices', `id=eq.${n.id}`, { delivered_at: nowIso });
+    console.log(`- message: delivered to ${delivered} device(s)`);
+  }
+  const noticeCutoff = new Date(Date.now() - NOTICE_RETENTION_DAYS * 86400000).toISOString();
+  await db.remove('notices', `created_at=lt.${encodeURIComponent(noticeCutoff)}&deliver_at=lt.${encodeURIComponent(noticeCutoff)}`);
 
   const cutoff = new Date(Date.now() - LOG_RETENTION_DAYS * 86400000).toISOString();
   await db.remove('notification_log', `sent_at=lt.${encodeURIComponent(cutoff)}`);

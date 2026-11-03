@@ -986,6 +986,43 @@ try {
   assert.equal(await sp.locator('#nav').isHidden(), true);
   await strangerCtx.close();
 
+  step('お知らせ: app notices for everyone, messages now or scheduled, cancel, read marks and the bell');
+  mock.db.notices.push({ id: crypto.randomUUID(), kind: 'system', key: 'e2e-lowbal', from_member: null, to_members: [], title: '共用口座の残高不足', body: '残高が少なくなっています。', url: '#/flow/ext', deliver_at: nowIso, delivered_at: nowIso, created_at: nowIso });
+  await page.goto(`${appUrl}#/`);
+  await page.reload();
+  await page.locator('#bell .bell-count').waitFor();
+  assert.equal(await page.locator('#bell .bell-count').innerText(), '1');
+  await page.locator('#bell').click();
+  await page.getByText('共用口座の残高不足').waitFor();
+  assert.match(await page.locator('#view').innerText(), /アプリ → 全員/);
+  await page.waitForFunction(() => document.querySelector('#bell .bell-count').hidden);
+  assert.equal(mock.db.notice_reads.length, 1, 'opening the page marks it as read');
+  await page.getByRole('link', { name: 'メッセージを送る' }).click();
+  await page.locator('#notice-title').waitFor();
+  const others = await page.locator('.recipients input:checked').count();
+  assert.ok(others >= 1, 'the others are chosen by default');
+  await page.getByRole('button', { name: '送る', exact: true }).click();
+  await page.getByText('タイトルを入力してください。').waitFor();
+  await page.locator('#notice-title').fill('牛乳を買ってきて');
+  await page.locator('#notice-body').fill('帰りにおねがい');
+  await page.getByRole('button', { name: '送る', exact: true }).click();
+  await page.waitForFunction(() => location.hash === '#/notices');
+  const sentMsg = mock.db.notices.find((n) => n.title === '牛乳を買ってきて');
+  assert.equal(sentMsg.kind, 'message');
+  assert.equal(sentMsg.from_member, 'm-admin');
+  await page.getByText('帰りにおねがい').waitFor();
+  // scheduled: listed under 予約中 for the sender, and cancelled
+  await page.goto(`${appUrl}#/notices/new`);
+  await page.locator('#notice-title').fill('電気代の過去分の精算');
+  const tomorrow = new Date(Date.now() + 86400000 + 9 * 3600000).toISOString().slice(0, 16); // JST wall clock
+  await page.locator('#notice-at').fill(tomorrow);
+  await page.getByRole('button', { name: '送る', exact: true }).click();
+  await page.getByRole('heading', { name: '予約中' }).waitFor();
+  assert.ok(mock.db.notices.find((n) => n.title === '電気代の過去分の精算').deliver_at > new Date().toISOString());
+  await page.getByRole('button', { name: '取り消す' }).click();
+  await page.getByText('予約を取り消しました。').waitFor();
+  assert.ok(!mock.db.notices.some((n) => n.title === '電気代の過去分の精算'));
+
   step('layout audit: every main page at phone width (full page + scrolled, to check the fixed page head)');
   mkdirSync(join(OUT, 'audit'), { recursive: true });
   const yearNow = ymNow.slice(0, 4);
@@ -996,7 +1033,7 @@ try {
     ['money-ext-year', `#/flow/ext/${yearNow}`], ['money-flow-month', `#/flow/flow/${ymNow}`], ['money-flow-year', `#/flow/flow/${yearNow}`],
     ['money-budget-month', `#/flow/budget/${ymNow}`], ['money-budget-year', `#/flow/budget/${yearNow}`], ['budget-edit', `#/budget/${yearNow}`],
     ['advance-new', `#/shared-entry/new/advance:${hanako.id}:${ymNow}`], ['report-new', `#/deposit-report/new/${hanako.id}`],
-    ['settings-account', '#/settings/account'], ['settings-users', '#/settings/users'], ['settings-data', '#/settings/data'], ['settings-other', '#/settings/other'],
+    ['settings-account', '#/settings/account'], ['settings-users', '#/settings/users'], ['settings-data', '#/settings/data'], ['settings-other', '#/settings/other'], ['notices', '#/notices'], ['notice-new', '#/notices/new'],
   ];
   for (const [name, route] of auditRoutes) {
     await page.goto(`${appUrl}${route}`);

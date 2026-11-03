@@ -451,6 +451,49 @@ do $$ begin
   delete from public.push_subscriptions where id = gen_random_uuid();
 end $$;
 
+-- お知らせ: a member sends messages as themselves, everyone sees delivered ones, the sender sees and
+-- cancels their scheduled ones, system notices come from the job only
+reset role;
+insert into public.notices (kind, key, title, body) values ('system', 'lowbal:2026-03-01', '残高不足', 'x');
+set role authenticated;
+select pg_temp.login('adv@example.com');
+do $$ declare me uuid := public.current_member_id(); begin
+  insert into public.notices (kind, from_member, title, body) values ('message', me, '今すぐ', '本文');
+  insert into public.notices (kind, from_member, title, body, deliver_at) values ('message', me, '予約', '本文', now() + interval '1 day');
+  begin insert into public.notices (kind, from_member, title) select 'message', id, 'なりすまし' from public.members where email = 'owner@example.com';
+    raise exception 'member sent as someone else'; exception when insufficient_privilege then null; end;
+  begin insert into public.notices (kind, from_member, title) values ('system', me, 'x');
+    raise exception 'member wrote a system notice'; exception when insufficient_privilege then null; end;
+  if (select count(*) from public.notices) <> 3 then raise exception 'sender does not see their notices'; end if;
+  insert into public.notice_reads (notice_id, member_id) select id, me from public.notices where kind = 'system';
+end $$;
+select pg_temp.login('owner@example.com');
+do $$ begin
+  if (select count(*) from public.notices) <> 2 then raise exception 'others see a scheduled message (or miss a delivered one)'; end if;
+  if (select count(*) from public.notice_reads) <> 1 then raise exception 'read marks are not visible'; end if;
+  delete from public.notices where title = '今すぐ';
+  delete from public.notice_reads;
+  if (select count(*) from public.notices) <> 2 or (select count(*) from public.notice_reads) <> 1 then raise exception 'deleted someone else''s notice or read mark'; end if;
+  begin insert into public.notice_reads (notice_id, member_id) select n.id, m.id from public.notices n, public.members m where m.email = 'adv@example.com' and n.kind = 'message';
+    raise exception 'marked as read for someone else'; exception when insufficient_privilege then null; end;
+end $$;
+select pg_temp.login('adv@example.com');
+do $$ begin
+  delete from public.notices where title = '予約';
+  delete from public.notices where title = '今すぐ' and delivered_at is null;
+  if (select count(*) from public.notices) <> 1 then raise exception 'sender cannot cancel a message'; end if;
+end $$;
+reset role;
+update public.notices set delivered_at = now();
+set role authenticated;
+select pg_temp.login('adv@example.com');
+do $$ begin
+  delete from public.notices;
+  if (select count(*) from public.notices) <> 1 then raise exception 'a delivered notice was deleted'; end if;
+end $$;
+reset role;
+delete from public.notices;
+
 -- anonymous users get nothing
 reset role;
 set role anon;

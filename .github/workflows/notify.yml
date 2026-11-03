@@ -1,12 +1,12 @@
-# Push notifications, every hour: each person gets the day's notifications once, at the hour they chose
-# in the app (default 8:00 Japan time).
+# Push notifications, every 10 minutes: each person gets the day's notifications once, at the hour they
+# chose in the app (default 8:00 Japan time); messages (お知らせ) are pushed at the first run after they are due.
 # Required repository secrets: SUPABASE_SERVICE_ROLE_KEY, VAPID_PRIVATE_KEY (see docs/setup.md).
 # Logs of a public repository are public: scripts/notify.mjs never prints ledger names.
-name: 通知（毎時）
+name: 通知（10分ごと）
 
 on:
   schedule:
-    - cron: '7 * * * *'
+    - cron: '3-59/10 * * * *'
   workflow_dispatch:
     inputs:
       mode:
@@ -19,6 +19,10 @@ on:
 
 permissions:
   contents: read
+
+concurrency:
+  group: notify
+  cancel-in-progress: false
 
 jobs:
   notify:
