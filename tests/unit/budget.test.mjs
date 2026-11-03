@@ -70,7 +70,18 @@ test('actual of a month: the shared account by 大項目 plus 立替; people\'s 
   assert.equal(a.spending.has('趣味・娯楽'), false);
   assert.equal(a.fromAccount, 18251);
   assert.equal(a.fromAdvance, 85350);
-  assert.equal(a.income, 70000 + 82350 + 3000);
+  assert.equal(a.income, 70000, 'income is what the people were to pay (今月分)');
+  assert.equal(a.paid, 70000 + 82350 + 3000, 'what they paid: 入金 + 立替');
+  assert.equal(a.unpaid, -85350);
+});
+
+test('a late deposit does not move the income of the month, only what is unpaid', () => {
+  const shared = { rules: [{ id: 'r', member_id: 'b', label: '基本', amount: 80000, start_ym: '2026-01' }], entries: [] };
+  const late = monthActual({ txs: [], shared, members: [], memberIds: ['b'], mapping: {}, contracts: [], ym: '2026-11' });
+  assert.deepEqual([late.income, late.paid, late.unpaid], [80000, 0, 80000]);
+  shared.entries.push({ member_id: 'b', ym: '2026-12', kind: 'deposit', amount: 160000 });
+  const next = monthActual({ txs: [], shared, members: [], memberIds: ['b'], mapping: {}, contracts: [], ym: '2026-12' });
+  assert.deepEqual([next.income, next.paid, next.unpaid], [80000, 160000, -80000]);
 });
 
 test('compare rows: budget x months, in MoneyForward\'s order, empty rows left out', () => {
