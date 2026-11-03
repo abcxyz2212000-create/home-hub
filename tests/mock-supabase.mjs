@@ -20,7 +20,7 @@ const DEFAULTS = {
 };
 const TABLES = ['accounts', 'cards', 'contracts', 'items', 'memberships', 'item_photos', 'settings', 'push_subscriptions', 'notification_log', 'members', 'audit_log', 'chores', 'shared_rules', 'shared_entries', 'transactions', 'deposit_reports', 'shared_attachments', 'account_balances', 'budgets', 'budget_years'];
 const TABLE_DEFAULTS = {
-  members: { role: 'member', active: true, email: null, nickname: null, transfer_names: null, gender: null, notify_hour: null },
+  members: { role: 'member', active: true, email: null, nickname: null, transfer_names: null, gender: null, notify_hour: null, birth_year: null },
   settings: {}, notification_log: {}, push_subscriptions: {}, audit_log: {},
   chores: { status: 'active', schedule: [], adjust: 1, assignee_type: 'member', assignee_id: null },
   shared_rules: { end_ym: null, memo: null, month_of_year: null, contract_id: null },

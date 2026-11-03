@@ -87,7 +87,11 @@ test('holder is chosen from the user master in every ledger', () => {
     const f = LEDGERS[k].fields.find((x) => x.label === '名義人');
     assert.deepEqual([f.key, f.type], ['holder_id', 'member'], k);
   }
-  assert.deepEqual(MEMBER_DEF.fields.map((f) => f.key), ['name', 'nickname', 'email', 'gender', 'transfer_names', 'role', 'active', 'memo']);
+  assert.deepEqual(MEMBER_DEF.fields.map((f) => f.key), ['name', 'nickname', 'email', 'gender', 'birth_year', 'transfer_names', 'role', 'active', 'memo']);
+  const by = MEMBER_DEF.fields.find((f) => f.key === 'birth_year');
+  assert.deepEqual(parseField(by, '１９９３'), { value: 1993 });
+  assert.ok(parseField(by, '93').error, 'a year of four digits');
+  assert.deepEqual(parseField(by, ''), { value: null });
   const role = MEMBER_DEF.fields.find((f) => f.key === 'role');
   assert.deepEqual(parseField(role, '管理者'), { value: 'admin' });
   assert.equal(parseField(role, '').error, '権限を選んでください。');

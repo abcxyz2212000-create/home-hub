@@ -247,6 +247,9 @@ do $$ begin
 end $$;
 delete from public.budgets;
 delete from public.budget_years;
+do $$ begin
+  begin update public.members set birth_year = 1800; raise exception 'birth year 1800 accepted'; exception when check_violation then null; end;
+end $$;
 
 -- each person sets only their own notification hour
 select pg_temp.login('adv@example.com');

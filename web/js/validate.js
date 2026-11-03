@@ -68,6 +68,7 @@ export function parseField(field, raw) {
       if (empty) return { value: null };
       const t = toHalfWidth(String(s)).replace(/円$/, '');
       if (!/^\d+$/.test(t) || Number(t) > (field.max || 100000000)) return { error: `${label}は0以上の整数で入力してください。` };
+      if (field.min && Number(t) < field.min) return { error: `${label}は${field.min}〜${field.max}の整数で入力してください。` };
       return { value: Number(t) };
     }
     case 'yen': {

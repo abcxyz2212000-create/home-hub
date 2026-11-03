@@ -137,6 +137,15 @@ export const CONFIG = {
 
 > `SUPABASE_SERVICE_ROLE_KEY` は全データを読み書きできる強い鍵です。GitHub の Secrets 以外（チャット・メール・ファイル）には絶対に貼り付けないでください。
 
+### 負担率の自動取得（任意）
+
+予算の負担率を、毎年12月1日に賃金統計（e-Stat）から自動で取りに行くときだけ必要です。
+
+1. e-Stat（https://www.e-stat.go.jp/）でユーザー登録し、ログインして **マイページ** → **API機能** を開きます。
+2. 「アプリケーションIDの取得」で、名称（例: 家の管理ハブ）と URL（このアプリの GitHub Pages の URL。localhost は登録できません）を入れて **発行** を押します。
+3. 表示された **appId** を、上と同じ手順で `ESTAT_APP_ID` という名前の Secret に登録します。
+4. GitHub の **Actions** → 「負担率の案（毎年12月）」→ **Run workflow** で一度手動実行し、成功することを確かめます（予算の年は空欄で来年、数字を入れるとその年）。
+
 ## 6. スマホにアプリを追加して通知を受け取る（2人とも）
 
 1. Android の **Chrome** で `https://<GitHubのユーザー名>.github.io/home-hub/` を開き、ログインします。

@@ -369,6 +369,8 @@ create index if not exists transactions_personal_idx on public.transactions (per
 alter table public.members add column if not exists transfer_names text check (char_length(transfer_names) <= 300);
 -- The person's color in the app (2026-11-01): male = blue, female = red.
 alter table public.members add column if not exists gender text check (gender in ('male', 'female'));
+-- birth year (2026-11-03): the age group in the wage statistics that set the ratio of the budget
+alter table public.members add column if not exists birth_year integer check (birth_year between 1900 and 2100);
 -- The hour (Japan time, 0-23) the person gets notifications; null = 8 (2026-11-01).
 alter table public.members add column if not exists notify_hour smallint check (notify_hour between 0 and 23);
 alter table public.transactions add column if not exists deposit_entry_id uuid references public.shared_entries (id) on delete set null;

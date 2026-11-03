@@ -694,3 +694,6 @@ details.chore-group > summary { cursor: pointer; list-style: revert; }
 @media (min-width: 560px) { .budget-edit-row { grid-template-columns: 8rem 9rem 1fr; } }
 .budget-summary td, .budget-summary th { white-space: nowrap; }
 .budget-edit-row input.num { text-align: right; }
+.wage-box { margin: 0.5rem 0 0.75rem; display: grid; gap: 0.35rem; }
+.wage-box p, .wage-box ul { margin: 0; }
+.wage-box ul { padding-left: 1.2rem; }
