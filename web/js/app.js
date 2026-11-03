@@ -1699,9 +1699,10 @@ function budgetMonthView(ym) {
       txs.length === 0 ? h('p', { class: 'notice-text small' }, 'この月の明細はまだ取り込まれていません。') : null,
       budgetSummaryTable(b, actual, 1)),
     h('section', { class: 'card' },
-      h('h2', { class: 'with-icon' }, '費目ごと', helpButton('費目ごと', 'バーは予算を使った割合です。予算を超えるとオレンジになります。', '立替は、設定した大項目に入ります（予算の編集画面で変えられます）。')),
+      h('h2', { class: 'with-icon' }, '費目ごと', helpButton('費目ごと', 'バーは予算を使った割合です。予算を超えるとオレンジになります。', '立替は、設定 → その他 → 費目 で決めた大項目に入ります（契約からの立替は契約の画面で決めます）。')),
       budgetCategoryList(rows),
-      unmapped.length ? h('p', { class: 'warn-text small' }, `大項目が決まっていない立替があります（${[...new Set(unmapped.map((a) => a.label))].join('・')}）。${isAdmin() ? '予算の編集画面で選べます。' : ''}`) : null),
+      unmapped.length ? h('p', { class: 'warn-text small' }, `大項目が決まっていない立替があります（${[...new Set(unmapped.map((a) => a.label))].join('・')}）。`,
+        isAdmin() ? h('a', { href: '#/settings/other' }, '設定 → その他 → 費目で選ぶ') : null) : null),
     proposalCard(b, ym),
   ];
 }
@@ -1821,21 +1822,6 @@ function renderBudget(yearParam) {
     for (const x of [...catInputs.flatMap((c) => [c.amount]), savings, ...weights.map((w) => w.input)]) x.addEventListener('input', update);
     update();
 
-    // 大項目 of each 立替 label
-    const mapping = { ...budgetMapping() };
-    const labels = [...new Set([
-      ...state.sharedRules.filter((r) => r.amount < 0).map((r) => r.label),
-      ...state.sharedEntries.filter((e) => e.kind === 'charge' && e.amount < 0).map((e) => e.label),
-    ])].sort((a, b) => a.localeCompare(b, 'ja'));
-    const labelSelects = labels.map((l) => {
-      const rule = state.sharedRules.find((r) => r.label === l && r.contract_id);
-      const auto = advanceCategory({ label: l, rule }, {}, state.data.contracts);
-      const sel = h('select', { 'aria-label': `${l}の大項目` },
-        h('option', { value: '' }, `自動（${auto}）`),
-        MF_CATEGORIES.map((c) => h('option', { value: c, selected: mapping[l] === c }, c)));
-      return { l, sel, el: h('div', { class: 'budget-edit-row' }, h('span', { class: 'budget-cat' }, l), sel) };
-    });
-
     const save = h('button', { type: 'button', class: 'primary', onclick: (ev) => busy(ev.currentTarget, async () => {
       const bad = [];
       const rows = [];
@@ -1856,12 +1842,6 @@ function renderBudget(yearParam) {
       const keep = new Set(rows.map((r) => r.category));
       for (const r of state.budgets.filter((x) => x.year === year && !keep.has(x.category))) await db.deleteWhere('budgets', 'id', r.id);
       await db.upsertRows('budget_years', [{ year, savings_monthly: s, ratio: w, ratio_note: note.value.trim() || null }], 'year');
-      const nextMap = { ...budgetMapping() };
-      for (const x of labelSelects) {
-        if (x.sel.value) nextMap[x.l] = x.sel.value;
-        else delete nextMap[x.l];
-      }
-      await saveSetting('budget_category_of', nextMap);
       [state.budgets, state.budgetYears] = await Promise.all([db.selectAll('budgets', 'year.asc'), db.selectAll('budget_years', 'year.asc')]);
       toast(`${year}年の予算を保存しました。`);
       location.hash = back;
@@ -1889,9 +1869,6 @@ function renderBudget(yearParam) {
           update();
         }),
         h('div', { class: 'field' }, h('label', { for: 'ratio-note' }, '負担率のメモ（参照した資料など）'), note)),
-      labels.length ? h('section', { class: 'card' },
-        h('h2', { class: 'with-icon' }, '立替の大項目', helpButton('立替の大項目', '個人のお金で払った共通の支出（立替）を、どの大項目の実績に入れるかを選びます。', '「自動」は、契約の種類から決めた大項目です（契約でない立替は未分類）。')),
-        h('div', { class: 'budget-edit' }, labelSelects.map((x) => x.el))) : null,
       h('div', { class: 'actions sticky-actions' }, save),
     ];
   };
@@ -2293,12 +2270,43 @@ function alertSettingsSection() {
     h('div', { class: 'actions' }, save));
 }
 
+// 大項目 that the 立替 from a contract (paid from a personal account) counts as, in the budget.
+function contractCategoryCard(c) {
+  const key = `contract:${c.id}`;
+  const current = budgetMapping()[key] || '';
+  const auto = advanceCategory({ label: c.name, rule: { contract_id: c.id } }, { ...budgetMapping(), [key]: undefined }, state.data.contracts);
+  const sel = h('select', { id: 'contract-category', disabled: !isAdmin() }, h('option', { value: '' }, `自動（${auto}）`),
+    MF_CATEGORIES.filter((x) => x !== '未分類').map((x) => h('option', { value: x, selected: current === x }, x)));
+  const save = isAdmin() ? h('button', { type: 'button', class: 'small', onclick: (ev) => busy(ev.currentTarget, async () => {
+    const next = { ...budgetMapping() };
+    if (sel.value) next[key] = sel.value;
+    else delete next[key];
+    await saveSetting('budget_category_of', next);
+    toast('大項目を保存しました。');
+    render();
+  }) }, '保存') : null;
+  return h('section', { class: 'card' },
+    h('div', { class: 'label-row' }, h('label', { for: 'contract-category' }, '予算での大項目'),
+      helpButton('予算での大項目', 'この契約を個人の口座から払った分（立替）を、予算と実績でどの大項目に数えるかです。', '「自動」は契約の種類から決めます。')),
+    h('div', { class: 'inline-form' }, sel, save));
+}
+
 function expenseLabelsSection() {
   if (!isAdmin()) return null;
   let items = [...expenseLabels()];
   const list = h('ul', { class: 'label-list' });
+  const cats = { ...budgetMapping() };
+  const catSelect = (l) => {
+    const sel = h('select', { 'aria-label': `${l}の大項目`, class: 'label-cat' }, h('option', { value: '' }, '大項目：未設定'),
+      MF_CATEGORIES.filter((c) => c !== '未分類').map((c) => h('option', { value: c, selected: cats[l] === c }, c)));
+    sel.addEventListener('change', () => {
+      if (sel.value) cats[l] = sel.value;
+      else delete cats[l];
+    });
+    return sel;
+  };
   const draw = () => list.replaceChildren(...items.map((l, i) => h('li', {},
-    h('span', {}, l),
+    h('span', {}, l), catSelect(l),
     h('button', { type: 'button', class: 'small', 'aria-label': `${l}を上へ`, disabled: i === 0, onclick: () => { [items[i - 1], items[i]] = [items[i], items[i - 1]]; draw(); } }, '↑'),
     h('button', { type: 'button', class: 'small', 'aria-label': `${l}を下へ`, disabled: i === items.length - 1, onclick: () => { [items[i + 1], items[i]] = [items[i], items[i + 1]]; draw(); } }, '↓'),
     h('button', { type: 'button', class: 'small danger', 'aria-label': `${l}を削除`, onclick: () => { items.splice(i, 1); draw(); } }, '削除'))));
@@ -2316,11 +2324,13 @@ function expenseLabelsSection() {
       return;
     }
     await saveSetting('expense_labels', items);
+    await saveSetting('budget_category_of', cats);
     toast('費目を保存しました。');
   }) }, '保存');
   draw();
   return h('section', { class: 'card' },
-    h('h2', { class: 'with-icon' }, '費目', helpButton('費目', '立替や臨時の費目で選ぶ費目の一覧です。一覧にないものは「その他（自由入力）」で入れられます。', '一覧を変えても、これまでの記録の費目名は変わりません。')),
+    h('h2', { class: 'with-icon' }, '費目', helpButton('費目', '立替や臨時の費目で選ぶ費目の一覧です。一覧にないものは「その他（自由入力）」で入れられます。',
+      '大項目は、予算と実績で立替をどこに数えるかです（明細のマネーフォワードの大項目と同じ分け方）。', '一覧を変えても、これまでの記録の費目名は変わりません。')),
     list, h('div', { class: 'inline-form' }, input, add), h('div', { class: 'actions' }, save));
 }
 
@@ -2997,6 +3007,7 @@ function relations(ledger, r) {
 ) : null,
       r.shared_cost ? h('section', { class: 'card' }, h('h2', {}, '共用口座への入金との関係'), h('p', {}, deductionText(r)),
         h('a', { href: '#/flow' }, 'お金の流れ（共用口座）を見る')) : null,
+      r.shared_cost ? contractCategoryCard(r) : null,
     ];
   }
   if (ledger === 'cards') {

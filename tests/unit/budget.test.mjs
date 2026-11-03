@@ -39,6 +39,8 @@ test('category of a 立替: its own choice, then the contract kind, else 未分�
   assert.equal(advanceCategory({ label: '家賃', rule: { contract_id: 'k' } }, {}, contracts), '住宅');
   assert.equal(advanceCategory({ label: '家賃', rule: { contract_id: 'k' } }, { 家賃: 'その他' }, contracts), 'その他');
   assert.equal(advanceCategory({ label: '管理費', entry: {} }, {}, contracts), '未分類');
+  assert.equal(advanceCategory({ label: 'dアニ', rule: { contract_id: 'k' } }, { 'contract:k': '通信費', dアニ: 'その他' }, contracts), '通信費', 'the contract\'s own first');
+  assert.equal(advanceCategory({ label: '管理費', entry: {} }, { 管理費: '住宅' }, contracts), '住宅');
 });
 
 test('actual of a month: the shared account by 大項目 plus 立替; people\'s money and transfers left out', () => {
@@ -51,6 +53,7 @@ test('actual of a month: the shared account by 大項目 plus 立替; people\'s 
     { amount: -800, category: '日用品', counted: false, transfer: false, description: '対象外' },
     { amount: -2000, category: '趣味・娯楽', counted: true, transfer: false, description: '本', personal_member_id: 'a' },
     { amount: 70000, category: '収入', counted: true, transfer: false, description: '入金', deposit_entry_id: 'd' },
+    { amount: 42, category: '収入', counted: true, transfer: false, description: '預金利息' },
   ];
   const shared = {
     rules: [{ id: 'r1', member_id: 'a', label: '基本', amount: 70000, start_ym: '2026-01' },

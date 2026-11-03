@@ -82,11 +82,14 @@ export function planBaseChange(rules, memberId, from, amount, prevYM) {
   return { end: r ? { id: r.id, end_ym: prevYM } : null, update: null, create };
 }
 
-// 大項目 of one 立替 line (an item of a statement).
+// 大項目 of one 立替 line (an item of a statement). mapping (setting budget_category_of):
+// 'contract:<id>' -> 大項目 for 立替 from a contract, '<費目>' -> 大項目 for the others.
+// A contract without its own falls back to its 費目 label, then to its 種類.
 export function advanceCategory(item, mapping, contracts) {
-  const own = mapping && mapping[item.label];
-  if (own) return own;
+  const m = mapping || {};
   const contractId = item.rule && item.rule.contract_id;
+  if (contractId && m[`contract:${contractId}`]) return m[`contract:${contractId}`];
+  if (m[item.label]) return m[item.label];
   const c = contractId ? contracts.find((x) => x.id === contractId) : null;
   if (c && CONTRACT_KIND_CATEGORY[c.category]) return CONTRACT_KIND_CATEGORY[c.category];
   return '未分類';
@@ -103,6 +106,7 @@ export function monthActual({ txs, shared, members, memberIds, mapping, contract
     if (!t.counted || t.transfer) continue;
     if (t.deposit_entry_id || transferMember(t, members)) continue; // money of the people, not spending
     if (t.personal_member_id) continue; // one person's own purchase, settled separately
+    if (t.category === '収入') continue; // interest and other income: not spending (as in the former spreadsheet)
     const v = -t.amount; // refunds lower the spending of their 大項目
     add(t.category || '未分類', v);
     fromAccount += v;
