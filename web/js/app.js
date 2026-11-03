@@ -651,6 +651,17 @@ function renderNotices(sub) {
   }
 }
 
+// ホーム's page head: the same as the top bar (who is logged in, and the お知らせ to look at).
+function homeHeadInfo() {
+  const m = me();
+  const count = attentionNotices().length;
+  return h('div', { class: 'home-head-info' },
+    h('a', { class: `home-user ${personClass(m.id)}`, href: '#/settings/account' }, nick(m),
+      m.role === 'admin' && !/管理者/.test(nick(m)) ? h('span', { class: 'head-role' }, '管理者') : null),
+    h('a', { class: 'home-bell', href: '#/notices', 'aria-label': count ? `お知らせ（未読・確認待ち ${count}件）` : 'お知らせ' }, icon('bell'),
+      count ? h('span', { class: 'bell-count' }, count > 99 ? '99+' : String(count)) : null));
+}
+
 // ホーム: the unread お知らせ for me (or everyone), each can be marked as read here.
 function unreadNoticesCard() {
   const list = attentionNotices();
@@ -950,7 +961,7 @@ function renderHome() {
 
   // ホーム: the signed-in person's deposits, today's chores, deadlines, shortcuts (2026-11-01)
   setView('ホーム',
-    pageHead({ title: `${m}月${d}日（${weekdayJa(today)}）`, icon: 'home' }),
+    pageHead({ title: `${m}/${d}(${weekdayJa(today)})`, icon: 'home', action: homeHeadInfo() }),
     alertCards(),
     unreadNoticesCard(),
     backupReminder(),
@@ -4178,7 +4189,7 @@ async function fullBackup(status) {
 
 // アプリの更新: the version this device runs (APP_VERSION, the same as the service worker's cache name) and a button that drops
 // the saved files and loads the newest version. Sign-in and notifications stay as they are.
-const APP_VERSION = 'v63'; // = CACHE in sw.js (checked by tests/unit/version.test.mjs)
+const APP_VERSION = 'v64'; // = CACHE in sw.js (checked by tests/unit/version.test.mjs)
 
 function appUpdateSection() {
   const version = h('span', { class: 'num' }, APP_VERSION);
