@@ -17,7 +17,7 @@ import { parseOcrText, receiptMemo, recognizeImage } from './ocr.js';
 import { parseBankRows, monthEndBalances, latestBalance, missingImports, DEFAULT_LOW_BALANCE } from './bank.js';
 import { lowBalanceAlert, importAlert } from './alerts.js';
 import { surveyYearFor, reiwa, overviewUrl, lookups, lookupText } from './wage.js';
-import { MF_CATEGORIES, MAX_BUDGET, percents, proposal, baseRule, planBaseChange, advanceCategory, monthActual, compareRows } from './budget.js';
+import { MF_CATEGORIES, MAX_BUDGET, percents, proposal, baseRule, planBaseChange, advanceCategory, monthActual, compareRows, incomeOf, applyFrom } from './budget.js';
 import * as push from './push.js';
 import { icon, LEDGER_ICONS } from './icons.js';
 import { timelineChart, barChart, lineChart, flowGraph, urgency } from './charts.js';
@@ -1638,48 +1638,45 @@ function budgetCategoryList(rows) {
   }));
 }
 
+// 今月分 of each person from the budget: income x ratio. Applied to the base amounts when the budget is
+// saved (from next month on, within the year).
 function proposalCard(b, ym) {
   const ids = budgetMemberIds();
   if (ids.length === 0) return null;
   const p = proposal(b.rows, b.year, ids);
   const pc = percents(b.year && b.year.ratio, ids);
-  const from = h('input', { type: 'month', id: 'proposal-from', value: ym > thisYM() ? ym : ymAdd(thisYM(), 1) });
   const rows = ids.map((id) => {
     const base = baseRule(state.sharedRules, id, ym);
-    const now = base ? base.amount : 0;
-    const next = p.perMember.get(id);
     return h('tr', {},
-      h('th', { scope: 'row', class: `person-name ${personClass(id)}` }, memberNick(id), h('span', { class: 'muted small' }, ` ${pc.get(id)}%`)),
-      h('td', { class: 'num' }, yen(next)),
-      h('td', { class: 'num' }, base ? yen(now) : '—'),
-      h('td', { class: 'num' }, next === now ? '同じ' : signedYen(next - now)));
+      h('th', { scope: 'row', class: `person-name ${personClass(id)}` }, memberNick(id)),
+      h('td', { class: 'num' }, `${pc.get(id)}%`),
+      h('td', { class: 'num' }, yen(p.perMember.get(id))),
+      h('td', { class: 'num' }, base ? yen(base.amount) : '—'));
   });
-  const apply = isAdmin() ? h('button', { type: 'button', class: 'primary', onclick: (ev) => busy(ev.currentTarget, async () => {
-    if (!YM_RE.test(from.value)) {
-      toast('切り替える月を選んでください。', 'error');
-      return;
-    }
-    if (!confirm(`${ymLabel(from.value)}から、各人の基本の額を提案の額に切り替えます。それより前の月は変わりません。よろしいですか？`)) return;
-    for (const id of ids) {
-      const plan = planBaseChange(state.sharedRules, id, from.value, p.perMember.get(id), ymAdd(from.value, -1));
-      if (plan.end) await db.updateRow('shared_rules', plan.end.id, { end_ym: plan.end.end_ym });
-      if (plan.update) await db.updateRow('shared_rules', plan.update.id, { amount: plan.update.amount });
-      if (plan.create) await db.insertRows('shared_rules', [plan.create]);
-    }
-    state.sharedRules = await db.selectAll('shared_rules', 'start_ym.asc');
-    toast(`${ymLabel(from.value)}からの基本の額を切り替えました。`);
-    render();
-  }) }, 'この額で切り替える') : null;
   return h('section', { class: 'card' },
-    h('h2', { class: 'with-icon' }, icon('user'), '今月分の提案', helpButton('今月分の提案',
-      '（支出の予算 ＋ 貯蓄の目標）を負担率で分けた額です。100円単位にしています。',
-      '「この額で切り替える」を押すと、選んだ月から各人の定例項目「基本」の額が変わります。それより前の月は変わりません。')),
-    h('p', { class: 'muted small' }, `支出 ${yen(p.spending)} ＋ 貯蓄 ${yen(p.savings)} ＝ 月 ${yen(p.total)}`),
+    h('h2', { class: 'with-icon' }, icon('user'), '今月分の内訳', helpButton('今月分の内訳',
+      '各人の今月分（定例項目「基本」）＝ 収入 × 負担率 です（100円単位）。',
+      '予算を保存すると、来月からその年の月の「基本」に自動で入ります。今月と過去の月は変わりません。')),
+    h('p', { class: 'muted small' }, `収入 月 ${yen(p.total)}（支出の予算 ${yen(p.spending)} ＋ 貯蓄 ${yen(p.savings)}）`),
     h('div', { class: 'table-wrap' }, h('table', { class: 'table' },
-      h('thead', {}, h('tr', {}, h('th', {}, ''), h('th', { class: 'num' }, '提案'), h('th', { class: 'num' }, `今の額（${Number(ym.slice(5))}月）`), h('th', { class: 'num' }, '差'))),
-      h('tbody', {}, rows))),
-    apply ? h('div', { class: 'field' }, h('label', { for: 'proposal-from' }, '切り替える月'), from) : null,
-    apply ? h('div', { class: 'actions' }, apply) : null);
+      h('thead', {}, h('tr', {}, h('th', {}, ''), h('th', { class: 'num' }, '負担率'), h('th', { class: 'num' }, '予算から'), h('th', { class: 'num' }, `${Number(ym.slice(5))}月の基本`))),
+      h('tbody', {}, rows))));
+}
+
+// Puts each person's 今月分 of the budget into the base rules from `from` on (past months stay).
+async function applyBudgetToBase(rows, yearRow, from) {
+  const ids = budgetMemberIds();
+  const p = proposal(rows, yearRow, ids);
+  let changed = 0;
+  for (const id of ids) {
+    const plan = planBaseChange(state.sharedRules, id, from, p.perMember.get(id), ymAdd(from, -1));
+    if (plan.end) await db.updateRow('shared_rules', plan.end.id, { end_ym: plan.end.end_ym });
+    if (plan.update) await db.updateRow('shared_rules', plan.update.id, { amount: plan.update.amount });
+    if (plan.create) await db.insertRows('shared_rules', [plan.create]);
+    if (plan.end || plan.update || plan.create) changed += 1;
+  }
+  if (changed) state.sharedRules = await db.selectAll('shared_rules', 'start_ym.asc');
+  return changed;
 }
 
 function budgetMonthView(ym) {
@@ -1880,19 +1877,19 @@ function renderBudget(yearParam) {
       return { c, amount, memo, el: h('div', { class: 'budget-edit-row' }, h('span', { class: 'budget-cat' }, c), amount, memo) };
     });
     const sumOut = h('p', { class: 'meta', role: 'status' });
-    const savings = h('input', { type: 'text', inputmode: 'numeric', id: 'budget-savings', value: base.year ? String(base.year.savings_monthly || 0) : '0' });
+    const income = h('input', { type: 'text', inputmode: 'numeric', id: 'budget-income', value: String(incomeOf(base.rows, base.year)) });
     const weights = ids.map((id) => ({ id, input: h('input', { type: 'text', inputmode: 'decimal', id: `ratio-${id}`, value: base.year && base.year.ratio && base.year.ratio[id] !== undefined ? String(base.year.ratio[id]) : '' }) }));
     const pctOut = h('p', { class: 'ratio-big', role: 'status' });
     const note = h('textarea', { id: 'ratio-note', maxlength: 1000, rows: 2 }, (base.year && base.year.ratio_note) || '');
     const readWeights = () => Object.fromEntries(weights.map((w) => [w.id, Number(w.input.value.replace(/[,，\s]/g, ''))]).filter(([, v]) => Number.isFinite(v) && v > 0));
     const update = () => {
       const total = catInputs.reduce((n, x) => n + (parseYen(x.amount.value) || 0), 0);
-      const s = parseYen(savings.value, { min: -MAX_BUDGET }) || 0;
-      sumOut.textContent = `支出の予算 月 ${yen(total)}（年 ${yen(total * 12)}）／ 支出 ＋ 貯蓄 ＝ 月 ${yen(total + s)}`;
+      const inc = parseYen(income.value) || 0;
+      sumOut.textContent = `支出の予算 月 ${yen(total)}（年 ${yen(total * 12)}）／ 貯蓄 ＝ 収入 − 支出 ＝ 月 ${signedYen(inc - total)}`;
       const pc = percents(readWeights(), ids);
       pctOut.textContent = Object.keys(readWeights()).length ? `負担率 ${ids.map((id) => `${memberNick(id)} ${pc.get(id)}%`).join(' ： ')}` : '負担率：賃金を入れると計算します';
     };
-    for (const x of [...catInputs.flatMap((c) => [c.amount]), savings, ...weights.map((w) => w.input)]) x.addEventListener('input', update);
+    for (const x of [...catInputs.flatMap((c) => [c.amount]), income, ...weights.map((w) => w.input)]) x.addEventListener('input', update);
     update();
 
     const save = h('button', { type: 'button', class: 'primary', onclick: (ev) => busy(ev.currentTarget, async () => {
@@ -1903,8 +1900,8 @@ function renderBudget(yearParam) {
         if (v === null) bad.push(x.c);
         else if (v > 0 || x.memo.value.trim()) rows.push({ year, category: x.c, monthly: v, memo: x.memo.value.trim() || null });
       }
-      const s = parseYen(savings.value, { min: -MAX_BUDGET });
-      if (s === null) bad.push('貯蓄の目標');
+      const inc = parseYen(income.value);
+      if (inc === null) bad.push('収入');
       const w = readWeights();
       if (weights.some((x) => x.input.value.trim() && !(Number(x.input.value.replace(/[,，\s]/g, '')) > 0))) bad.push('負担率');
       if (bad.length) {
@@ -1914,9 +1911,14 @@ function renderBudget(yearParam) {
       if (rows.length) await db.upsertRows('budgets', rows, 'year,category');
       const keep = new Set(rows.map((r) => r.category));
       for (const r of state.budgets.filter((x) => x.year === year && !keep.has(x.category))) await db.deleteWhere('budgets', 'id', r.id);
-      await db.upsertRows('budget_years', [{ year, savings_monthly: s, ratio: w, ratio_note: note.value.trim() || null }], 'year');
+      const spending = rows.reduce((n, r) => n + r.monthly, 0);
+      const yearRow = { year, income_monthly: inc, savings_monthly: Math.max(-MAX_BUDGET, Math.min(MAX_BUDGET, inc - spending)), ratio: w, ratio_note: note.value.trim() || null };
+      await db.upsertRows('budget_years', [yearRow], 'year');
       [state.budgets, state.budgetYears] = await Promise.all([db.selectAll('budgets', 'year.asc'), db.selectAll('budget_years', 'year.asc')]);
-      toast(`${year}年の予算を保存しました。`);
+      // each person's base amount follows the budget from next month on (past months stay)
+      const from = applyFrom(year, thisYM());
+      const changed = from ? await applyBudgetToBase(rows, yearRow, from) : 0;
+      toast(`${year}年の予算を保存しました。${changed ? `${ymLabel(from)}から各人の今月分（基本）を予算に合わせました。` : ''}`);
       location.hash = back;
     }) }, '保存');
 
@@ -1929,8 +1931,9 @@ function renderBudget(yearParam) {
         h('div', { class: 'budget-edit' }, catInputs.map((x) => x.el)),
         sumOut),
       h('section', { class: 'card' },
-        h('h2', {}, '貯蓄と負担率'),
-        h('div', { class: 'field' }, h('label', { for: 'budget-savings' }, '貯蓄の目標（月・円）'), savings),
+        h('h2', {}, '収入と負担率'),
+        h('div', { class: 'field' }, h('div', { class: 'label-row' }, h('label', { for: 'budget-income' }, '収入（月・円）'),
+          helpButton('収入', '二人が家計に入れる月の合計です。各人の今月分 ＝ 収入 × 負担率。', '貯蓄は 収入 − 支出の予算 で決まります。')), income),
         wageBox(year, ids),
         weights.map((w) => h('div', { class: 'field' },
           h('div', { class: 'label-row' }, h('label', { for: `ratio-${w.id}` }, `${memberNick(w.id)}の賃金（千円）`),
@@ -2199,7 +2202,8 @@ function memberMonthView(ym) {
       .sort((a, b) => (a.end_ym && a.end_ym < current) - (b.end_ym && b.end_ym < current) || b.start_ym.localeCompare(a.start_ym));
     return h('div', {}, h('h3', {}, nick(m)), h('div', { class: 'list' }, list.map((r) => h('a', { class: `list-item${r.end_ym && r.end_ym < current ? ' ended' : ''}`, href: `#/shared-rule/${r.id}` },
       h('div', { class: 'list-body' },
-        h('div', { class: 'list-title' }, r.label, r.contract_id ? h('span', { class: 'tag tag-contract' }, '契約') : null),
+        h('div', { class: 'list-title' }, r.label, r.contract_id ? h('span', { class: 'tag tag-contract' }, '契約') : null,
+          isBaseRule(r) ? h('span', { class: 'tag tag-contract' }, '予算から自動') : null),
         h('div', { class: 'muted small' }, ruleSchedule(r))),
       h('span', { class: 'num' }, signedYen(r.amount)),
       icon('chevron', 'ic ic-sm list-chevron')))));
@@ -2856,6 +2860,11 @@ const SHARED_RULE_FIELDS = [
   { key: 'memo', label: 'メモ', type: 'textarea', max: 2000 },
 ];
 
+// The base amount of a person (基本): set from the budget when the budget is saved.
+function isBaseRule(r) {
+  return Boolean(r) && r.label === '基本' && r.amount > 0 && !r.contract_id && !r.month_of_year;
+}
+
 function renderSharedRule(id) {
   const isNew = id === 'new';
   const mine = me();
@@ -2876,6 +2885,21 @@ function renderSharedRule(id) {
         h('p', {}, 'この定例項目は契約から自動で管理しています。金額・支払元・解約などは契約の画面で変更してください（過去の月の計算は変わりません）。'),
         h('div', { class: 'button-row' },
           c ? h('a', { class: 'button primary', href: `#/view/contracts/${c.id}` }, `契約「${c.name}」を開く`) : h('p', { class: 'muted' }, '元の契約は削除されています。'),
+          h('a', { class: 'button', href: '#/flow/member' }, '戻る'))));
+    return;
+  }
+  if (!isNew && isBaseRule(r)) {
+    // kept by the app from the budget: change the budget instead
+    const y = r.start_ym.slice(0, 4);
+    setView(`${r.label}（定例）`, pageHead({ title: `${r.label}（定例）`, icon: 'flow', back: { href: '#/flow/member', text: 'お金へ' } }),
+      h('section', { class: 'card' },
+        h('dl', { class: 'shared-figures' },
+          h('dt', {}, '人'), h('dd', {}, memberNick(r.member_id)),
+          h('dt', {}, '金額'), h('dd', { class: 'num' }, signedYen(r.amount)),
+          h('dt', {}, '期間'), h('dd', {}, ruleSchedule(r))),
+        h('p', {}, '基本の額は予算から自動で決まります（収入 × 負担率）。変えるときは予算を変更して保存してください（来月から反映され、過去の月は変わりません）。'),
+        h('div', { class: 'button-row' },
+          h('a', { class: 'button primary', href: `#/flow/budget/${y === thisYM().slice(0, 4) ? thisYM() : `${y}-01`}` }, `${y}年の予算を開く`),
           h('a', { class: 'button', href: '#/flow/member' }, '戻る'))));
     return;
   }

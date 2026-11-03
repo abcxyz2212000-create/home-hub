@@ -48,12 +48,21 @@ export function budgetTotal(rows) {
   return rows.reduce((n, r) => n + (Number(r.monthly) || 0), 0);
 }
 
-// 今月分 proposed for each person: { spending, savings, total, perMember: Map(id -> yen) }.
-// Amounts are rounded to 100円; the rounding difference goes to the person with the largest share.
+// Monthly income of the year (what the two put in together). Set as income_monthly; years saved before
+// it existed have spending + savings target.
+export function incomeOf(rows, year) {
+  const v = year ? Number(year.income_monthly) : NaN;
+  if (year && year.income_monthly !== null && year.income_monthly !== undefined && Number.isFinite(v)) return v;
+  return budgetTotal(rows) + (Number(year && year.savings_monthly) || 0);
+}
+
+// 今月分 of each person: income x share. Savings = income - spending budget (a result, not set).
+// { spending, savings, total (= income), perMember: Map(id -> yen) }. Amounts are rounded to 100円; the
+// rounding difference goes to the person with the largest share.
 export function proposal(rows, year, memberIds) {
   const spending = budgetTotal(rows);
-  const savings = Number(year && year.savings_monthly) || 0;
-  const total = spending + savings;
+  const total = incomeOf(rows, year);
+  const savings = total - spending;
   const s = shares(year && year.ratio, memberIds);
   const perMember = new Map(memberIds.map((id) => [id, Math.round((total * s.get(id)) / 100) * 100]));
   const diff = total - [...perMember.values()].reduce((n, v) => n + v, 0);
@@ -74,12 +83,29 @@ export function baseRule(rules, memberId, ym) {
 
 // How to change a person's base amount from month `from` on without touching past months:
 // { end: { id, end_ym } | null, update: { id, amount } | null, create: rule | null }.
+// A later base rule (a later year's budget) is kept: the new rule ends the month before it.
 export function planBaseChange(rules, memberId, from, amount, prevYM) {
   const r = baseRule(rules, memberId, from);
   if (r && r.amount === amount) return { end: null, update: null, create: null };
   if (r && r.start_ym >= from) return { end: null, update: { id: r.id, amount }, create: null };
-  const create = { member_id: memberId, label: r ? r.label : '基本', amount, start_ym: from, end_ym: r ? r.end_ym || null : null };
+  const later = rules.filter((x) => x.member_id === memberId && !x.contract_id && x.amount > 0 && !x.month_of_year && x.start_ym > from)
+    .sort((a, b) => a.start_ym.localeCompare(b.start_ym))[0];
+  const endBefore = later ? monthBefore(later.start_ym) : null;
+  const create = { member_id: memberId, label: r ? r.label : '基本', amount, start_ym: from, end_ym: endBefore || (r ? r.end_ym || null : null) };
   return { end: r ? { id: r.id, end_ym: prevYM } : null, update: null, create };
+}
+
+function monthBefore(ym) {
+  const [y, m] = ym.split('-').map(Number);
+  return m === 1 ? `${y - 1}-12` : `${y}-${String(m - 1).padStart(2, '0')}`;
+}
+
+// First month the budget of `year` changes the base amounts when saved in month `current`: next month,
+// within that year (null when the year is over).
+export function applyFrom(year, current) {
+  const next = current.endsWith('-12') ? `${Number(current.slice(0, 4)) + 1}-01` : `${current.slice(0, 4)}-${String(Number(current.slice(5)) + 1).padStart(2, '0')}`;
+  const from = next > `${year}-01` ? next : `${year}-01`;
+  return from <= `${year}-12` ? from : null;
 }
 
 // 大項目 of one 立替 line (an item of a statement). mapping (setting budget_category_of):

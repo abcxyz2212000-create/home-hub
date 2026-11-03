@@ -244,6 +244,8 @@ do $$ begin
     raise exception 'negative budget accepted'; exception when check_violation then null; end;
   begin insert into public.budget_years (year, ratio) values (2028, '[1]');
     raise exception 'ratio must be an object'; exception when check_violation then null; end;
+  begin insert into public.budget_years (year, income_monthly) values (2029, -1);
+    raise exception 'negative income accepted'; exception when check_violation then null; end;
 end $$;
 delete from public.budgets;
 delete from public.budget_years;
