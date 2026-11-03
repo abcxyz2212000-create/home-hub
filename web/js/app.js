@@ -1570,11 +1570,12 @@ function renderMoney(tabParam, periodParam) {
 // label). The proposal of 今月分 = (spending budget + savings target) x share; the base amount changes
 // only when an administrator presses the button (from the month chosen; past months stay).
 
+// The budget of a year and the year's row (which also holds the ratio: a year can have its ratio before
+// its budget). has: there is a budget (費目 or the total of the two).
 function budgetOf(year) {
-  return {
-    rows: state.budgets.filter((r) => r.year === Number(year)),
-    year: state.budgetYears.find((y) => y.year === Number(year)) || null,
-  };
+  const rows = state.budgets.filter((r) => r.year === Number(year));
+  const y = state.budgetYears.find((x) => x.year === Number(year)) || null;
+  return { rows, year: y, has: rows.length > 0 || Boolean(y && y.income_monthly !== null && y.income_monthly !== undefined) };
 }
 
 function budgetMapping() {
@@ -1685,7 +1686,7 @@ function budgetMonthView(ym) {
   const year = ym.slice(0, 4);
   const b = budgetOf(year);
   const editLink = isAdmin() ? h('a', { class: 'button small', href: `#/budget/${year}` }, '予算を編集') : null;
-  if (b.rows.length === 0 && !b.year) return [noBudgetCard(year), ratioHistoryCard(year)];
+  if (!b.has) return [noBudgetCard(year), ratioHistoryCard(year)];
   const txs = sharedAccountId() ? monthTransactions(ym) : [];
   if (txs === null) return [h('section', { class: 'card' }, h('p', { class: 'muted' }, '読み込み中…'))];
   const actual = budgetActual(txs, ym);
@@ -1713,7 +1714,7 @@ function budgetMonthView(ym) {
 
 function budgetYearView(year) {
   const b = budgetOf(year);
-  if (b.rows.length === 0 && !b.year) return [noBudgetCard(year), ratioHistoryCard(year)];
+  if (!b.has) return [noBudgetCard(year), ratioHistoryCard(year)];
   const txs = sharedAccountId() ? yearTransactions(year) : [];
   if (txs === null) return [h('section', { class: 'card' }, h('p', { class: 'muted' }, '読み込み中…'))];
   const current = thisYM();
@@ -1870,7 +1871,7 @@ function renderBudget(yearParam) {
   const cur = budgetOf(year);
   const prev = budgetOf(year - 1);
   const ids = budgetMemberIds();
-  const src = cur.rows.length || cur.year ? cur : null;
+  const src = cur.has ? cur : null;
   const draw = (base) => {
     const byCat = new Map(base.rows.map((r) => [r.category, r]));
     const cats = [...MF_CATEGORIES.filter((c) => c !== '未分類'), ...base.rows.map((r) => r.category).filter((c) => !MF_CATEGORIES.includes(c))];
@@ -1936,9 +1937,9 @@ function renderBudget(yearParam) {
     }) }, '保存');
 
     return [
-      !src && (prev.rows.length || prev.year) ? h('section', { class: 'card notice' },
+      !src && prev.has ? h('section', { class: 'card notice' },
         h('p', {}, `${year - 1}年の予算があります。`),
-        h('button', { type: 'button', onclick: () => setBody(draw(prev)) }, `${year - 1}年の予算をコピーする`)) : null,
+        h('button', { type: 'button', onclick: () => setBody(draw({ rows: prev.rows, year: { ...prev.year, ratio: cur.year ? cur.year.ratio : prev.year && prev.year.ratio, ratio_note: cur.year ? cur.year.ratio_note : null } })) }, `${year - 1}年の予算をコピーする`)) : null,
       h('section', { class: 'card' },
         h('h2', { class: 'with-icon' }, '費目ごとの月の予算', helpButton('月の予算', '費目はマネーフォワードの大項目です。年に一度の支出（更新料など）は、12で割った額を入れます。', '空欄は予算なし（0円）です。')),
         h('div', { class: 'budget-edit' }, catInputs.map((x) => x.el)),
@@ -1961,7 +1962,7 @@ function renderBudget(yearParam) {
   };
   const body = h('div', {});
   const setBody = (nodes) => body.replaceChildren(...nodes.flat().filter(Boolean));
-  setBody(draw(src || { rows: [], year: null }));
+  setBody(draw(src || { rows: [], year: cur.year ? { ...cur.year, income_monthly: null } : null }));
   setView(`${year}年の予算`, pageHead({ title: `${year}年の予算`, icon: 'flow', back }), body);
 }
 
@@ -2334,7 +2335,7 @@ function ratioHistoryCard(year) {
           ids.map((id) => h('td', { class: 'num' }, amountOf(id, y))),
           ids.map((id) => h('td', { class: 'num' }, r ? `${r.pc.get(id)}%` : '—')),
           ids.map((id) => h('td', { class: 'nowrap' }, r ? `${r.seen.get(id).area}${r.seen.get(id).value ? ` ${r.seen.get(id).value}` : ''}` : '—')),
-          h('td', { class: `small${r && r.fromStats ? '' : ' warn-text'}` }, !r ? '予算なし' : r.fromStats ? r.sourceShort : r.direct ? `統計の値は未入力（比率 ${r.direct}）` : '統計の値は未入力'),
+          h('td', { class: `small${r && r.fromStats ? '' : ' warn-text'}` }, !r ? '負担率が未登録' : r.fromStats ? r.sourceShort : r.direct ? `統計の値は未入力（比率 ${r.direct}）` : '統計の値は未入力'),
           h('td', { class: 'small' }, links.length ? links : '—'));
       })))));
 }
