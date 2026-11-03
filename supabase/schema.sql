@@ -424,6 +424,19 @@ create table if not exists public.budget_years (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+-- Evidence of a year's budget (the wage statistics the ratio was taken from, 2026-11-03): files in the
+-- private storage bucket "evidence".
+create table if not exists public.budget_attachments (
+  id uuid primary key default gen_random_uuid(),
+  year integer not null check (year between 2000 and 2100),
+  path text not null unique check (char_length(path) <= 300),
+  name text not null check (char_length(name) between 1 and 200),
+  content_type text not null check (content_type in ('application/pdf', 'image/jpeg', 'image/png')),
+  bytes integer not null default 0 check (bytes between 0 and 5242880),
+  created_at timestamptz not null default now(),
+  created_by uuid default public.current_member_id() references public.members (id) on delete set null
+);
+create index if not exists budget_attachments_year_idx on public.budget_attachments (year);
 -- Images attached to a one-off item (receipt) or a deposit report (completion screen), stored in the
 -- item-photos bucket.
 create table if not exists public.shared_attachments (
@@ -637,7 +650,7 @@ begin
 
   foreach t in array array['members', 'accounts', 'cards', 'contracts', 'items', 'memberships',
                            'item_photos', 'settings', 'push_subscriptions', 'notification_log', 'audit_log', 'chores', 'shared_rules', 'shared_entries', 'transactions',
-                           'deposit_reports', 'shared_attachments', 'account_balances', 'budgets', 'budget_years'] loop
+                           'deposit_reports', 'shared_attachments', 'account_balances', 'budgets', 'budget_years', 'budget_attachments'] loop
     execute format('alter table public.%I enable row level security', t);
     execute format('revoke all on public.%I from anon, authenticated', t);
     -- service_role (used only by the daily GitHub Actions job) bypasses RLS but still needs table
@@ -689,7 +702,7 @@ begin
   create policy member_read on public.account_balances for select to authenticated using (public.is_member());
   create policy admin_write on public.account_balances for all to authenticated using (public.is_admin()) with check (public.is_admin());
   -- budget: everyone reads, administrators set it
-  foreach t in array array['budgets', 'budget_years'] loop
+  foreach t in array array['budgets', 'budget_years', 'budget_attachments'] loop
     execute format('grant select, insert, update, delete on public.%I to authenticated', t);
     execute format('drop policy if exists member_read on public.%I', t);
     execute format('drop policy if exists admin_write on public.%I', t);
@@ -818,6 +831,22 @@ create policy item_photos_owner_update on storage.objects for update to authenti
   with check (bucket_id = 'item-photos' and public.is_member());
 create policy item_photos_owner_delete on storage.objects for delete to authenticated
   using (bucket_id = 'item-photos' and public.is_member());
+
+-- Private bucket for evidence of the budget (PDF, JPEG, PNG, max 5 MB): everyone reads, administrators
+-- add and remove.
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values ('evidence', 'evidence', false, 5242880, array['application/pdf', 'image/jpeg', 'image/png'])
+on conflict (id) do update
+  set public = false, file_size_limit = excluded.file_size_limit, allowed_mime_types = excluded.allowed_mime_types;
+drop policy if exists evidence_read on storage.objects;
+drop policy if exists evidence_insert on storage.objects;
+drop policy if exists evidence_delete on storage.objects;
+create policy evidence_read on storage.objects for select to authenticated
+  using (bucket_id = 'evidence' and public.is_member());
+create policy evidence_insert on storage.objects for insert to authenticated
+  with check (bucket_id = 'evidence' and public.is_admin());
+create policy evidence_delete on storage.objects for delete to authenticated
+  using (bucket_id = 'evidence' and public.is_admin());
 
 -- ---------------------------------------------------------------------------
 -- Removal of the single-owner version. Run this section only after logging in with the new

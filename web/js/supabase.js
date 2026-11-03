@@ -325,6 +325,29 @@ export async function downloadPhoto(path) {
   return res.blob();
 }
 
+// Evidence files of the budget (private bucket "evidence": PDF, JPEG, PNG).
+export async function uploadEvidence(path, blob, contentType) {
+  await authFetch(`${CONFIG.supabaseUrl}/storage/v1/object/evidence/${objectPath(path)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': contentType, 'x-upsert': 'false' },
+    body: blob,
+  });
+}
+
+export async function downloadEvidence(path) {
+  const res = await authFetch(`${CONFIG.supabaseUrl}/storage/v1/object/authenticated/evidence/${objectPath(path)}`);
+  return res.blob();
+}
+
+export async function removeEvidence(paths) {
+  if (paths.length === 0) return;
+  await authFetch(`${CONFIG.supabaseUrl}/storage/v1/object/evidence`, {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ prefixes: paths }),
+  });
+}
+
 export async function removePhotos(paths) {
   if (paths.length === 0) return;
   await authFetch(`${CONFIG.supabaseUrl}/storage/v1/object/${BUCKET}`, {

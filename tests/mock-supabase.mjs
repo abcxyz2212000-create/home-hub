@@ -18,7 +18,7 @@ const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '
 const DEFAULTS = {
   status: 'active', links: [], tags: [], notify_days: {}, mf_linked: false, family_card: false, etc_card: false, auto_renew: false, shared_cost: false, price_history: [],
 };
-const TABLES = ['accounts', 'cards', 'contracts', 'items', 'memberships', 'item_photos', 'settings', 'push_subscriptions', 'notification_log', 'members', 'audit_log', 'chores', 'shared_rules', 'shared_entries', 'transactions', 'deposit_reports', 'shared_attachments', 'account_balances', 'budgets', 'budget_years'];
+const TABLES = ['accounts', 'cards', 'contracts', 'items', 'memberships', 'item_photos', 'settings', 'push_subscriptions', 'notification_log', 'members', 'audit_log', 'chores', 'shared_rules', 'shared_entries', 'transactions', 'deposit_reports', 'shared_attachments', 'account_balances', 'budgets', 'budget_years', 'budget_attachments'];
 const TABLE_DEFAULTS = {
   members: { role: 'member', active: true, email: null, nickname: null, transfer_names: null, gender: null, notify_hour: null, birth_year: null },
   settings: {}, notification_log: {}, push_subscriptions: {}, audit_log: {},
@@ -130,13 +130,13 @@ export function createMock() {
     if (url.pathname.startsWith('/storage/v1/object/')) {
       const rest = decodeURIComponent(url.pathname.slice('/storage/v1/object/'.length));
       if (req.method === 'POST') {
-        const path = rest.replace(/^item-photos\//, '');
+        const path = rest.replace(/^(item-photos|evidence)\//, '');
         if (files.has(path)) return send(res, 409, { error: 'Duplicate' });
         files.set(path, body);
         return send(res, 200, { Key: rest });
       }
       if (req.method === 'GET') {
-        const path = rest.replace(/^authenticated\/item-photos\//, '');
+        const path = rest.replace(/^authenticated\/(item-photos|evidence)\//, '');
         if (!files.has(path)) return send(res, 404, { error: 'not_found' });
         return send(res, 200, files.get(path), { 'Content-Type': 'image/jpeg' });
       }

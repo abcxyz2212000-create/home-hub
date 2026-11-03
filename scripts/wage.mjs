@@ -38,7 +38,7 @@ export function reminderText(budgetYear, people) {
   const what = items.map((it) => `${nick(it.member_id)} ${lookupText(survey, it).replace(`${reiwa(survey)} `, '')}`).join('・');
   return {
     title: '来年の負担率の確認',
-    body: `${budgetYear}年の予算の負担率を決めてください。${reiwa(survey)}の賃金統計で${what ? ` ${what} ` : ''}の賃金を見て、予算の編集画面に入れます。${problems.join('')}`,
+    body: `${budgetYear}年の予算の負担率を決めてください。${reiwa(survey)}の賃金統計（第6-1表 正社員・正職員）で${what ? ` ${what} ` : ''}の賃金を見て、予算の編集画面に入れます。${problems.join('')}`,
     url: `#/budget/${budgetYear}`,
     tag: 'ratio-reminder',
   };
