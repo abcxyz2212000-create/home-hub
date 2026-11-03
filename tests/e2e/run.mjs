@@ -1052,6 +1052,23 @@ try {
   await page.getByText('予約を取り消しました。').waitFor();
   assert.ok(!mock.db.notices.some((n) => n.title === '電気代の過去分の精算'));
 
+  step('変更の確認: a change waits for everyone to confirm it; who confirmed is shown to all');
+  mock.db.notices.push({ id: 'chg1', kind: 'change', key: 'change:budget:2027:x:1', from_member: hanako.id, to_members: [], title: '2027年の予算・負担率が変わりました', body: '二人の負担額の合計 月253,000円 → 170,210円', url: '#/flow/budget/2027', needs_ack: true, deliver_at: nowIso, delivered_at: nowIso, created_at: nowIso });
+  await page.goto(`${appUrl}#/`);
+  await page.reload();
+  await page.locator('.unread-notices').waitFor();
+  assert.match(await page.locator('.unread-notices').innerText(), /うち確認待ち 1件[\s\S]*2027年の予算・負担率が変わりました[\s\S]*確認：[^\n]*未確認/);
+  await page.locator('#bell').click();
+  await page.getByText('253,000円 → 170,210円').waitFor();
+  await page.waitForTimeout(300); // opening marks it as read, but it still waits for 「確認しました」
+  assert.equal(await page.locator('#bell .bell-count').innerText(), '1');
+  assert.equal(await page.locator('.needs-ack').getByRole('button', { name: '消す' }).count(), 0, 'a change cannot be cleared before it is confirmed');
+  await page.getByRole('button', { name: '確認しました' }).click();
+  await page.getByText('確認しました。').waitFor();
+  assert.ok(mock.db.notice_reads.find((r) => r.notice_id === 'chg1' && r.member_id === 'm-admin').acked_at);
+  assert.match(await page.locator('.needs-ack .ack-status').innerText(), /共通（管理者） 済（/);
+  await page.waitForFunction(() => document.querySelector('#bell .bell-count').hidden);
+
   step('layout audit: every main page at phone width (full page + scrolled, to check the fixed page head)');
   mkdirSync(join(OUT, 'audit'), { recursive: true });
   const yearNow = ymNow.slice(0, 4);

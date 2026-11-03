@@ -41,3 +41,8 @@ export function householdAlert(ym, c) {
     body: `${Number(ym.slice(5))}月は残り ${yenText(c.remaining)}（今月分 ${yenText(c.burden)}・支払済 ${yenText(c.done)}）。`,
   };
 }
+
+// Changes of the budget, the ratios or the records that the person has not confirmed (every day until they do).
+export function confirmAlert(count) {
+  return { title: '確認待ちの変更', body: `予算・負担率・入金や立替の記録の変更が${count}件、まだ確認されていません。お知らせで内容を見て「確認しました」を押してください。` };
+}

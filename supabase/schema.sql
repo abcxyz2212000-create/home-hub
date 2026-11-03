@@ -927,6 +927,177 @@ create policy member_update on public.notice_reads for update to authenticated
   with check (public.is_member() and member_id = public.current_member_id());
 
 -- ---------------------------------------------------------------------------
+-- 変更の通知と確認 (2026-11-03): a change of the budget, the ratios, the base amounts or the records of the
+-- people (調整・立替・入金) becomes an お知らせ of kind 'change' for everyone, made here so that changes
+-- made with SQL are not missed. Changes by the same person to the same thing within 10 minutes are one
+-- お知らせ (a new line is added and everyone is asked again). Each person confirms it (acked_at); the job
+-- reminds those who have not, once a day.
+-- ---------------------------------------------------------------------------
+alter table public.notices add column if not exists needs_ack boolean not null default false;
+alter table public.notices drop constraint if exists notices_kind_check;
+alter table public.notices add constraint notices_kind_check check (kind in ('system', 'message', 'change'));
+alter table public.notice_reads add column if not exists acked_at timestamptz;
+
+create or replace function public.yen_text(v bigint)
+returns text language sql immutable set search_path = public as $$
+  select case when v < 0 then '−' else '' end || to_char(abs(v), 'FM999,999,999,990') || '円';
+$$;
+create or replace function public.ym_text(ym text)
+returns text language sql immutable set search_path = public as $$
+  select case when ym is null then '' else split_part(ym, '-', 1) || '年' || ltrim(split_part(ym, '-', 2), '0') || '月' end;
+$$;
+create or replace function public.member_label(p uuid)
+returns text language sql stable security definer set search_path = public as $$
+  select coalesce((select coalesce(nickname, name) from public.members where id = p), '（削除済み）');
+$$;
+-- the same for a key of a jsonb object (normally a member id)
+create or replace function public.member_key_label(k text)
+returns text language sql stable security definer set search_path = public as $$
+  select coalesce((select coalesce(nickname, name) from public.members where id::text = k), k);
+$$;
+-- {category or subcategory} {person} {percent}%・… of a category_ratios array
+create or replace function public.category_ratios_text(v jsonb)
+returns text language sql stable security definer set search_path = public as $$
+  select coalesce(string_agg(coalesce(nullif(r ->> 'subcategory', ''), r ->> 'category') || ' '
+    || (select string_agg(public.member_key_label(e.key) || ' ' || e.value || '%', '・' order by e.value::numeric desc) from jsonb_each_text(r -> 'ratio') e)
+    || coalesce('（' || public.ym_text(r ->> 'from') || 'から）', ''), '、'), 'なし')
+  from jsonb_array_elements(coalesce(v, '[]'::jsonb)) r;
+$$;
+
+create or replace function public.record_change(p_group text, p_year integer, p_title text, p_url text, p_line text)
+returns void language plpgsql security definer set search_path = public as $$
+declare
+  actor uuid := public.current_member_id();
+  k text := format('change:%s:%s:%s:%s', p_group, coalesce(p_year::text, '-'), coalesce(actor::text, 'app'), floor(extract(epoch from now()) / 600)::bigint);
+  nid uuid;
+begin
+  if p_line is null or p_line = '' then return; end if;
+  insert into public.notices (kind, key, from_member, to_members, title, body, url, needs_ack, deliver_at)
+  values ('change', k, actor, '{}', left(p_title, 100), left(p_line, 1000), p_url, true, now())
+  on conflict (key) do update
+    set body = left(public.notices.body || E'\n' || excluded.body, 1000), delivered_at = null, deliver_at = now()
+  returning id into nid;
+  delete from public.notice_reads where notice_id = nid; -- asked again: unread and not confirmed
+end;
+$$;
+
+create or replace function public.budgets_changed()
+returns trigger language plpgsql security definer set search_path = public as $$
+declare
+  y integer;
+  line text;
+begin
+  if tg_op = 'INSERT' then
+    y := new.year; line := format('費目「%s」の予算 月%s（新規）', new.category, public.yen_text(new.monthly));
+  elsif tg_op = 'DELETE' then
+    y := old.year; line := format('費目「%s」の予算 月%s（削除）', old.category, public.yen_text(old.monthly));
+  else
+    if new.monthly is not distinct from old.monthly and new.category = old.category then return null; end if;
+    y := new.year; line := format('費目「%s」の予算 月%s → %s', new.category, public.yen_text(old.monthly), public.yen_text(new.monthly));
+  end if;
+  perform public.record_change('budget', y, format('%s年の予算・負担率が変わりました', y), format('#/flow/budget/%s', y), line);
+  return null;
+end;
+$$;
+
+create or replace function public.budget_years_changed()
+returns trigger language plpgsql security definer set search_path = public as $$
+declare
+  lines text[] := '{}';
+  wage text;
+begin
+  if tg_op = 'DELETE' then
+    perform public.record_change('budget', old.year, format('%s年の予算・負担率が変わりました', old.year), format('#/flow/budget/%s', old.year), format('%s年の予算・負担率を削除', old.year));
+    return null;
+  end if;
+  if tg_op = 'INSERT' or new.income_monthly is distinct from old.income_monthly then
+    lines := lines || format('二人の負担額の合計 月%s', case when tg_op = 'INSERT' or old.income_monthly is null then coalesce(public.yen_text(new.income_monthly), '未設定')
+      else public.yen_text(old.income_monthly) || ' → ' || coalesce(public.yen_text(new.income_monthly), '未設定') end);
+  end if;
+  if tg_op = 'INSERT' or new.ratio is distinct from old.ratio then
+    select string_agg(public.member_key_label(k) || ' ' || coalesce(case when tg_op = 'UPDATE' then old.ratio ->> k end || ' → ', '') || coalesce(new.ratio ->> k, 'なし'), '・')
+      into wage
+      from (select jsonb_object_keys(coalesce(new.ratio, '{}'::jsonb)) k union select jsonb_object_keys(case when tg_op = 'UPDATE' then coalesce(old.ratio, '{}'::jsonb) else '{}'::jsonb end)) ks;
+    if wage is not null then lines := lines || ('負担率のもとの値（賃金・千円）：' || wage); end if;
+  end if;
+  if (tg_op = 'INSERT' and jsonb_array_length(coalesce(new.category_ratios, '[]'::jsonb)) > 0)
+     or (tg_op = 'UPDATE' and new.category_ratios is distinct from old.category_ratios) then
+    lines := lines || ('費目ごとの負担率：' || public.category_ratios_text(new.category_ratios));
+  end if;
+  if array_length(lines, 1) is null then return null; end if;
+  perform public.record_change('budget', new.year, format('%s年の予算・負担率が変わりました', new.year), format('#/flow/budget/%s', new.year), array_to_string(lines, E'\n'));
+  return null;
+end;
+$$;
+
+-- each person's base amount (基本 and other rules not tied to a contract)
+create or replace function public.shared_rules_changed()
+returns trigger language plpgsql security definer set search_path = public as $$
+declare
+  r public.shared_rules := coalesce(new, old);
+  period text;
+  line text;
+  y integer;
+begin
+  if r.contract_id is not null then return null; end if;
+  y := split_part(case when tg_op = 'DELETE' then old.start_ym else new.start_ym end, '-', 1)::integer;
+  period := public.ym_text(r.start_ym) || '〜' || coalesce(public.ym_text(r.end_ym), '');
+  if tg_op = 'INSERT' then
+    line := format('%sの%s 月%s（%s）', public.member_label(new.member_id), new.label, public.yen_text(new.amount), period);
+  elsif tg_op = 'DELETE' then
+    line := format('%sの%s 月%s（%s）を削除', public.member_label(old.member_id), old.label, public.yen_text(old.amount), period);
+  else
+    if new.amount = old.amount and new.start_ym = old.start_ym and new.end_ym is not distinct from old.end_ym and new.label = old.label and new.member_id = old.member_id then return null; end if;
+    line := format('%sの%s 月%s（%s〜%s） → 月%s（%s）', public.member_label(new.member_id), new.label, public.yen_text(old.amount),
+      public.ym_text(old.start_ym), coalesce(public.ym_text(old.end_ym), ''), public.yen_text(new.amount), period);
+  end if;
+  perform public.record_change('budget', y, format('%s年の予算・負担率が変わりました', y), format('#/flow/budget/%s', y), line);
+  return null;
+end;
+$$;
+
+-- the records of the people: 調整, 立替 / 臨時の費目, 入金
+create or replace function public.shared_entry_text(e public.shared_entries)
+returns text language sql stable security definer set search_path = public as $$
+  select format('%s %s %s「%s」 %s%s', public.member_label(e.member_id), public.ym_text(e.ym),
+    case e.kind when 'deposit' then '入金' when 'adjust' then '調整' else case when e.amount < 0 then '立替' else '臨時の費目' end end,
+    e.label, public.yen_text(e.amount), coalesce('（' || left(nullif(e.memo, ''), 40) || case when char_length(e.memo) > 40 then '…' else '' end || '）', ''));
+$$;
+create or replace function public.shared_entries_changed()
+returns trigger language plpgsql security definer set search_path = public as $$
+declare
+  line text;
+  y integer;
+  ym text;
+begin
+  if tg_op = 'INSERT' then
+    line := '追加：' || public.shared_entry_text(new); ym := new.ym;
+  elsif tg_op = 'DELETE' then
+    line := '削除：' || public.shared_entry_text(old); ym := old.ym;
+  else
+    if new.amount = old.amount and new.label = old.label and new.ym = old.ym and new.kind = old.kind and new.member_id = old.member_id
+       and new.memo is not distinct from old.memo then return null; end if;
+    line := '変更：' || public.shared_entry_text(old) || ' → ' || public.shared_entry_text(new); ym := new.ym;
+  end if;
+  y := split_part(ym, '-', 1)::integer;
+  perform public.record_change('entries', y, '個人の入金・立替の記録が変わりました', format('#/flow/member/%s', ym), line);
+  return null;
+end;
+$$;
+
+revoke all on function public.record_change(text, integer, text, text, text) from public, anon, authenticated;
+do $$
+declare
+  t text;
+begin
+  foreach t in array array['budgets', 'budget_years', 'shared_rules', 'shared_entries'] loop
+    execute format('drop trigger if exists %I_notify on public.%I', t, t);
+    execute format('create trigger %I_notify after insert or update or delete on public.%I for each row execute function public.%I_changed()', t, t, t);
+  end loop;
+end;
+$$;
+
+-- ---------------------------------------------------------------------------
 -- Removal of the single-owner version. Run this section only after logging in with the new
 -- version has been confirmed (on a new project it does nothing).
 -- ---------------------------------------------------------------------------
