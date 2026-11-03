@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { shares, percents, proposal, baseRule, planBaseChange, advanceCategory, monthActual, compareRows } from '../../web/js/budget.js';
+import { shares, percents, proposal, baseRule, planBaseChange, advanceCategory, monthActual, compareRows, applyFrom } from '../../web/js/budget.js';
 
 test('shares and whole percentages from reference amounts', () => {
   const p = percents({ a: 294.6, b: 258.1 }, ['a', 'b']);
@@ -78,4 +78,25 @@ test('compare rows: budget x months, in MoneyForward\'s order, empty rows left o
     new Map([['食費', 12000], ['住宅', 85350]]), 2);
   assert.deepEqual(rows.map((r) => [r.category, r.budget, r.actual, r.diff]), [['食費', 0, 12000, 12000], ['住宅', 180000, 85350, -94650]]);
   assert.equal(rows[1].memo, '更新料込み');
+});
+
+test('今月分 from the income: savings is what is left of it', () => {
+  const rows = [{ category: '住宅', monthly: 93550 }, { category: '水道・光熱費', monthly: 47193 }];
+  const p = proposal(rows, { income_monthly: 253000, ratio: { a: 359.5, b: 299.6 } }, ['a', 'b']);
+  assert.deepEqual([p.total, p.spending, p.savings], [253000, 140743, 112257]);
+  assert.equal(p.perMember.get('a') + p.perMember.get('b'), 253000);
+  assert.equal(p.perMember.get('b'), 115000, '253000 x 45.45% = 114,996 -> 115,000');
+});
+
+test('the budget changes base amounts from next month, within its year', () => {
+  assert.equal(applyFrom(2026, '2026-11'), '2026-12');
+  assert.equal(applyFrom(2027, '2026-11'), '2027-01');
+  assert.equal(applyFrom(2026, '2026-12'), null, 'the year is over');
+  assert.equal(applyFrom(2023, '2026-11'), null, 'past years never change');
+  const rules = [
+    { id: 'r1', member_id: 'a', label: '基本', amount: 70000, start_ym: '2025-01', end_ym: '2026-12' },
+    { id: 'r2', member_id: 'a', label: '基本', amount: 90000, start_ym: '2027-01', end_ym: null },
+  ];
+  const plan = planBaseChange(rules, 'a', '2026-12', 80000, '2026-11');
+  assert.deepEqual(plan.create, { member_id: 'a', label: '基本', amount: 80000, start_ym: '2026-12', end_ym: '2026-12' }, 'ends before the next year\'s rule');
 });

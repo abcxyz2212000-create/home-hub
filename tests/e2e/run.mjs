@@ -703,7 +703,7 @@ try {
   await page.getByLabel('住宅の月の予算（円）').fill('90,000');
   await page.getByLabel('住宅の備考').fill('更新料を按分');
   await page.getByLabel('通信費の月の予算（円）').fill('6000');
-  await page.getByLabel('貯蓄の目標（月・円）').fill('4000');
+  await page.getByLabel('収入（月・円）').fill('100,000');
   const ratioInputs = page.locator('input[id^="ratio-"]');
   const people = await ratioInputs.count();
   for (let i = 0; i < people; i += 1) await ratioInputs.nth(i).fill(i === 0 ? '294.6' : '258.1');
@@ -728,16 +728,28 @@ try {
   await page.getByLabel('住宅の月の予算（円）').fill('90,000');
   await page.getByLabel('住宅の備考').fill('更新料を按分');
   await page.getByLabel('通信費の月の予算（円）').fill('6000');
-  await page.getByLabel('貯蓄の目標（月・円）').fill('4000');
+  await page.getByLabel('収入（月・円）').fill('100,000');
+  const nextYM = ymAdd(ymNow, 1);
+  const sameYear = nextYM.slice(0, 4) === ymNow.slice(0, 4);
+  const before = mock.db.shared_rules.length;
   await page.getByRole('button', { name: '保存' }).click();
-  await page.getByText(`${ymNow.slice(0, 4)}年の予算を保存しました。`).waitFor();
+  await page.getByText(`${ymNow.slice(0, 4)}年の予算を保存しました。`, { exact: false }).waitFor();
   await page.locator('.budget-summary').waitFor();
+  // each person's base amount follows the budget from next month on (none in December: next month is next year)
+  const switched = mock.db.shared_rules.filter((r) => r.start_ym === nextYM && r.amount > 0 && !r.contract_id);
+  if (sameYear) {
+    assert.equal(switched.length, people, 'a new base amount for each person from next month');
+    assert.equal(switched.reduce((n, r) => n + r.amount, 0), 100000, 'income 100,000 split by the ratio');
+    assert.ok(mock.db.shared_rules.length >= before + people);
+    assert.ok(mock.db.shared_rules.filter((r) => r.end_ym === ymNow).length >= 1, 'the old amount ends this month');
+  } else assert.equal(switched.length, 0);
   assert.deepEqual(mock.db.budgets.map((b) => [b.category, b.monthly, b.memo]).sort(), [['住宅', 90000, '更新料を按分'], ['通信費', 6000, null]]);
-  assert.equal(mock.db.budget_years[0].savings_monthly, 4000);
+  assert.deepEqual([mock.db.budget_years[0].income_monthly, mock.db.budget_years[0].savings_monthly], [100000, 4000], 'savings = income - spending');
   const budgetText = await page.locator('#view').innerText();
   assert.match(budgetText, /支出\s+96,000\s/);
   assert.match(budgetText, /住宅\s+[\d,]+円 \/ 90,000円/);
-  assert.match(budgetText, /今月分の提案[\s\S]*月 100,000円/);
+  assert.match(budgetText, /今月分の内訳[\s\S]*収入 月 100,000円（支出の予算 96,000円 ＋ 貯蓄 4,000円）/);
+  assert.doesNotMatch(budgetText, /この額で切り替える/);
   assert.match(budgetText, /大項目が決まっていない立替があります（[^）]*管理費/);
   // the 大項目 of a 費目 is chosen in the settings
   await page.goto(`${appUrl}#/settings/other`);
@@ -748,15 +760,6 @@ try {
   await page.goto(`${appUrl}#/flow/budget/${ymNow}`);
   await page.locator('.budget-summary').waitFor();
   assert.doesNotMatch(await page.locator('#view').innerText(), /大項目が決まっていない立替があります（[^）]*管理費/);
-  const nextYM = ymAdd(ymNow, 1);
-  const before = mock.db.shared_rules.length;
-  await page.getByRole('button', { name: 'この額で切り替える' }).click();
-  await page.getByText(`${ymLabel(nextYM)}からの基本の額を切り替えました。`).waitFor();
-  const switched = mock.db.shared_rules.filter((r) => r.start_ym === nextYM && r.amount > 0 && !r.contract_id);
-  assert.equal(switched.length, people, 'a new base amount for each person from next month');
-  assert.equal(switched.reduce((n, r) => n + r.amount, 0), 100000);
-  assert.ok(mock.db.shared_rules.length >= before + people);
-  assert.ok(mock.db.shared_rules.filter((r) => r.end_ym === ymNow).length >= 1, 'the old amount ends this month');
   await page.getByRole('link', { name: '年間' }).click();
   await page.getByText('支出の累計').waitFor();
   await page.screenshot({ path: join(OUT, 'budget.png'), fullPage: true });
@@ -913,9 +916,15 @@ try {
   assert.equal(await mp.getByRole('button', { name: '保存' }).count(), 0, 'read only');
   await mp.goto(`${appUrl}#/shared-entry/new/deposit:${hanako.id}:${ymNow}`);
   await mp.getByLabel('立て替えた額（円） *').waitFor(); // a deposit cannot be recorded by hand
-  const manualRule = mock.db.shared_rules.find((r) => !r.contract_id);
-  await mp.goto(`${appUrl}#/shared-rule/${manualRule.id}`);
-  await mp.getByText('管理者だけが変更できます').waitFor();
+  const isBase = (r) => r.label === '基本' && r.amount > 0 && !r.month_of_year;
+  const manualRule = mock.db.shared_rules.find((r) => !r.contract_id && !isBase(r));
+  if (manualRule) {
+    await mp.goto(`${appUrl}#/shared-rule/${manualRule.id}`);
+    await mp.getByText('管理者だけが変更できます').waitFor();
+  }
+  const baseOne = mock.db.shared_rules.find((r) => !r.contract_id && isBase(r));
+  await mp.goto(`${appUrl}#/shared-rule/${baseOne.id}`);
+  await mp.getByText(/基本の額は予算から自動で決まります/).waitFor();
 
   step('password: change it in the settings, forgot -> e-mail link -> set a new one');
   await mp.goto(`${appUrl}#/settings/account`);

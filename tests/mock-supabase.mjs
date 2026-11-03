@@ -26,7 +26,7 @@ const TABLE_DEFAULTS = {
   shared_rules: { end_ym: null, memo: null, month_of_year: null, contract_id: null },
   shared_entries: { memo: null, paid_on: null },
   deposit_reports: { memo: null },
-  budgets: { memo: null }, budget_years: { savings_monthly: 0, ratio: {}, ratio_note: null },
+  budgets: { memo: null }, budget_years: { savings_monthly: 0, income_monthly: null, ratio: {}, ratio_note: null },
   shared_attachments: { entry_id: null, report_id: null, bytes: 0 },
   transactions: { contract_id: null, account_id: null, card_id: null, memo: null, counted: true, transfer: false, personal_member_id: null, needs_review: false, settled_entry_id: null, deposit_entry_id: null, deposit_ignored: false },
 };

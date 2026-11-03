@@ -424,6 +424,9 @@ create table if not exists public.budget_years (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+-- the monthly income of the year (what the two put in): each person's base = income x ratio,
+-- savings = income - spending budget (2026-11-03)
+alter table public.budget_years add column if not exists income_monthly integer check (income_monthly between 0 and 100000000);
 -- Evidence of a year's budget (the wage statistics the ratio was taken from, 2026-11-03): files in the
 -- private storage bucket "evidence".
 create table if not exists public.budget_attachments (
