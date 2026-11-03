@@ -2321,8 +2321,16 @@ function ratioHistoryCard(year) {
   if (years.length === 0) return null;
   const amountOf = (id, y) => {
     const r = baseRule(state.sharedRules, id, `${y}-12`);
-    return r ? yen(r.amount) : '—';
+    return r ? r.amount : null;
   };
+  // The amounts were not worked out from the ratio when their whole-number ratio differs from it.
+  const offRatio = (y, r) => {
+    const amounts = Object.fromEntries(ids.map((id) => [id, amountOf(id, y)]));
+    if (!r || ids.some((id) => !(amounts[id] > 0))) return false;
+    const pc = percents(amounts, ids);
+    return ids.some((id) => pc.get(id) !== r.pc.get(id));
+  };
+  let anyOff = false;
   const personHead = (id, text) => h('th', { class: `num person-name ${personClass(id)}` }, `${memberNick(id)}${text}`);
   return h('section', { class: 'card' },
     h('h2', { class: 'with-icon' }, '負担率と負担額の推移', helpButton('負担率と負担額', '各年の負担率と、各人の月の負担額（その年に使った額）です。',
@@ -2338,14 +2346,20 @@ function ratioHistoryCard(year) {
       h('tbody', {}, years.map((y) => {
         const r = ratioOf(y);
         const links = evidenceLinks(y);
+        const off = offRatio(y, r);
+        if (off) anyOff = true;
         return h('tr', { class: String(y) === String(year) ? 'is-current' : '' },
           h('th', { scope: 'row' }, isAdmin() ? h('a', { href: `#/budget/${y}` }, `${y}年`) : `${y}年`),
-          ids.map((id) => h('td', { class: 'num' }, amountOf(id, y))),
+          ids.map((id) => {
+            const a = amountOf(id, y);
+            return h('td', { class: `num${off ? ' warn-text' : ''}` }, a === null ? '—' : `${yen(a)}${off ? ' ※' : ''}`);
+          }),
           ids.map((id) => h('td', { class: 'num' }, r ? `${r.pc.get(id)}%` : '—')),
           ids.map((id) => h('td', { class: 'nowrap' }, r ? `${r.seen.get(id).area}${r.seen.get(id).value ? ` ${r.seen.get(id).value}` : ''}` : '—')),
           h('td', { class: `small${r && r.fromStats ? '' : ' warn-text'}` }, !r ? '負担率が未登録' : r.fromStats ? r.sourceShort : r.direct ? `統計の値は未入力（比率 ${r.direct}）` : '統計の値は未入力'),
           h('td', { class: 'small' }, links.length ? links : '—'));
-      })))));
+      })))),
+    anyOff ? h('p', { class: 'meta warn-text' }, '※ 実際の額（率から計算した額ではない）') : null); // the rows above are built first
 }
 
 function accountTotalsCard(flow, unit = '月額') {
