@@ -720,7 +720,6 @@ details.chore-group > summary { cursor: pointer; list-style: revert; }
 @media (min-width: 560px) { .budget-edit-row { grid-template-columns: 8rem 9rem 1fr; } }
 .budget-summary td, .budget-summary th { white-space: nowrap; }
 .budget-summary tr.sub th, .budget-summary tr.sub td { font-size: 0.82rem; color: var(--muted); font-weight: 400; }
-.budget-summary td.unpaid-people { text-align: right; white-space: normal; padding-top: 0; }
 .budget-summary tr.sub td.due { color: var(--critical-ink); }
 .savings-forecast { font-weight: 700; margin: 0.6rem 0 0.2rem; display: flex; flex-wrap: wrap; gap: 0.2rem 0.5rem; align-items: baseline; }
 .budget-edit-row input.num { text-align: right; }

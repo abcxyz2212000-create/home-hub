@@ -749,7 +749,10 @@ try {
   await page.getByRole('link', { name: '年間' }).click();
   await page.getByText('支出の累計').waitFor();
   const yearBudgetText = await page.locator('#view').innerText();
-  assert.match(yearBudgetText, /収入（二人の負担額）[^\n]*\n└ 入った額（入金＋立替）[^\n]*\n└ (今年の分の未入金|前の月の分の入金)[^\n]*\n支出[\s\S]*（参考）前の年からの未入金[\s\S]*（参考）\d+月末の未入金の合計/);
+  assert.match(yearBudgetText, /収入（二人の負担額）[^\n]*\n└ 入った額（入金＋立替）[^\n]*\n└ (まだ入っていない額|前の月の分の入金)[^\n]*\n支出/);
+  assert.doesNotMatch(yearBudgetText, /（参考）/);
+  assert.match(yearBudgetText, /年間の予算\s+実績（1〜\d+月）\s+予算の残り|年間の予算\s+実績\s+予算の残り/, 'the year shows the whole year\'s budget');
+  assert.doesNotMatch(yearBudgetText, /年間の予算：/);
   if (Number(ymNow.slice(5)) < 12) assert.match(yearBudgetText, /年末の貯蓄の見込み [−\d,]+円/);
   await page.screenshot({ path: join(OUT, 'budget.png'), fullPage: true });
 
