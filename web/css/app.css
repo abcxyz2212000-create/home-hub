@@ -717,3 +717,5 @@ details.chore-group > summary { cursor: pointer; list-style: revert; }
 .shared-figures dd.band { display: none; }
 .share-out { margin: 0 0 0.75rem; }
 .share-table { margin: 0; }
+.ratio-table td.nowrap { white-space: nowrap; }
+.ratio-table td.small { min-width: 9rem; }

@@ -404,27 +404,17 @@ try {
   step('shared account: recurring rules, a charge and a deposit -> balance and carry-over');
   const ymNow = todayJST().slice(0, 7);
   const ymPrev = ymAdd(ymNow, -1);
+  // the base amount and a recurring 立替 as kept by the app (no 定例項目 screen any more)
   await page.goto(`${appUrl}#/shared`);
-  await page.getByRole('link', { name: '＋ 定例項目を追加' }).click();
-  await page.getByLabel('人', { exact: true }).selectOption({ label: 'はなこ' });
-  await fill('費目 *', '基本');
-  await fill('金額（円/月） *', '70000');
-  await fill('開始月 *', ymPrev);
-  await save();
-  await page.getByRole('heading', { name: '定例項目' }).waitFor();
-  await page.getByRole('link', { name: '＋ 追加' }).click();
-  await page.getByLabel('人', { exact: true }).selectOption({ label: 'はなこ' });
-  await fill('費目 *', 'dアニ');
-  await fill('金額（円/月） *', '▲500');
-  await fill('開始月 *', ymPrev);
-  await fill('終了月', ymAdd(ymPrev, -1));
-  await save();
-  await page.getByText('終了月は開始月以降にしてください。').waitFor();
-  await fill('終了月', '');
-  await save();
-  await page.getByRole('heading', { name: '定例項目' }).waitFor();
-  assert.deepEqual(mock.db.shared_rules.map((r) => [r.label, r.amount, r.start_ym, r.end_ym, r.member_id]),
-    [['基本', 70000, ymPrev, null, hanako.id], ['dアニ', -500, ymPrev, null, hanako.id]]);
+  assert.match(await page.locator('#view').innerText(), /まず今年の予算を作ってください/);
+  const nowIso = new Date().toISOString();
+  mock.db.shared_rules.push(
+    { id: crypto.randomUUID(), member_id: hanako.id, label: '基本', amount: 70000, start_ym: ymPrev, end_ym: null, memo: null, month_of_year: null, contract_id: null, created_at: nowIso, updated_at: nowIso },
+    { id: crypto.randomUUID(), member_id: hanako.id, label: 'dアニ', amount: -500, start_ym: ymPrev, end_ym: null, memo: null, month_of_year: null, contract_id: null, created_at: nowIso, updated_at: nowIso },
+  );
+  await page.reload();
+  await page.locator('.shared-card').waitFor();
+  assert.doesNotMatch(await page.locator('#view').innerText(), /定例項目/, 'no 定例項目 card');
   await page.getByRole('link', { name: '＋ 入金（管理者）' }).click();
   await page.getByLabel('人', { exact: true }).selectOption({ label: 'はなこ' });
   await fill('入金額（円） *', '100,000');
@@ -490,11 +480,11 @@ try {
   await fill('金額（円）', '500');
   await page.getByLabel('周期', { exact: true }).selectOption({ label: '月払い' });
   await page.getByLabel('支払方法', { exact: true }).selectOption({ label: 'はなこの口座' });
-  assert.equal(await page.getByLabel('既存の定例項目に引き継ぐ', { exact: true }).isVisible(), false, 'shown only for shared costs');
+  assert.equal(await page.getByLabel('これまでの立替の記録を引き継ぐ', { exact: true }).isVisible(), false, 'shown only for shared costs');
   await page.getByLabel('共通の費用', { exact: true }).check();
   await page.getByText('→ はなこの定例の立替として、毎月 500円を家計費の支払済に入れます。').waitFor();
   const dRule = mock.db.shared_rules.find((x) => x.label === 'dアニ');
-  await page.getByLabel('既存の定例項目に引き継ぐ', { exact: true }).selectOption(dRule.id);
+  await page.getByLabel('これまでの立替の記録を引き継ぐ', { exact: true }).selectOption(dRule.id);
   await save();
   await page.getByRole('heading', { name: '共用口座への入金との関係' }).waitFor();
   const dContract = mock.db.contracts.find((c) => c.name === 'dアニ');
@@ -513,9 +503,8 @@ try {
   await page.goto(`${appUrl}#/shared/${ymPrev}`);
   await page.getByRole('heading', { name: ymLabel(ymPrev), exact: true }).waitFor();
   assert.match(await page.locator('.shared-card').innerText(), /立替\s+500円/, 'last month unchanged');
-  const linkedRule = mock.db.shared_rules.find((x) => x.contract_id === dContract.id && !x.end_ym);
-  await page.goto(`${appUrl}#/shared-rule/${linkedRule.id}`);
-  await page.getByRole('link', { name: '契約「dアニ」を開く' }).waitFor();
+  await page.goto(`${appUrl}#/shared-rule/${dRule.id}`);
+  await page.locator('.shared-card').waitFor(); // the former screen now leads to the money page
 
   step('MoneyForward CSV (Shift_JIS): shared account + its cards only, plan vs actual, link and remember a keyword');
   const salaryAcc = mock.db.accounts.find((x) => x.name === '生活費口座');
@@ -763,7 +752,7 @@ try {
   assert.match(await page.locator('.ratio-line').innerText(), new RegExp(`${ymNow.slice(0, 4)}年の負担率 .*%`));
   await page.goto(`${appUrl}#/flow/member/${ymNow.slice(0, 4)}`);
   await page.locator('.ratio-table').waitFor();
-  assert.match(await page.locator('.ratio-table').innerText(), /出典：厚生労働省「令和\d+年賃金構造基本統計調査 結果の概況」第6-1表 雇用形態、性、年齢階級別賃金（正社員・正職員、千円）[\s\S]*見た値：\S+ 女 30～34歳 294.6千円[\s\S]*📎令和2年_概況.pdf/, 'the basis is the source and the values seen');
+  assert.match(await page.locator('.ratio-table').innerText(), /女 30～34歳 294.6千円[\s\S]*令和\d+年賃金構造基本統計調査 第6-1表（正社員・正職員）[\s\S]*📎令和2年_概況.pdf/, 'the basis is the source and the values seen');
 
   step('contract amount by period: a new amount from this month, the old one kept for past months');
   await page.goto(`${appUrl}#/edit/contracts/${net.id}`);
@@ -790,7 +779,7 @@ try {
   const zipPath = join(OUT, 'backup.zip');
   writeFileSync(zipPath, readFileSync(await zipDl.path()));
   const listing = execFileSync('python3', ['-I', '-c', 'import sys,zipfile; z=zipfile.ZipFile(sys.argv[1]); assert z.testzip() is None; print("\\n".join(z.namelist()))', zipPath]).toString();
-  for (const name of ['口座.csv', 'カード.csv', '契約・固定費.csv', '書類・家電.csv', 'ポイントカード・会員情報.csv', '写真一覧.csv', '共用口座_定例項目.csv', '共用口座_臨時の費目と入金.csv', '共用口座_明細（マネーフォワード）.csv']) assert.ok(listing.includes(name), name);
+  for (const name of ['口座.csv', 'カード.csv', '契約・固定費.csv', '書類・家電.csv', 'ポイントカード・会員情報.csv', '写真一覧.csv', '共用口座_負担額と定例の立替.csv', '共用口座_臨時の費目と入金.csv', '共用口座_明細（マネーフォワード）.csv']) assert.ok(listing.includes(name), name);
   assert.match(listing, /photos\/.+\.jpg/);
   const accountsCsv = execFileSync('python3', ['-I', '-c', 'import sys,zipfile; print(zipfile.ZipFile(sys.argv[1]).read("口座.csv").decode("utf-8-sig"))', zipPath]).toString();
   assert.match(accountsCsv, /7654321/, 'backup keeps the full account number');
@@ -909,15 +898,6 @@ try {
   assert.equal(await mp.getByRole('button', { name: '保存' }).count(), 0, 'read only');
   await mp.goto(`${appUrl}#/shared-entry/new/deposit:${hanako.id}:${ymNow}`);
   await mp.getByLabel('立て替えた額（円） *').waitFor(); // a deposit cannot be recorded by hand
-  const isBase = (r) => r.label === '基本' && r.amount > 0 && !r.month_of_year;
-  const manualRule = mock.db.shared_rules.find((r) => !r.contract_id && !isBase(r));
-  if (manualRule) {
-    await mp.goto(`${appUrl}#/shared-rule/${manualRule.id}`);
-    await mp.getByText('管理者だけが変更できます').waitFor();
-  }
-  const baseOne = mock.db.shared_rules.find((r) => !r.contract_id && isBase(r));
-  await mp.goto(`${appUrl}#/shared-rule/${baseOne.id}`);
-  await mp.getByText(/基本の額は予算から自動で決まります/).waitFor();
 
   step('password: change it in the settings, forgot -> e-mail link -> set a new one');
   await mp.goto(`${appUrl}#/settings/account`);
