@@ -88,6 +88,12 @@ h3 { font-size: 0.95rem; margin: 1.25rem 0 0.5rem; }
 }
 .brand { color: var(--head-ink); font-weight: 700; text-decoration: none; letter-spacing: 0.02em; }
 .app-header { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
+.brand { white-space: nowrap; }
+.head-info { margin-left: auto; display: flex; align-items: center; gap: 0.6rem; min-width: 0; color: var(--head-ink); font-size: 0.85rem; white-space: nowrap; }
+.head-date { font-variant-numeric: tabular-nums; opacity: 0.85; }
+.head-user { display: inline-flex; align-items: center; gap: 0.3rem; color: var(--head-ink); text-decoration: none; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.head-user::before { content: ''; width: 0.55rem; height: 0.55rem; border-radius: 50%; background: var(--person, var(--head-ink)); flex: none; }
+.head-role { font-size: 0.7rem; border: 1px solid currentColor; border-radius: 999px; padding: 0 0.35rem; opacity: 0.8; }
 .bell { position: relative; display: inline-flex; color: var(--head-ink); padding: 0.15rem; }
 .bell .ic { width: 1.4rem; height: 1.4rem; }
 .bell-count { position: absolute; top: -0.35rem; right: -0.45rem; min-width: 1.15rem; height: 1.15rem; padding: 0 0.3rem; border-radius: 999px;

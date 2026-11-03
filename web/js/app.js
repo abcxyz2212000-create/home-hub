@@ -432,6 +432,7 @@ async function render() {
     return;
   }
   document.getElementById('bell').hidden = true; // shown again below for members
+  document.getElementById('head-info').hidden = true;
   if (!db.isSignedIn()) {
     nav.hidden = true;
     renderLogin();
@@ -464,6 +465,7 @@ async function render() {
   applyTheme();
   const { page, a, b } = route();
   setNav(page);
+  updateHeadInfo();
   updateBell();
   if (page === 'home') renderHome();
   else if (page === 'ledgers') renderLedgers();
@@ -498,6 +500,26 @@ const noticeDelivered = (n) => new Date(n.deliver_at).getTime() <= Date.now();
 const noticeForMe = (n) => !n.to_members || n.to_members.length === 0 || n.to_members.includes(me().id);
 const noticeRead = (n) => state.noticeReads.some((r) => r.notice_id === n.id && r.member_id === me().id);
 const unreadNotices = () => state.notices.filter((n) => noticeDelivered(n) && noticeForMe(n) && !noticeRead(n));
+
+// The top bar: today's date (Japan) and who is logged in. The date is checked every minute.
+function updateHeadInfo() {
+  const box = document.getElementById('head-info');
+  if (!box) return;
+  const m = me();
+  box.hidden = !m;
+  if (!m) return;
+  const today = todayJST();
+  document.getElementById('head-date').textContent = `${Number(today.slice(5, 7))}/${Number(today.slice(8, 10))}(${weekdayJa(today)})`;
+  const user = document.getElementById('head-user');
+  user.className = `head-user ${personClass(m.id)}`;
+  const isAdminName = /管理者/.test(nick(m));
+  user.replaceChildren(...[h('span', {}, nick(m)), m.role === 'admin' && !isAdminName ? h('span', { class: 'head-role' }, '管理者') : null].filter(Boolean));
+  user.setAttribute('aria-label', `ログイン中：${nick(m)}${m.role === 'admin' ? '（管理者）' : ''}。アカウント設定へ`);
+}
+setInterval(() => {
+  const el = document.getElementById('head-date');
+  if (el && !document.getElementById('head-info').hidden) updateHeadInfo();
+}, 60000);
 
 function updateBell() {
   const bell = document.getElementById('bell');
