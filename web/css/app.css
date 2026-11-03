@@ -87,6 +87,19 @@ h3 { font-size: 0.95rem; margin: 1.25rem 0 0.5rem; }
   padding-top: calc(0.6rem + env(safe-area-inset-top));
 }
 .brand { color: var(--head-ink); font-weight: 700; text-decoration: none; letter-spacing: 0.02em; }
+.app-header { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
+.bell { position: relative; display: inline-flex; color: var(--head-ink); padding: 0.15rem; }
+.bell .ic { width: 1.4rem; height: 1.4rem; }
+.bell-count { position: absolute; top: -0.35rem; right: -0.45rem; min-width: 1.15rem; height: 1.15rem; padding: 0 0.3rem; border-radius: 999px;
+  background: var(--critical); color: #fff; font-size: 0.72rem; font-weight: 700; line-height: 1.15rem; text-align: center; }
+.notice { padding: 0.7rem 0; border-bottom: 1px solid var(--line); }
+.notice:last-child { border-bottom: 0; }
+.notice-title { font-weight: 700; display: flex; align-items: center; gap: 0.4rem; }
+.notice.unread .notice-title::before { content: ''; width: 0.5rem; height: 0.5rem; border-radius: 50%; background: var(--critical); flex: none; }
+.notice-body { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0.25rem 0; }
+.notice-actions { display: flex; gap: 0.6rem; align-items: center; }
+.recipients { display: flex; flex-wrap: wrap; gap: 0.4rem 1rem; }
+.recipients label { display: inline-flex; align-items: center; gap: 0.3rem; font-weight: 400; }
 
 .app-nav {
   position: fixed;
@@ -177,7 +190,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 
 label, .label { display: block; font-weight: 600; margin: 0.75rem 0 0.25rem; font-size: 0.92rem; }
 input[type="text"], input[type="email"], input[type="password"], input[type="url"], input[type="search"],
-input[type="date"], input[type="month"], select, textarea {
+input[type="date"], input[type="month"], input[type="datetime-local"], select, textarea {
   width: 100%;
   font: inherit;
   padding: 0.5rem 0.7rem;

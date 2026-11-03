@@ -52,6 +52,8 @@ const state = {
   sharedRules: [],
   sharedEntries: [],
   adjustEntries: [], // per-category ratio corrections, worked out from the statement (not stored)
+  notices: [], // お知らせ (newest first)
+  noticeReads: [],
   depositReports: [], // 入金報告 (reference only)
   attachments: [], // images of one-off items and deposit reports
   balances: [], // account balances from the bank statement
@@ -126,7 +128,7 @@ function setView(title, ...nodes) {
 //
 // The page head stays at the top while the page scrolls (below the app bar; on wide screens below the
 // menu too): ① back link + icon + title + main action, ② main tabs, ③ sub switch (one row).
-const PAGE_ICONS = { home: ['home', 'lg-home'], ledgers: ['grid', 'lg-ledgers'], chores: ['chore', 'lg-chores'], flow: ['flow', 'lg-flow'], settings: ['gear', 'lg-settings'] };
+const PAGE_ICONS = { home: ['home', 'lg-home'], ledgers: ['grid', 'lg-ledgers'], chores: ['chore', 'lg-chores'], flow: ['flow', 'lg-flow'], settings: ['gear', 'lg-settings'], bell: ['bell', 'lg-home'] };
 
 function pageIcon(name) {
   if (LEDGERS[name]) return ledgerIcon(name);
@@ -318,7 +320,7 @@ function recordLink(ledger, record) {
 // ---------------------------------------------------------------- data loading
 
 async function loadAll() {
-  const [accounts, cards, contracts, items, memberships, photos, settings, members, chores, sharedRules, sharedEntries, depositReports, attachments, balances, budgets, budgetYears, budgetAttachments] = await Promise.all([
+  const [accounts, cards, contracts, items, memberships, photos, settings, members, chores, sharedRules, sharedEntries, depositReports, attachments, balances, budgets, budgetYears, budgetAttachments, notices, noticeReads] = await Promise.all([
     db.selectAll('accounts'),
     db.selectAll('cards'),
     db.selectAll('contracts'),
@@ -336,6 +338,8 @@ async function loadAll() {
     db.selectAll('budgets', 'year.asc'),
     db.selectAll('budget_years', 'year.asc'),
     db.selectAll('budget_attachments', 'created_at.asc'),
+    db.selectAll('notices', 'deliver_at.desc'),
+    db.selectAll('notice_reads', 'read_at.asc'),
   ]);
   state.data = { accounts, cards, contracts, items, memberships };
   state.photos = photos;
@@ -350,6 +354,8 @@ async function loadAll() {
   state.budgets = budgets;
   state.budgetYears = budgetYears;
   state.budgetAttachments = budgetAttachments;
+  state.notices = notices;
+  state.noticeReads = noticeReads;
   await loadAdjustments();
   state.loaded = true;
 }
@@ -376,6 +382,8 @@ async function saveSetting(key, value) {
 }
 
 function resetState() {
+  state.notices = [];
+  state.noticeReads = [];
   state.mfBox = null;
   state.loaded = false;
   state.data = { accounts: [], cards: [], contracts: [], items: [], memberships: [] };
@@ -423,6 +431,7 @@ async function render() {
     renderSetupNeeded();
     return;
   }
+  document.getElementById('bell').hidden = true; // shown again below for members
   if (!db.isSignedIn()) {
     nav.hidden = true;
     renderLogin();
@@ -455,6 +464,7 @@ async function render() {
   applyTheme();
   const { page, a, b } = route();
   setNav(page);
+  updateBell();
   if (page === 'home') renderHome();
   else if (page === 'ledgers') renderLedgers();
   else if (page === 'list' && LEDGERS[a]) renderList(a);
@@ -472,7 +482,119 @@ async function render() {
   else if (page === 'chore') renderChore(a);
   else if (page === 'chore-edit') renderChoreEdit(a);
   else if (page === 'member') renderMember(a);
+  else if (page === 'notices') renderNotices(a);
   else location.hash = '#/';
+}
+
+// ---------------------------------------------------------------- お知らせ (2026-11-03)
+//
+// What the app sent to devices and the messages people write, on one page that everyone sees. Messages
+// (also scheduled ones) are pushed by the GitHub Actions job every 10 minutes.
+
+const NOTICE_TITLE_MAX = 100;
+const NOTICE_BODY_MAX = 1000;
+
+const noticeDelivered = (n) => new Date(n.deliver_at).getTime() <= Date.now();
+const noticeForMe = (n) => !n.to_members || n.to_members.length === 0 || n.to_members.includes(me().id);
+const noticeRead = (n) => state.noticeReads.some((r) => r.notice_id === n.id && r.member_id === me().id);
+const unreadNotices = () => state.notices.filter((n) => noticeDelivered(n) && noticeForMe(n) && !noticeRead(n));
+
+function updateBell() {
+  const bell = document.getElementById('bell');
+  if (!bell) return;
+  bell.hidden = !me();
+  if (!me()) return;
+  const count = unreadNotices().length;
+  const badge = bell.querySelector('.bell-count');
+  badge.hidden = count === 0;
+  badge.textContent = count > 99 ? '99+' : String(count);
+  bell.setAttribute('aria-label', count ? `お知らせ（未読 ${count}件）` : 'お知らせ');
+}
+
+async function reloadNotices() {
+  [state.notices, state.noticeReads] = await Promise.all([db.selectAll('notices', 'deliver_at.desc'), db.selectAll('notice_reads', 'read_at.asc')]);
+}
+
+function recipientsText(n) {
+  return !n.to_members || n.to_members.length === 0 ? '全員' : n.to_members.map((id) => memberNick(id)).join('・');
+}
+
+function noticeItem(n, { unread = false, pending = false } = {}) {
+  const from = n.kind === 'system' || !n.from_member ? 'アプリ' : memberNick(n.from_member);
+  return h('div', { class: `notice${unread ? ' unread' : ''}` },
+    h('div', { class: 'notice-title' }, n.title),
+    n.body ? h('p', { class: 'notice-body' }, n.body) : null,
+    h('div', { class: 'notice-actions muted small' },
+      h('span', {}, `${from} → ${recipientsText(n)}・${pending ? `${formatTime(n.deliver_at)}に送る予定` : formatTime(n.deliver_at)}`),
+      n.url && /^#\//.test(n.url) ? h('a', { href: n.url }, '開く') : null,
+      pending ? h('button', { type: 'button', class: 'link', onclick: (ev) => busy(ev.currentTarget, async () => {
+        if (!confirm('この予約を取り消しますか？')) return;
+        await db.deleteWhere('notices', 'id', n.id);
+        await reloadNotices();
+        toast('予約を取り消しました。');
+        render();
+      }) }, '取り消す') : null));
+}
+
+function renderNotices(sub) {
+  if (sub === 'new') {
+    renderNoticeForm();
+    return;
+  }
+  const mine = me().id;
+  const pending = state.notices.filter((n) => n.kind === 'message' && n.from_member === mine && !n.delivered_at && !noticeDelivered(n))
+    .sort((a, b) => a.deliver_at.localeCompare(b.deliver_at));
+  const list = state.notices.filter(noticeDelivered);
+  const unread = new Set(unreadNotices().map((n) => n.id));
+  setView('お知らせ', pageHead({ title: 'お知らせ', icon: 'bell', action: h('a', { class: 'button primary', href: '#/notices/new' }, 'メッセージを送る'),
+    help: ['お知らせ', 'アプリから端末に送った通知と、メッセージが並びます。二人とも全部見られます。', 'メッセージは送ってから10分ほどで、宛先の人の端末に通知が届きます（GitHub の都合で遅れることがあります）。予約したものは、その日時のあとに届きます。', '1年たったものは消えます。'] }),
+    pending.length ? h('section', { class: 'card' }, h('h2', {}, '予約中'), pending.map((n) => noticeItem(n, { pending: true }))) : null,
+    h('section', { class: 'card' }, list.length ? list.map((n) => noticeItem(n, { unread: unread.has(n.id) })) : h('p', { class: 'muted' }, 'お知らせはまだありません。')));
+  // opening the page marks what was for me as read (the dots stay until the next visit)
+  if (unread.size) {
+    const rows = [...unread].map((id) => ({ notice_id: id, member_id: mine }));
+    db.insertRows('notice_reads', rows).then((saved) => {
+      state.noticeReads.push(...(Array.isArray(saved) ? saved : rows));
+      updateBell();
+    }).catch((e) => console.error('mark notices read failed', e));
+  }
+}
+
+function renderNoticeForm() {
+  const people = state.members.filter((m) => m.active && m.email).sort(meFirst);
+  const boxes = people.map((m) => ({ m, input: h('input', { type: 'checkbox', value: m.id, checked: m.id !== me().id, id: `to-${m.id}` }) }));
+  const title = h('input', { type: 'text', id: 'notice-title', maxlength: NOTICE_TITLE_MAX, required: true });
+  const body = h('textarea', { id: 'notice-body', maxlength: NOTICE_BODY_MAX, rows: 5 });
+  const at = h('input', { type: 'datetime-local', id: 'notice-at' });
+  const error = h('p', { class: 'error', role: 'alert' });
+  const send = h('button', { type: 'button', class: 'primary', onclick: (ev) => busy(ev.currentTarget, async () => {
+    error.textContent = '';
+    const to = boxes.filter((b) => b.input.checked).map((b) => b.m.id);
+    const t = title.value.trim();
+    const text = body.value.trim();
+    const when = at.value ? new Date(at.value) : null;
+    if (to.length === 0) error.textContent = '宛先を選んでください。';
+    else if (!t) error.textContent = 'タイトルを入力してください。';
+    else if (t.length > NOTICE_TITLE_MAX) error.textContent = `タイトルは${NOTICE_TITLE_MAX}文字以内で入力してください。`;
+    else if (text.length > NOTICE_BODY_MAX) error.textContent = `本文は${NOTICE_BODY_MAX}文字以内で入力してください。`;
+    else if (when && Number.isNaN(when.getTime())) error.textContent = '送る日時が正しくありません。';
+    else if (when && when.getTime() < Date.now() - 60000) error.textContent = '送る日時は今より後にしてください（空欄ならすぐ送ります）。';
+    if (error.textContent) return;
+    const everyone = people.every((m) => to.includes(m.id));
+    await db.insertRows('notices', [{ kind: 'message', from_member: me().id, to_members: everyone ? [] : to, title: t, body: text, deliver_at: (when || new Date()).toISOString() }]);
+    await reloadNotices();
+    toast(when ? `予約しました（${formatTime(when.toISOString())}のあとに送ります）。` : '送りました。端末への通知は10分ほどで届きます。');
+    location.hash = '#/notices';
+  }) }, '送る');
+  setView('メッセージを送る', pageHead({ title: 'メッセージを送る', icon: 'bell', back: { href: '#/notices', text: 'お知らせへ' } }),
+    h('section', { class: 'card' },
+      h('fieldset', { class: 'field' }, h('legend', {}, '宛先'), h('div', { class: 'recipients' },
+        boxes.map((b) => h('label', { for: `to-${b.m.id}` }, b.input, nick(b.m) + (b.m.id === me().id ? '（自分）' : ''))))),
+      h('div', { class: 'field' }, h('label', { for: 'notice-title' }, 'タイトル', h('span', { class: 'req' }, ' *')), title),
+      h('div', { class: 'field' }, h('label', { for: 'notice-body' }, '本文'), body),
+      h('div', { class: 'field' }, h('label', { for: 'notice-at' }, '送る日時（空欄ならすぐ）'), at),
+      error),
+    h('div', { class: 'actions sticky-actions' }, send));
 }
 
 // ---------------------------------------------------------------- setup / login
