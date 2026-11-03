@@ -885,6 +885,8 @@ create table if not exists public.notice_reads (
   read_at timestamptz not null default now(),
   primary key (notice_id, member_id)
 );
+-- hidden: the person cleared it from their own list (2026-11-03)
+alter table public.notice_reads add column if not exists hidden boolean not null default false;
 do $$
 declare
   t text;
@@ -897,15 +899,20 @@ begin
     execute format('drop policy if exists member_read on public.%I', t);
     execute format('drop policy if exists member_insert on public.%I', t);
     execute format('drop policy if exists member_delete on public.%I', t);
+    execute format('drop policy if exists member_update on public.%I', t);
   end loop;
 end;
 $$;
+grant update on public.notice_reads to authenticated;
 -- everyone sees what was delivered; the sender also sees their scheduled messages
 create policy member_read on public.notices for select to authenticated
   using (public.is_member() and (deliver_at <= now() or from_member = public.current_member_id()));
--- people only write messages, as themselves (system notices come from the job)
+-- people only write messages, as themselves; system notices come from the job, and from administrators
+-- when a bank statement import finds a low balance
 create policy member_insert on public.notices for insert to authenticated
-  with check (public.is_member() and kind = 'message' and from_member = public.current_member_id() and delivered_at is null);
+  with check (public.is_member() and (
+    (kind = 'message' and from_member = public.current_member_id() and delivered_at is null)
+    or (kind = 'system' and from_member is null and public.is_admin())));
 -- a scheduled message can be cancelled by its sender until it is delivered
 create policy member_delete on public.notices for delete to authenticated
   using (public.is_member() and kind = 'message' and from_member = public.current_member_id() and delivered_at is null);
@@ -915,6 +922,9 @@ create policy member_insert on public.notice_reads for insert to authenticated
   with check (public.is_member() and member_id = public.current_member_id());
 create policy member_delete on public.notice_reads for delete to authenticated
   using (public.is_member() and member_id = public.current_member_id());
+create policy member_update on public.notice_reads for update to authenticated
+  using (public.is_member() and member_id = public.current_member_id())
+  with check (public.is_member() and member_id = public.current_member_id());
 
 -- ---------------------------------------------------------------------------
 -- Removal of the single-owner version. Run this section only after logging in with the new

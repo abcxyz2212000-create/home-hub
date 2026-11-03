@@ -277,6 +277,15 @@ export async function upsertRows(table, rows, onConflict = 'id') {
   return res.json();
 }
 
+// Rows whose unique columns already exist are skipped (ON CONFLICT DO NOTHING).
+export async function insertIgnore(table, rows, onConflict) {
+  await authFetch(rest(`${table}?on_conflict=${onConflict}`), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Prefer: 'resolution=ignore-duplicates,return=minimal' },
+    body: JSON.stringify(rows),
+  });
+}
+
 export async function updateRow(table, id, values) {
   const res = await authFetch(rest(`${table}?id=eq.${encodeURIComponent(id)}`), {
     method: 'PATCH',

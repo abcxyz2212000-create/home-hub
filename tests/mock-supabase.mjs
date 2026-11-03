@@ -29,7 +29,7 @@ const TABLE_DEFAULTS = {
   budgets: { memo: null }, budget_years: { savings_monthly: 0, income_monthly: null, ratio: {}, ratio_note: null },
   shared_attachments: { entry_id: null, report_id: null, bytes: 0 },
   notices: { key: null, from_member: null, to_members: [], body: '', url: null, delivered_at: null },
-  notice_reads: {},
+  notice_reads: { hidden: false },
   transactions: { contract_id: null, account_id: null, card_id: null, memo: null, counted: true, transfer: false, personal_member_id: null, needs_review: false, settled_entry_id: null, deposit_entry_id: null, deposit_ignored: false },
 };
 const SET_NULL = {
