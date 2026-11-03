@@ -1,0 +1,24 @@
+# One-time, by hand: upload the evidence files in evidence-upload/ (on the chosen branch) to the private
+# storage bucket "evidence" and record them (scripts/upload-evidence.mjs).
+# Required repository secret: SUPABASE_SERVICE_ROLE_KEY.
+name: 証跡のアップロード（手動）
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  upload:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Upload
+        run: node scripts/upload-evidence.mjs
+        env:
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
