@@ -62,6 +62,7 @@ const state = {
   budgetAttachments: [], // evidence files of the budget
   tx: new Map(), // ym -> statement lines (null while loading)
   txYear: new Map(), // 'YYYY' -> statement lines of the year (null while loading)
+  boxPeriods: {}, // お金: the period of each box ('tab:box' -> 'YYYY-MM' or 'YYYY')
   money: { tab: 'member', member: null, ext: null, flow: null }, // お金の流れ: the open tab and each tab's month or year
   personal: null, // { pending, review } statement lines owed by one person / being checked (null until loaded)
 };
@@ -116,12 +117,22 @@ function view() {
   return document.getElementById('view');
 }
 
+// A new page starts at the top; drawing the same page again (a box's period, data that came in) keeps
+// the place on the page.
+let lastViewHash = null;
 function setView(title, ...nodes) {
   document.title = title ? `${title} | HouseHub` : 'HouseHub';
   const root = view();
+  const same = location.hash === lastViewHash;
+  const y = window.scrollY;
+  if (same) root.style.minHeight = `${root.offsetHeight}px`; // no jump while the new nodes take their place
   root.replaceChildren(...nodes.flat(Infinity).filter((n) => n !== null && n !== undefined && n !== false));
   updateStickyOffset();
-  window.scrollTo(0, 0);
+  if (same) {
+    window.scrollTo(0, y);
+    requestAnimationFrame(() => { root.style.minHeight = ''; });
+  } else window.scrollTo(0, 0);
+  lastViewHash = location.hash;
 }
 
 // ---------------------------------------------------------------- page frame (same on every page)
@@ -1815,24 +1826,102 @@ const BUDGET_SUBTABS = { budget: '予算', ratio: '負担率' };
 function renderMoney(tabParam, periodParam) {
   const current = thisYM();
   const tab = MONEY_TABS[tabParam] || tabParam === 'ratio' ? tabParam : state.money.tab;
-  let period = moneyPeriod(periodParam) || state.money[tab] || (tab === 'ratio' ? current.slice(0, 4) : current);
-  if (tab === 'ratio') period = period.slice(0, 4);
   state.money.tab = tab;
-  state.money[tab] = period;
   if (tab === 'budget' || tab === 'ratio') state.money.budgetSub = tab;
-  const hrefOf = (key) => `#/flow/${key}/${state.money[key] || (key === 'ratio' ? current.slice(0, 4) : current)}`;
+  const hrefOf = (key) => `#/flow/${key}`;
   const mainTab = tab === 'ratio' ? 'budget' : tab;
   const tabs = Object.entries(MONEY_TABS).map(([key, label]) => ({ key, label, href: key === 'budget' ? hrefOf(state.money.budgetSub || 'budget') : hrefOf(key) }));
-  const isYear = period.length === 4;
-  const content = tab === 'ext' ? (isYear ? extYearView(period) : extMonthView(period))
-    : tab === 'flow' ? flowView(period)
-      : tab === 'budget' ? (isYear ? budgetYearView(period) : budgetMonthView(period))
-        : tab === 'ratio' ? ratioYearView(period)
-          : (isYear ? memberYearView(period) : memberMonthView(period));
+  const boxes = moneyBoxes(tab);
+  // a period in the address (a link such as 「11月」 in a year table) sets every box of the tab once
+  const given = moneyPeriod(periodParam);
+  if (given && state.money.appliedHash !== location.hash) {
+    for (const b of boxes) if (b.key) state.boxPeriods[`${tab}:${b.key}`] = coercePeriod(given, b.mode);
+  }
+  state.money.appliedHash = location.hash;
   const sub = mainTab === 'budget'
-    ? [segmented(Object.entries(BUDGET_SUBTABS).map(([key, label]) => ({ label, href: hrefOf(key), active: key === tab })), '予算・負担率'), periodNav(tab, period, { yearOnly: tab === 'ratio' })]
-    : periodNav(tab, period);
-  setView('お金', pageHead({ title: 'お金', icon: 'flow', tabs, tab: mainTab, sub }), alertCards(), ...[content].flat().filter(Boolean));
+    ? segmented(Object.entries(BUDGET_SUBTABS).map(([key, label]) => ({ label, href: hrefOf(key), active: key === tab })), '予算・負担率')
+    : null;
+  const content = boxes.map((b) => (b.key ? periodBox(tab, b) : b.build(current)));
+  setView('お金', pageHead({ title: 'お金', icon: 'flow', tabs, tab: mainTab, sub }), alertCards(), ...[content].flat(Infinity).filter(Boolean));
+}
+
+// A period that a box can show: mode 'both' (a month or a year), 'month' or 'year'.
+function coercePeriod(period, mode) {
+  const current = thisYM();
+  if (mode === 'year') return period.slice(0, 4);
+  if (mode === 'month' && period.length === 4) return period === current.slice(0, 4) ? current : `${period}-01`;
+  return period;
+}
+
+// The boxes of each tab: { key, mode, build(period) -> nodes }; without key, a box that has no period.
+// Each box keeps its own period (state.boxPeriods), so a box low on the page can change without the page
+// moving (setView keeps the scroll position when the address stays the same).
+function moneyBoxes(tab) {
+  const pick = (nodes, i) => [nodes].flat()[i] || null;
+  if (tab === 'ext') {
+    return [
+      { key: 'balance', mode: 'month', title: '残高', build: (p) => balanceCard(p) },
+      { key: 'actual', mode: 'both', title: '入出金', build: (p) => (p.length === 4 ? extYearView(p) : actualCard(p)) },
+    ];
+  }
+  if (tab === 'flow') {
+    return [
+      { key: 'flow', mode: 'both', title: '流れ図', build: (p) => pick(flowView(p), 0) },
+      { key: 'balance', mode: 'both', title: '共用口座の残高', build: (p) => pick(flowView(p), 1) },
+      { key: 'accounts', mode: 'both', title: '口座ごとの引き落とし', build: (p) => pick(flowView(p), 2) },
+    ];
+  }
+  if (tab === 'budget') {
+    return [
+      { key: 'summary', mode: 'both', title: '予算と実績', build: (p) => pick(p.length === 4 ? budgetYearView(p) : budgetMonthView(p), 0) },
+      { key: 'categories', mode: 'both', title: '費目ごと', build: (p) => (p.length === 4 ? pick(budgetYearView(p), 2) : pick(budgetMonthView(p), 1)) },
+      { key: 'cumulative', mode: 'year', title: '支出の累計', build: (p) => pick(budgetYearView(p), 1) },
+    ];
+  }
+  if (tab === 'ratio') {
+    return [
+      { key: 'year', mode: 'year', title: '負担率と各人の負担額', build: (p) => pick(ratioYearView(p), 0) },
+      { build: () => ratioHistoryCard(thisYM().slice(0, 4)) },
+    ];
+  }
+  // member
+  if (sharedMembers().length === 0) return [{ build: () => [memberIntroCard(), personalCard()] }];
+  const month = (p) => [memberMonthView(p)].flat();
+  return [
+    { key: 'status', mode: 'both', title: '家計費', build: (p) => (p.length === 4 ? memberYearView(p) : month(p).slice(0, 2)) },
+    { key: 'reports', mode: 'month', title: '入金の報告', build: (p) => month(p)[2] || null },
+    { build: () => personalCard() },
+    { build: () => month(thisYM())[4] || null },
+  ];
+}
+
+// A box with its own ◀ period ▶ and 月ごと・年間; the cards it shows follow below its bar.
+function periodBox(tab, box) {
+  const current = thisYM();
+  const id = `${tab}:${box.key}`;
+  const period = coercePeriod(state.boxPeriods[id] || (box.mode === 'year' ? current.slice(0, 4) : current), box.mode);
+  state.boxPeriods[id] = period;
+  const isYear = period.length === 4;
+  const set = (p) => (ev) => {
+    ev.preventDefault();
+    state.boxPeriods[id] = coercePeriod(p, box.mode);
+    render();
+  };
+  const year = period.slice(0, 4);
+  const now = isYear ? year === current.slice(0, 4) : period === current;
+  const step = (n) => (isYear ? String(Number(year) + n) : ymAdd(period, n));
+  const btn = (label, p, cls = 'button small', aria) => h('a', { class: cls, href: '#', role: 'button', 'aria-label': aria || null, onclick: set(p) }, label);
+  const bar = h('div', { class: 'box-period', role: 'group', 'aria-label': `${box.title}の年月` },
+    btn('◀', step(-1), 'button small', isYear ? '前の年' : '前の月'),
+    h('span', { class: 'box-period-label' }, isYear ? `${Number(year)}年` : ymLabel(period)),
+    btn('▶', step(1), 'button small', isYear ? '次の年' : '次の月'),
+    now ? h('span', { class: 'badge badge-now' }, isYear ? '今年' : '今月') : btn(isYear ? '今年へ' : '今月へ', isYear ? current.slice(0, 4) : current, 'badge badge-jump'),
+    box.mode === 'both' ? h('div', { class: 'segmented small', role: 'group', 'aria-label': '月ごと・年間' },
+      h('a', { class: isYear ? '' : 'active', href: '#', onclick: set(isYear ? (year === current.slice(0, 4) ? current : `${year}-01`) : period) }, '月ごと'),
+      h('a', { class: isYear ? 'active' : '', href: '#', onclick: set(year) }, '年間')) : null);
+  const content = [box.build(period)].flat(Infinity).filter(Boolean);
+  return h('div', { class: 'period-box', 'data-box': id }, bar,
+    content.length ? content : h('section', { class: 'card' }, h('p', { class: 'muted' }, 'この期間に表示するものはありません。')));
 }
 
 // ---------------------------------------------------------------- tab: 予算 (予実管理, 2026-11-03)
@@ -2392,27 +2481,6 @@ function flowView(period) {
 }
 
 // ◀ period ▶ and the month / year switch of one tab.
-function periodNav(tab, period, { yearOnly = false } = {}) {
-  const current = thisYM();
-  const isYear = period.length === 4;
-  const link = (p) => `#/flow/${tab}/${p}`;
-  const year = period.slice(0, 4);
-  const now = isYear ? year === current.slice(0, 4) : period === current;
-  const monthOfYear = year === current.slice(0, 4) ? current : `${year}-01`;
-  return [
-    h('div', { class: 'month-nav' },
-      h('a', { class: 'button small', href: link(isYear ? String(Number(year) - 1) : ymAdd(period, -1)), 'aria-label': isYear ? '前の年' : '前の月' }, '◀'),
-      h('div', { class: 'month-label' },
-        h('h2', {}, isYear ? `${Number(year)}年` : ymLabel(period)),
-        now ? h('span', { class: 'badge badge-now' }, isYear ? '今年' : '今月')
-          : h('a', { class: 'badge badge-jump', href: link(isYear ? current.slice(0, 4) : current) }, isYear ? '今年へ' : '今月へ')),
-      h('a', { class: 'button small', href: link(isYear ? String(Number(year) + 1) : ymAdd(period, 1)), 'aria-label': isYear ? '次の年' : '次の月' }, '▶')),
-    yearOnly ? null : segmented([
-      { label: '月ごと', href: link(isYear ? monthOfYear : period), active: !isYear },
-      { label: '年間', href: link(year), active: isYear },
-    ], '月ごと・年間'),
-  ];
-}
 
 // ---- tab 2: 共用口座の入出金
 
@@ -4246,7 +4314,7 @@ async function fullBackup(status) {
 
 // アプリの更新: the version this device runs (APP_VERSION, the same as the service worker's cache name) and a button that drops
 // the saved files and loads the newest version. Sign-in and notifications stay as they are.
-const APP_VERSION = 'v66'; // = CACHE in sw.js (checked by tests/unit/version.test.mjs)
+const APP_VERSION = 'v67'; // = CACHE in sw.js (checked by tests/unit/version.test.mjs)
 
 function appUpdateSection() {
   const version = h('span', { class: 'num' }, APP_VERSION);
