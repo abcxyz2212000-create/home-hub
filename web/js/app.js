@@ -1888,7 +1888,8 @@ function moneyBoxes(tab) {
   if (sharedMembers().length === 0) return [{ build: () => [memberIntroCard(), personalCard()] }];
   const month = (p) => [memberMonthView(p)].flat();
   return [
-    { key: 'status', mode: 'both', title: '家計費', build: (p) => (p.length === 4 ? memberYearView(p) : month(p).slice(0, 2)) },
+    { key: 'status', mode: 'both', title: '家計費', build: (p) => (p.length === 4 ? memberYearView(p) : month(p)[0]) },
+    { key: 'detail', mode: 'month', title: '内訳', build: (p) => month(p)[1] || null },
     { key: 'reports', mode: 'month', title: '入金の報告', build: (p) => month(p)[2] || null },
     { build: () => personalCard() },
     { build: () => month(thisYM())[4] || null },
@@ -4314,7 +4315,7 @@ async function fullBackup(status) {
 
 // アプリの更新: the version this device runs (APP_VERSION, the same as the service worker's cache name) and a button that drops
 // the saved files and loads the newest version. Sign-in and notifications stay as they are.
-const APP_VERSION = 'v67'; // = CACHE in sw.js (checked by tests/unit/version.test.mjs)
+const APP_VERSION = 'v68'; // = CACHE in sw.js (checked by tests/unit/version.test.mjs)
 
 function appUpdateSection() {
   const version = h('span', { class: 'num' }, APP_VERSION);
