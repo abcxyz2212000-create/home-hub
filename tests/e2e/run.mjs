@@ -888,6 +888,21 @@ try {
   await mp.getByRole('link', { name: '山田 太郎' }).click();
   await mp.getByText('管理者だけが変更できます').waitFor();
 
+  step('a regular member sees 台帳 and 家事 but cannot add, change or delete them');
+  await mp.goto(`${appUrl}#/list/accounts`);
+  await mp.locator('.page-head h1').waitFor();
+  assert.equal(await mp.getByRole('link', { name: '＋ 追加' }).count(), 0);
+  await mp.goto(`${appUrl}#/view/accounts/${mock.db.accounts[0].id}`);
+  await mp.locator('.page-head h1').waitFor();
+  assert.equal(await mp.getByRole('link', { name: '編集' }).count() + await mp.getByRole('button', { name: '削除' }).count(), 0);
+  await mp.goto(`${appUrl}#/edit/accounts/new`);
+  await mp.getByText('追加・変更・削除は管理者だけができます。').waitFor();
+  await mp.goto(`${appUrl}#/chores/list`);
+  await mp.locator('.page-head h1').waitFor();
+  assert.equal(await mp.getByRole('link', { name: '＋ 追加' }).count(), 0);
+  await mp.goto(`${appUrl}#/chore-edit/new`);
+  await mp.getByText('追加・変更・削除は管理者だけができます。').waitFor();
+
   step('a regular member records only their own 立替 (deposits come from the statement)');
   await mp.goto(`${appUrl}#/`);
   await mp.getByRole('link', { name: '立替を記録' }).click(); // from the home screen

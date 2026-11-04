@@ -671,10 +671,19 @@ begin
   end loop;
 
   -- household data: every active member can read and write
-  foreach t in array array['accounts', 'cards', 'contracts', 'items', 'memberships', 'item_photos', 'push_subscriptions', 'chores', 'transactions'] loop
+  foreach t in array array['push_subscriptions', 'transactions'] loop
     execute format('grant select, insert, update, delete on public.%I to authenticated', t);
     execute format('drop policy if exists member_all on public.%I', t);
     execute format('create policy member_all on public.%I for all to authenticated using (public.is_member()) with check (public.is_member())', t);
+  end loop;
+  -- 台帳 and 家事 (2026-11-04): everyone reads, administrators add, change and delete
+  foreach t in array array['accounts', 'cards', 'contracts', 'items', 'memberships', 'item_photos', 'chores'] loop
+    execute format('grant select, insert, update, delete on public.%I to authenticated', t);
+    execute format('drop policy if exists member_all on public.%I', t);
+    execute format('drop policy if exists member_read on public.%I', t);
+    execute format('drop policy if exists admin_write on public.%I', t);
+    execute format('create policy member_read on public.%I for select to authenticated using (public.is_member())', t);
+    execute format('create policy admin_write on public.%I for all to authenticated using (public.is_admin()) with check (public.is_admin())', t);
   end loop;
 
   -- shared account ledger (2026-11-01): everyone reads; administrators write everything.
@@ -699,13 +708,10 @@ begin
     with check (public.is_admin() or (public.is_member() and kind = 'charge' and member_id = public.current_member_id()));
   create policy member_delete on public.shared_entries for delete to authenticated
     using (public.is_admin() or (public.is_member() and kind = 'charge' and member_id = public.current_member_id()));
-  create policy member_insert on public.shared_rules for insert to authenticated
-    with check (public.is_admin() or (public.is_member() and contract_id is not null));
-  create policy member_update on public.shared_rules for update to authenticated
-    using (public.is_admin() or (public.is_member() and contract_id is not null))
-    with check (public.is_admin() or (public.is_member() and contract_id is not null));
-  create policy member_delete on public.shared_rules for delete to authenticated
-    using (public.is_admin() or (public.is_member() and contract_id is not null));
+  -- (contracts are kept by administrators since 2026-11-04, so the rules that follow them are too)
+  create policy member_insert on public.shared_rules for insert to authenticated with check (public.is_admin());
+  create policy member_update on public.shared_rules for update to authenticated using (public.is_admin()) with check (public.is_admin());
+  create policy member_delete on public.shared_rules for delete to authenticated using (public.is_admin());
   -- account balances: everyone reads, administrators import
   grant select, insert, update, delete on public.account_balances to authenticated;
   drop policy if exists member_read on public.account_balances;

@@ -15,16 +15,24 @@ insert into public.members (name, email, role, active) values
   ('子ども', null, 'member', true);
 insert into storage.objects (bucket_id, name, metadata) values ('item-photos', 'x/a.jpg', '{"size": 1234}');
 
--- a member can read and write household data; who created it is recorded
+-- 台帳 and 家事 are written by administrators (2026-11-04); members read them; who created it is recorded
 set role authenticated;
-select pg_temp.login('member@example.com');
+select pg_temp.login('owner@example.com');
 insert into public.accounts (name, account_no, last4, holder_id)
   select '生活費口座', '0001234', '1234', id from public.members where name = '子ども';
+select pg_temp.login('member@example.com');
 do $$ begin
   if (select count(*) from public.accounts) <> 1 then raise exception 'member cannot read accounts'; end if;
-  if (select created_by from public.accounts) is distinct from (select id from public.members where name = '佐藤 春子') then
+  if (select created_by from public.accounts) is distinct from (select id from public.members where name = '共通（管理者）') then
     raise exception 'created_by not stamped';
   end if;
+  begin insert into public.accounts (name) values ('メンバーの口座'); raise exception 'member added an account';
+  exception when insufficient_privilege then null; end;
+  begin insert into public.chores (name) values ('メンバーの家事'); raise exception 'member added a chore';
+  exception when insufficient_privilege then null; end;
+  update public.accounts set memo = 'メンバーの変更';
+  delete from public.accounts;
+  if (select count(*) from public.accounts where memo is null) <> 1 then raise exception 'member changed or deleted an account'; end if;
   if (select count(*) from public.members) <> 4 then raise exception 'member cannot read the user master'; end if;
   if (select count(*) from storage.objects) <> 1 then raise exception 'member cannot read photos'; end if;
   if ((public.usage_stats() ->> 'storage_bytes')::bigint) <> 1234 then raise exception 'usage_stats wrong'; end if;
@@ -43,15 +51,17 @@ do $$ begin
 end $$;
 
 -- history: changes are recorded with the actor; the full account number is masked; no-op updates are skipped
+select pg_temp.login('owner@example.com');
 update public.accounts set bank_code = '0036', account_no = '0005678', last4 = '5678';
 update public.accounts set bank_code = '0036';
+select pg_temp.login('member@example.com');
 do $$
 declare
   h public.audit_log;
 begin
   if (select count(*) from public.audit_log where table_name = 'accounts') <> 2 then raise exception 'history count wrong'; end if;
   select * into h from public.audit_log where action = 'update';
-  if h.actor_name <> '佐藤 春子' or h.record_name <> '生活費口座' then raise exception 'history actor/record wrong'; end if;
+  if h.actor_name <> '共通（管理者）' or h.record_name <> '生活費口座' then raise exception 'history actor/record wrong'; end if;
   if h.changes <> '{"bank_code": [null, "0036"], "account_no": ["●●●1234", "●●●5678"]}'::jsonb then
     raise exception 'history changes wrong: %', h.changes;
   end if;
@@ -66,6 +76,7 @@ begin
 end $$;
 
 -- photos are recorded on the item
+select pg_temp.login('owner@example.com');
 insert into public.items (id, name) values ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', '冷蔵庫');
 insert into public.item_photos (item_id, path, thumb_path) values ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', 'p.jpg', 'p_t.jpg');
 do $$ begin
@@ -79,7 +90,7 @@ select pg_temp.login('owner@example.com');
 update public.accounts set purpose = '生活費';
 do $$ begin
   if (select updated_by from public.accounts) is distinct from (select id from public.members where name = '共通（管理者）') then raise exception 'updated_by wrong'; end if;
-  if (select created_by from public.accounts) is distinct from (select id from public.members where name = '佐藤 春子') then raise exception 'created_by changed'; end if;
+  if (select created_by from public.accounts) is distinct from (select id from public.members where name = '共通（管理者）') then raise exception 'created_by changed'; end if;
   if not public.is_admin() then raise exception 'admin not detected'; end if;
 end $$;
 insert into public.settings (key, value) values ('shortcuts', '[]');
