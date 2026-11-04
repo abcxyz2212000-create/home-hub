@@ -1696,7 +1696,7 @@ function renderTx(id) {
       await db.updateRow('transactions', t.id, { contract_id: contractId, ...chosen });
       state.personal = null;
       let relinked = 0;
-      if (contractId && remember.checked) {
+      if (contractId && remember.checked && isAdmin()) { // the keyword is kept in the contract (administrators)
         const word = keyword.value.trim();
         if (normalizeText(word).length < 2) {
           toast('キーワードは2文字以上にしてください。', 'error');
@@ -1730,9 +1730,8 @@ function renderTx(id) {
         t.transfer ? h('p', {}, h('span', { class: 'tag' }, '振替'), helpButton('振替', 'マネーフォワードで「振替」の明細です（カードの引き落としなど）。二重に数えないよう集計に含めません。')) : null),
       h('section', { class: 'card form' },
         h('div', { class: 'field' }, h('label', { for: 'f-contract' }, '契約にひも付ける'), select),
-        h('div', { class: 'field checkbox' }, remember, h('label', { for: 'f-remember' }, 'キーワードとして覚え、ほかの明細も照合する')),
-        h('div', { class: 'field' }, h('label', { for: 'f-keyword' }, 'キーワード（明細の内容に含まれる語）'), keyword,
-),
+        isAdmin() ? [h('div', { class: 'field checkbox' }, remember, h('label', { for: 'f-remember' }, 'キーワードとして覚え、ほかの明細も照合する')),
+          h('div', { class: 'field' }, h('label', { for: 'f-keyword' }, 'キーワード（明細の内容に含まれる語）'), keyword)] : null,
         h('div', { class: 'field' }, h('div', { class: 'label-row' }, h('label', { for: 'f-burden' }, '負担'), helpButton('負担',
           ...BURDEN_HELP_LINES,
           '精算済みの明細を変えるときは、精算の記録を先に削除してください。')), burden,
@@ -3336,7 +3335,7 @@ function renderLedgers() {
         h('h2', { class: 'with-icon' }, ledgerIcon(k, 'icbox-sm'), def.label, h('span', { class: 'count-badge' }, `${live.length}件`)),
         h('div', { class: 'button-row' },
           h('a', { class: 'button small', href: `#/list/${k}` }, '検索'),
-          h('a', { class: 'button small primary', href: `#/edit/${k}/new` }, '＋ 追加'))),
+          isAdmin() ? h('a', { class: 'button small primary', href: `#/edit/${k}/new` }, '＋ 追加') : null)),
       live.length ? h('div', { class: 'list' }, live.map(item)) : h('p', { class: 'muted' }, 'まだありません。'),
       closed.length ? h('details', {}, h('summary', {}, `解約済み ${closed.length}件`), h('div', { class: 'list' }, closed.map(item))) : null);
   });
@@ -3409,7 +3408,7 @@ function renderList(ledger) {
   status.addEventListener('change', update);
   update();
   setView(def.label,
-    pageHead({ title: def.label, icon: ledger, back: { href: '#/ledgers', text: '台帳へ' }, action: h('a', { class: 'button primary', href: `#/edit/${ledger}/new` }, '＋ 追加') }),
+    pageHead({ title: def.label, icon: ledger, back: { href: '#/ledgers', text: '台帳へ' }, action: isAdmin() ? h('a', { class: 'button primary', href: `#/edit/${ledger}/new` }, '＋ 追加') : null }),
     h('div', { class: 'filters' }, q, status),
     list);
 }
@@ -3550,13 +3549,13 @@ function renderView(ledger, id) {
   const delBtn = h('button', { type: 'button', class: 'danger', onclick: (ev) => busy(ev.currentTarget, () => deleteRecord(ledger, r)) }, '削除');
 
   setView(r.name,
-    pageHead({ title: r.name, icon: ledger, back: { href: `#/list/${ledger}`, text: `${def.label}の一覧へ` }, action: h('a', { class: 'button primary', href: `#/edit/${ledger}/${r.id}` }, '編集') }),
+    pageHead({ title: r.name, icon: ledger, back: { href: `#/list/${ledger}`, text: `${def.label}の一覧へ` }, action: isAdmin() ? h('a', { class: 'button primary', href: `#/edit/${ledger}/${r.id}` }, '編集') : null }),
     heroes.length ? h('div', { class: 'hero-grid' }, heroes) : null,
     h('section', { class: 'card' }, h('dl', { class: 'fields' }, [...rows, ...notifyRows].map(([k, v]) => [h('dt', {}, k), h('dd', {}, v)]))),
     def.photos ? photoSection(r) : null,
     relations(ledger, r),
     historySection(ledger, r, def.fields),
-    h('div', { class: 'actions' }, delBtn));
+    isAdmin() ? h('div', { class: 'actions' }, delBtn) : null);
 }
 
 // ---------------------------------------------------------------- change history
@@ -3656,7 +3655,7 @@ function photoSection(item) {
       photoUrl(p.thumb_path).then((url) => { img.src = url; }).catch((e) => console.error(e.detail || e));
       return h('figure', { class: 'photo' },
         h('button', { type: 'button', class: 'photo-open', onclick: () => openPhoto(p), 'aria-label': '写真を拡大' }, img),
-        h('button', { type: 'button', class: 'small danger', onclick: (ev) => busy(ev.currentTarget, async () => {
+        !isAdmin() ? null : h('button', { type: 'button', class: 'small danger', onclick: (ev) => busy(ev.currentTarget, async () => {
           if (!window.confirm('この写真を削除しますか？')) return;
           await db.removePhotos([p.path, p.thumb_path]);
           await db.deleteWhere('item_photos', 'id', p.id);
@@ -3708,7 +3707,7 @@ function photoSection(item) {
     h('h2', {}, '写真（保証書・レシート）'),
     h('p', { class: 'notice-text small' }, '⚠ カード番号の全桁・暗証番号などが写り込んでいないか確認してから追加してください。'),
     grid,
-    h('label', { for: 'photo-input', class: 'button' }, '写真を追加（撮影・選択）'), input,
+    isAdmin() ? [h('label', { for: 'photo-input', class: 'button' }, '写真を追加（撮影・選択）'), input] : null,
     status);
 }
 
@@ -3877,8 +3876,17 @@ function cardNumberSuspects(values) {
     || (Array.isArray(v) && v.some((x) => typeof x === 'string' && findCardNumberLike(x))));
 }
 
+// 台帳 and 家事 are changed by administrators only (2026-11-04); others see them.
+function adminOnlyView(title, back) {
+  setView(title, pageHead({ title, icon: 'settings', back }), h('section', { class: 'card' }, h('p', {}, '追加・変更・削除は管理者だけができます。')));
+}
+
 function renderEdit(ledger, id) {
   const def = LEDGERS[ledger];
+  if (!isAdmin()) {
+    adminOnlyView(`${def.label}の編集`, { href: id === 'new' ? `#/list/${ledger}` : `#/view/${ledger}/${id}`, text: '戻る' });
+    return;
+  }
   const isNew = id === 'new';
   const r = isNew ? null : find(ledger, id);
   if (!isNew && !r) {
@@ -4238,7 +4246,7 @@ async function fullBackup(status) {
 
 // アプリの更新: the version this device runs (APP_VERSION, the same as the service worker's cache name) and a button that drops
 // the saved files and loads the newest version. Sign-in and notifications stay as they are.
-const APP_VERSION = 'v65'; // = CACHE in sw.js (checked by tests/unit/version.test.mjs)
+const APP_VERSION = 'v66'; // = CACHE in sw.js (checked by tests/unit/version.test.mjs)
 
 function appUpdateSection() {
   const version = h('span', { class: 'num' }, APP_VERSION);
@@ -4682,7 +4690,7 @@ function renderChores(tabParam) {
   state.choresTab = tab;
   const tabs = Object.entries(CHORE_TABS).map(([key, label]) => ({ key, label, href: `#/chores/${key}` }));
   setView('家事',
-    pageHead({ title: '家事', icon: 'chores', tabs, tab, action: h('a', { class: 'button primary', href: '#/chore-edit/new' }, '＋ 追加') }),
+    pageHead({ title: '家事', icon: 'chores', tabs, tab, action: isAdmin() ? h('a', { class: 'button primary', href: '#/chore-edit/new' }, '＋ 追加') : null }),
     tab === 'today' ? todayChoresCard() : null,
     tab === 'load' ? workloadSection() : null,
     tab === 'list' ? [h('div', { class: 'filters' }, cat), list] : null);
@@ -4710,7 +4718,7 @@ function renderChore(id) {
     location.hash = '#/chores/list';
   }) }, '削除');
   setView(c.name,
-    pageHead({ title: c.name, icon: 'chores', back: { href: '#/chores/list', text: '家事の一覧へ' }, action: h('a', { class: 'button primary', href: `#/chore-edit/${c.id}` }, '編集') }),
+    pageHead({ title: c.name, icon: 'chores', back: { href: '#/chores/list', text: '家事の一覧へ' }, action: isAdmin() ? h('a', { class: 'button primary', href: `#/chore-edit/${c.id}` }, '編集') : null }),
     h('section', { class: 'card' },
       h('div', { class: 'kpis kpis-2' },
         h('div', { class: 'kpi kpi-main' }, h('div', { class: 'kpi-label' }, '点数 / 月'), h('div', { class: 'kpi-value num' }, Math.round(adjustedPoints(c)).toLocaleString('ja-JP'), h('small', {}, '点'))),
@@ -4718,7 +4726,7 @@ function renderChore(id) {
       h('p', { class: 'muted small formula' }, formula)),
     h('section', { class: 'card' }, h('dl', { class: 'fields' }, rows.map(([k, v]) => [h('dt', {}, k), h('dd', {}, v)]))),
     historySection('chores', c, CHORE_FIELDS.concat([{ key: 'assignee_id', label: '担当', type: 'member-nick' }, { key: 'assignee_type', label: '担当の種類', type: 'select', options: [['member', '人'], ['all', '全員'], ['tbd', '未定']] }])),
-    h('div', { class: 'actions' }, del));
+    isAdmin() ? h('div', { class: 'actions' }, del) : null);
 }
 
 function scheduleInput(cycle, values) {
@@ -4732,6 +4740,10 @@ function scheduleInput(cycle, values) {
 }
 
 function renderChoreEdit(id) {
+  if (!isAdmin()) {
+    adminOnlyView('家事の編集', { href: id === 'new' ? '#/chores/list' : `#/chore/${id}`, text: '戻る' });
+    return;
+  }
   const isNew = id === 'new';
   const c = isNew ? { cycle: 'week', adjust: 1, status: 'active', assignee_type: 'member', assignee_id: me() ? me().id : null, schedule: [] } : state.chores.find((x) => x.id === id);
   if (!c) {

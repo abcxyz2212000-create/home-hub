@@ -33,8 +33,9 @@ do $$ begin
      or not exists (select 1 from information_schema.columns where table_name = 'shared_entries' and column_name = 'paid_on') then
     raise exception 'deposit reports / attachments missing after the upgrade';
   end if;
-  if not exists (select 1 from pg_policies where tablename = 'chores' and policyname = 'member_all') then
-    raise exception 'chores has no access policy';
+  if (select count(*) from pg_policies where tablename = 'chores' and policyname in ('member_read', 'admin_write')) <> 2
+     or exists (select 1 from pg_policies where tablename in ('chores', 'accounts', 'items') and policyname = 'member_all') then
+    raise exception 'chores / 台帳: members read, administrators write (after the upgrade)';
   end if;
 end $$;
 select 'v3 upgrade tests passed' as result;
