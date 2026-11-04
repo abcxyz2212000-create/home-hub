@@ -31,7 +31,7 @@ test('the December reminder says what to look up', () => {
   const members = [{ id: 'a', nickname: 'しん', gender: 'male', birth_year: 1990 }, { id: 'b', nickname: 'はる', gender: 'female', birth_year: 1990 }];
   const r = reminderText(2027, members);
   assert.equal(r.title, '来年の負担率の確認');
-  assert.equal(r.body, '2027年の予算の負担率を決めてください。令和7年の賃金統計（第6-1表 正社員・正職員）で しん 男 35～39歳・はる 女 35～39歳 の賃金を見て、予算の編集画面に入れます。');
-  assert.equal(r.url, '#/budget/2027');
+  assert.equal(r.body, '2027年の負担率を決めてください。令和7年の賃金統計（第6-1表 正社員・正職員）で しん 男 35～39歳・はる 女 35～39歳 の賃金を見て、負担率の編集画面に入れます。');
+  assert.equal(r.url, '#/ratio/2027');
   assert.match(reminderText(2027, [{ ...members[0], birth_year: null }]).body, /しんの生まれ年がユーザーマスターにありません。$/);
 });

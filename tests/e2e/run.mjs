@@ -690,36 +690,12 @@ try {
   assert.equal(mock.db.account_balances.length, 2, 'importing again does not duplicate');
   assert.equal(mock.db.notices.filter((n) => n.key === `lowbal:${ymNow}-03`).length, 1, 'one お知らせ per balance date');
 
-  step('budget: set per 大項目, actual from the statement and 立替, 今月分 proposed and switched from next month');
+  step('budget: set per 大項目, actual from the statement and 立替; the ratio in its own sub tab and editor');
   await page.goto(`${appUrl}#/flow/budget/${ymNow}`);
   await page.getByText(`${ymNow.slice(0, 4)}年の予算はまだありません。`).waitFor();
+  assert.equal(await page.locator('.ratio-table').count(), 0, 'the ratio is in its own sub tab');
   await page.getByRole('link', { name: '予算を作る' }).click();
-  await page.getByLabel('住宅の月の予算（円）').fill('90,000');
-  await page.getByLabel('住宅の備考').fill('更新料を按分');
-  await page.getByLabel('通信費の月の予算（円）').fill('6000');
-  await page.getByLabel('二人の負担額の合計（月・円）').fill('100,000');
-  const ratioInputs = page.locator('input[id^="ratio-"]');
-  const people = await ratioInputs.count();
-  for (let i = 0; i < people; i += 1) await ratioInputs.nth(i).fill(i === 0 ? '294.6' : '258.1');
-  if (people === 2) assert.match(await page.locator('.ratio-big').innerText(), /負担率 \S+ 53% ： \S+ 47%/);
-  assert.match(await page.locator('.share-out').innerText(), /負担額（月）[\s\S]*合計\s+100%\s+100,000円/, 'each person\'s share of the total is shown');
-  // the wage statistics: what to look up for each person
-  const budgetYear = Number(ymNow.slice(0, 4));
-  assert.match(await page.locator('.wage-box').innerText(), /生まれ年がユーザーマスターにありません/);
-  const firstPerson = (await ratioInputs.first().getAttribute('id')).slice('ratio-'.length);
-  Object.assign(mock.db.members.find((m) => m.id === firstPerson), { gender: 'female', birth_year: budgetYear - 32 });
-  await page.reload();
-  await page.locator('.wage-box').waitFor();
-  assert.match(await page.locator('.wage-box').innerText(), /見る値（令和\d+年・第6-1表 雇用形態、性、年齢階級別賃金の正社員・正職員）：[\s\S]*女 30～34歳/);
-  for (let i = 0; i < people; i += 1) await ratioInputs.nth(i).fill(i === 0 ? '294.6' : '258.1');
-  // evidence of the ratio: a PDF kept in the private bucket
-  await page.getByLabel('証跡のファイル').setInputFiles({ name: '令和2年_概況.pdf', mimeType: 'application/pdf', buffer: Buffer.from('%PDF-1.4 test') });
-  await page.getByText('証跡を保存しました。').waitFor();
-  assert.equal(mock.db.budget_attachments.length, 1);
-  assert.match(mock.db.budget_attachments[0].path, new RegExp(`^budget/${budgetYear}/[0-9a-f-]+\\.pdf$`));
-  assert.ok(mock.files.has(mock.db.budget_attachments[0].path), 'the file is stored');
-  await page.getByLabel('証跡のファイル').setInputFiles({ name: 'x.txt', mimeType: 'text/plain', buffer: Buffer.from('x') });
-  await page.getByText('x.txt は PDF・JPEG・PNG ではないため追加できません。').waitFor();
+  assert.equal(await page.locator('input[id^="ratio-"]').count(), 0, 'no ratio in the budget editor');
   await page.getByLabel('住宅の月の予算（円）').fill('90,000');
   await page.getByLabel('住宅の備考').fill('更新料を按分');
   await page.getByLabel('通信費の月の予算（円）').fill('6000');
@@ -735,9 +711,46 @@ try {
   const budgetText = await page.locator('#view').innerText();
   assert.match(budgetText, /支出\s+96,000\s/);
   assert.match(budgetText, /住宅\s+[\d,]+円 \/ 90,000円/);
-  assert.match(budgetText, /今月分の内訳[\s\S]*二人の負担額の合計 月 100,000円（支出の予算 96,000円 ＋ 貯蓄 4,000円）/);
   assert.doesNotMatch(budgetText, /この額で切り替える/);
   assert.match(budgetText, /大項目が決まっていない立替があります（[^）]*管理費/);
+
+  // the ratio: its own sub tab (by year only) and editor
+  const budgetYear = Number(ymNow.slice(0, 4));
+  await page.getByRole('link', { name: '負担率', exact: true }).click();
+  await page.locator('.ratio-table').waitFor();
+  assert.equal(await page.getByRole('link', { name: '月ごと' }).count(), 0, 'the ratio is by year only');
+  await page.getByRole('link', { name: '負担率を編集' }).click();
+  await page.locator('.wage-box').waitFor();
+  assert.equal(await page.getByLabel('二人の負担額の合計（月・円）').count(), 0, 'no budget in the ratio editor');
+  const ratioInputs = page.locator('input[id^="ratio-"]');
+  const people = await ratioInputs.count();
+  for (let i = 0; i < people; i += 1) await ratioInputs.nth(i).fill(i === 0 ? '294.6' : '258.1');
+  if (people === 2) assert.match(await page.locator('.ratio-big').innerText(), /負担率 \S+ 53% ： \S+ 47%/);
+  assert.match(await page.locator('.share-out').innerText(), /負担額（月）[\s\S]*合計\s+100%\s+100,000円/, 'each person\'s share of the year\'s total is shown');
+  // the wage statistics: what to look up for each person
+  assert.match(await page.locator('.wage-box').innerText(), /生まれ年がユーザーマスターにありません/);
+  const firstPerson = (await ratioInputs.first().getAttribute('id')).slice('ratio-'.length);
+  Object.assign(mock.db.members.find((m) => m.id === firstPerson), { gender: 'female', birth_year: budgetYear - 32 });
+  await page.reload();
+  await page.locator('.wage-box').waitFor();
+  assert.match(await page.locator('.wage-box').innerText(), /見る値（令和\d+年・第6-1表 雇用形態、性、年齢階級別賃金の正社員・正職員）：[\s\S]*女 30～34歳/);
+  for (let i = 0; i < people; i += 1) await ratioInputs.nth(i).fill(i === 0 ? '294.6' : '258.1');
+  // evidence of the ratio: a PDF kept in the private bucket
+  await page.getByLabel('証跡のファイル').setInputFiles({ name: '令和2年_概況.pdf', mimeType: 'application/pdf', buffer: Buffer.from('%PDF-1.4 test') });
+  await page.getByText('証跡を保存しました。').waitFor();
+  assert.equal(mock.db.budget_attachments.length, 1);
+  assert.match(mock.db.budget_attachments[0].path, new RegExp(`^budget/${budgetYear}/[0-9a-f-]+\\.pdf$`));
+  assert.ok(mock.files.has(mock.db.budget_attachments[0].path), 'the file is stored');
+  await page.getByLabel('証跡のファイル').setInputFiles({ name: 'x.txt', mimeType: 'text/plain', buffer: Buffer.from('x') });
+  await page.getByText('x.txt は PDF・JPEG・PNG ではないため追加できません。').waitFor();
+  for (let i = 0; i < people; i += 1) await ratioInputs.nth(i).fill(i === 0 ? '294.6' : '258.1');
+  await page.getByRole('button', { name: '保存' }).click();
+  await page.getByText(`${budgetYear}年の負担率を保存しました。`, { exact: false }).waitFor();
+  await page.locator('.ratio-table').waitFor();
+  assert.equal(mock.db.budget_years[0].income_monthly, 100000, 'the ratio editor keeps the budget');
+  assert.equal(mock.db.shared_rules.length, before, 'no base rule changed mid-year');
+  assert.match(await page.locator('#view').innerText(), /負担率と各人の負担額[\s\S]*二人の負担額の合計 月 100,000円/);
+
   // the 大項目 of a 費目 is chosen in the settings
   await page.goto(`${appUrl}#/settings/other`);
   await page.getByLabel('管理費の大項目').selectOption('住宅');
@@ -757,29 +770,28 @@ try {
   if (Number(ymNow.slice(5)) < 12) assert.match(yearBudgetText, /年末の貯蓄の見込み [−\d,]+円/);
   await page.screenshot({ path: join(OUT, 'budget.png'), fullPage: true });
 
-  // the ratio and where it comes from, on the budget tab (月ごと and 年間) and not on the people's tab
+  // the ratio is not on the people's tab; the main tab remembers the sub tab
   await page.goto(`${appUrl}#/flow/member/${ymNow}`);
   await page.locator('.shared-card').first().waitFor();
   assert.equal(await page.locator('.ratio-table').count(), 0);
-  await page.getByRole('link', { name: '予算と負担率', exact: true }).click();
-  await page.locator('.ratio-table').waitFor();
-  await page.goto(`${appUrl}#/flow/budget/${ymNow.slice(0, 4)}`);
+  await page.goto(`${appUrl}#/flow/ratio/${budgetYear}`);
   await page.locator('.ratio-table').waitFor();
   // a year can have its ratio before its budget
-  const nextYear = Number(ymNow.slice(0, 4)) + 1;
-  const ratioPerson = (await page.locator('input[id^="ratio-"]').count()) ? null : mock.db.budget_years[0] && Object.keys(mock.db.budget_years[0].ratio)[0];
+  const nextYear = budgetYear + 1;
+  const ratioPerson = Object.keys(mock.db.budget_years[0].ratio)[0];
   mock.db.budget_years.push({ id: crypto.randomUUID(), year: nextYear, savings_monthly: 0, income_monthly: null, ratio: { [ratioPerson]: 300 }, ratio_note: null, created_at: nowIso, updated_at: nowIso });
-  await page.goto(`${appUrl}#/flow/budget/${nextYear}`);
+  await page.goto(`${appUrl}#/flow/ratio/${nextYear}`);
   await page.reload();
-  await page.getByText(`${nextYear}年の予算はまだありません。`).waitFor();
+  await page.locator('.ratio-table').waitFor();
   const nextRow = await page.locator('.ratio-table tr', { hasText: `${nextYear}年` }).innerText();
   assert.match(nextRow, /100%/, 'the ratio is shown without a budget');
   assert.doesNotMatch(nextRow, /負担率が未登録/);
   assert.match(await page.locator('.ratio-table').innerText(), /女 30～34歳 294.6千円[\s\S]*令和\d+年賃金構造基本統計調査 第6-1表（正社員・正職員）[\s\S]*📎令和2年_概況.pdf/, 'the basis is the source and the values seen');
+  await page.goto(`${appUrl}#/flow/budget/${nextYear}`);
+  await page.getByText(`${nextYear}年の予算はまだありません。`).waitFor();
 
   step('per-category ratio: rows checked and saved from the coming January (the corrections are in the unit tests)');
-  await page.goto(`${appUrl}#/budget/${nextYear}`);
-  await page.locator('#budget-income').fill('100000');
+  await page.goto(`${appUrl}#/ratio/${nextYear}`);
   await page.locator('#cat-ratio-add').click();
   await page.locator('#cat-ratio-cat-0').selectOption('水道・光熱費');
   await page.locator('#cat-ratio-sub-0').fill('電気代');
@@ -790,10 +802,10 @@ try {
   await page.getByText('「電気代」の率は合計100にしてください', { exact: false }).waitFor();
   for (let i = 0; i < pctPeople; i += 1) await pctInputs.nth(i).fill(pctPeople === 1 ? '100' : i === 0 ? '70' : i === 1 ? '30' : '0');
   await page.getByRole('button', { name: '保存', exact: true }).click();
-  await page.waitForFunction(() => !location.hash.startsWith('#/budget/'));
+  await page.waitForFunction(() => !location.hash.startsWith('#/ratio/'));
   const savedYear = mock.db.budget_years.find((y) => y.year === nextYear);
   assert.deepEqual(savedYear.category_ratios.map((r) => [r.category, r.subcategory, r.from]), [['水道・光熱費', '電気代', `${nextYear}-01`]]);
-  await page.goto(`${appUrl}#/flow/budget/${nextYear}`);
+  assert.equal(savedYear.income_monthly, null, 'the ratio editor does not make a budget');
   await page.locator('.ratio-table').waitFor();
   assert.match(await page.locator('#view').innerText(), new RegExp(`${nextYear}年 電気代：.*%（${nextYear}年1月から）`));
 
@@ -1078,7 +1090,7 @@ try {
     ['edit-contract', '#/edit/contracts/new'], ['chores-today', '#/chores/today'], ['chores-load', '#/chores/load'], ['chores-list', '#/chores/list'],
     ['money-member-month', `#/flow/member/${ymNow}`], ['money-member-year', `#/flow/member/${yearNow}`], ['money-ext-month', `#/flow/ext/${ymNow}`],
     ['money-ext-year', `#/flow/ext/${yearNow}`], ['money-flow-month', `#/flow/flow/${ymNow}`], ['money-flow-year', `#/flow/flow/${yearNow}`],
-    ['money-budget-month', `#/flow/budget/${ymNow}`], ['money-budget-year', `#/flow/budget/${yearNow}`], ['budget-edit', `#/budget/${yearNow}`],
+    ['money-budget-month', `#/flow/budget/${ymNow}`], ['money-budget-year', `#/flow/budget/${yearNow}`], ['budget-edit', `#/budget/${yearNow}`], ['money-ratio', `#/flow/ratio/${yearNow}`], ['ratio-edit', `#/ratio/${yearNow}`],
     ['advance-new', `#/shared-entry/new/advance:${hanako.id}:${ymNow}`], ['report-new', `#/deposit-report/new/${hanako.id}`],
     ['settings-account', '#/settings/account'], ['settings-users', '#/settings/users'], ['settings-data', '#/settings/data'], ['settings-other', '#/settings/other'], ['notices', '#/notices'], ['notice-new', '#/notices/new'],
   ];
