@@ -436,12 +436,14 @@ try {
   assert.match(monthSheet, /先月の残り\s+69,500円/);
   assert.match(monthSheet, /今月分: 基本\s+70,000円[\s\S]*＝ 払う額\s+139,500円/);
   assert.match(monthSheet, /計画（払う額）[\s\S]*実績（払った額）\s+入金\s+100,000円\s+立替（定例）: dアニ\s+500円\s+立替（臨時）: 管理費\s+3,000円/);
-  assert.match(await page.locator('.month-label').innerText(), new RegExp(`${ymLabel(ymNow)}\\s*今月`));
+  assert.match(await page.locator('[data-box="member:status"] .box-period').innerText(), new RegExp(`${ymLabel(ymNow)}[\\s▶]*今月`), 'each box has its own period');
   assert.match(monthSheet, /＝ 払った額\s+103,500円/);
   await page.getByRole('img', { name: '人ごとの残りの推移' }).waitFor();
   await page.screenshot({ path: join(OUT, 'shared.png'), fullPage: true });
-  await page.getByRole('link', { name: '前の月' }).click();
-  await page.getByRole('heading', { name: ymLabel(ymPrev), exact: true }).waitFor();
+  const scrolled = await page.evaluate(() => { window.scrollTo(0, 400); return window.scrollY; });
+  await page.locator('[data-box="member:status"]').getByRole('button', { name: '前の月' }).evaluate((el) => el.click()); // a tap where it is (no scrolling to it)
+  await page.locator('[data-box="member:status"] .box-period-label', { hasText: ymLabel(ymPrev) }).waitFor();
+  assert.equal(await page.evaluate(() => window.scrollY), scrolled, 'changing a box\'s month keeps the place on the page');
   assert.match(await page.locator('.shared-card').innerText(), /残り（来月へ）\s+69,500円/);
   step('one money page: people -> shared account -> cards -> payees, and the balance of the shared account');
   await page.getByRole('link', { name: 'お金', exact: true }).first().click();
@@ -465,8 +467,10 @@ try {
   const flow4 = await page.getByRole('img', { name: 'お金の流れ（月額）' }).evaluate((el) => [...el.querySelectorAll('text')].map((t) => t.textContent));
   for (const t of ['給与口座（はなこ）', '当月分 66,500円', '生活費口座（共用）', '外部（支払先）', 'メインカード']) assert.ok(flow4.includes(t), `flow shows ${t}`);
   assert.equal(flow4.filter((t) => t === '外部（支払先）').length, 1, 'one box for everything outside');
-  await page.getByRole('link', { name: '年間' }).click();
+  await page.locator('[data-box="flow:flow"]').getByRole('link', { name: '年間' }).click();
   await page.getByRole('heading', { name: 'はなこ → 口座 → カード → 支払先（年額）' }).waitFor();
+  await page.locator('[data-box="flow:accounts"]').getByRole('link', { name: '年間' }).click();
+  await page.getByRole('heading', { name: '口座ごとの引き落とし（年額）' }).waitFor();
   assert.match(await page.locator('#view').innerText(), /口座ごとの引き落とし（年額）/);
   await page.screenshot({ path: join(OUT, 'money.png'), fullPage: true });
 
@@ -502,7 +506,7 @@ try {
   await page.goto(`${appUrl}#/shared/${ymNow}`);
   assert.match(await page.locator('.shared-card').innerText(), /立替\s+3,550円/, 'dアニ 550 from this month + 管理費 3,000');
   await page.goto(`${appUrl}#/shared/${ymPrev}`);
-  await page.getByRole('heading', { name: ymLabel(ymPrev), exact: true }).waitFor();
+  await page.locator('[data-box="member:status"] .box-period-label', { hasText: ymLabel(ymPrev) }).waitFor();
   assert.match(await page.locator('.shared-card').innerText(), /立替\s+500円/, 'last month unchanged');
   await page.goto(`${appUrl}#/shared-rule/${dRule.id}`);
   await page.locator('.shared-card').waitFor(); // the former screen now leads to the money page
@@ -649,7 +653,7 @@ try {
   const payout = mock.db.shared_entries.find((e) => e.label === '共用口座からの受け取り');
   assert.deepEqual([payout.member_id, payout.ym, payout.kind, payout.amount], [hanako.id, ymNow, 'charge', 20000]);
   assert.equal(mock.db.transactions.find((t) => t.mf_id === 'mf-i').deposit_entry_id ?? null, null, 'the sender name (依頼人名) is not a payee');
-  await page.getByRole('link', { name: '年間' }).click();
+  await page.locator('[data-box="ext:actual"]').getByRole('link', { name: '年間' }).click();
   await page.getByRole('heading', { name: `共用口座の明細（${Number(ymNow.slice(0, 4))}年）` }).waitFor();
   await page.locator('.year-table').waitFor(); // the year's lines are loaded
   const extYear = await page.locator('#view').innerText();
@@ -659,7 +663,7 @@ try {
   await page.locator('.shared-card').first().waitFor();
   assert.match(await page.locator('.shared-table').innerText(), /共用口座からの受け取り\s+20,000円/);
   assert.match(await page.locator('.shared-table').innerText(), /立替（定例）: dアニ\s+550円/, 'a cost paid from a personal account is a recurring 立替');
-  await page.getByRole('link', { name: '年間' }).click();
+  await page.locator('[data-box="member:status"]').getByRole('link', { name: '年間' }).click();
   await page.getByRole('heading', { name: `はなこ（${Number(ymNow.slice(0, 4))}年）` }).waitFor();
   assert.match(await page.locator('.member-year').innerText(), /家計費の合計/);
   await page.screenshot({ path: join(OUT, 'money-year.png'), fullPage: true });
@@ -760,8 +764,9 @@ try {
   await page.goto(`${appUrl}#/flow/budget/${ymNow}`);
   await page.locator('.budget-summary').waitFor();
   assert.doesNotMatch(await page.locator('#view').innerText(), /大項目が決まっていない立替があります（[^）]*管理費/);
-  await page.getByRole('link', { name: '年間' }).click();
+  await page.locator('[data-box="budget:summary"]').getByRole('link', { name: '年間' }).click();
   await page.getByText('支出の累計').waitFor();
+  await page.locator('[data-box="budget:summary"] .box-period-label', { hasText: '年' }).waitFor();
   const yearBudgetText = await page.locator('#view').innerText();
   assert.match(yearBudgetText, /収入（二人の負担額）[^\n]*\n└ 入った額（入金＋立替）[^\n]*\n└ (まだ入っていない額|前の月の分の入金)[^\n]*\n支出/);
   assert.doesNotMatch(yearBudgetText, /（参考）/);
