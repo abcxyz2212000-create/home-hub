@@ -285,19 +285,19 @@ try {
   await fill('1回の時間（分）', '5');
   await fill('調整係数', '1.1');
   await page.getByLabel('担当', { exact: true }).selectOption({ label: 'はなこ' });
-  assert.match(await page.locator('.preview').innerText(), /0\.67時間\/月・733点\/月/);
+  assert.match(await page.locator('.preview').innerText(), /0\.67時間\/月・733円\/月/);
   await save();
   await page.getByRole('heading', { name: 'ゴミ出し' }).waitFor();
   const gomi = mock.db.chores.find((c) => c.name === 'ゴミ出し');
   assert.deepEqual([gomi.cycle, gomi.schedule, gomi.times, gomi.minutes, gomi.adjust, gomi.assignee_type, gomi.assignee_id],
     ['week', [dow, (dow + 3) % 7].sort((a, b) => a - b), 2, 5, 1.1, 'member', hanako.id]);
-  assert.match(await page.locator('#view').innerText(), /733点/);
+  assert.match(await page.locator('#view').innerText(), /733円/);
   await page.goto(`${appUrl}#/chore-edit/new`);
   await fill('タスク名 *', '各種支払い');
   await page.getByLabel('サイクル *', { exact: true }).selectOption({ label: '随時' });
   await save();
-  await page.getByText('随時の家事は、点数/月を入力してください。').waitFor();
-  await fill('点数/月（随時のみ）', '300');
+  await page.getByText('随時の家事は、1回の価値（円）を入力してください。').waitFor();
+  await fill('1回の価値（円・随時のみ）', '300');
   await page.getByLabel('担当', { exact: true }).selectOption({ label: '全員（等分）' });
   await save();
   await page.getByRole('heading', { name: '各種支払い' }).waitFor();
@@ -305,15 +305,15 @@ try {
   await page.getByRole('link', { name: '今日', exact: true }).click();
   assert.match(await page.locator('#view').innerText(), /今日の家事[\s\S]*ゴミ出し/);
   await page.getByRole('link', { name: '負担の割合', exact: true }).click();
-  await page.getByRole('img', { name: '担当ごとの月の負担（調整後の点数）' }).waitFor();
-  assert.match(await page.locator('#view').innerText(), /合計\s+1,033点/, 'only はなこ has chores, so the "all" chore is hers: 733 + 300');
+  await page.getByRole('img', { name: '担当ごとの月の負担（調整後の価値）' }).waitFor();
+  assert.match(await page.locator('#view').innerText(), /合計\s+1,033円/, 'only はなこ has chores, so the "all" chore is hers: 733 + 300');
   mock.db.chores.push({ id: 'ch-taro', name: '風呂掃除', status: 'active', cycle: 'month', schedule: [], times: 1, minutes: 60, adjust: 1,
     assignee_type: 'member', assignee_id: taro.id, category: '住', created_at: now, updated_at: now });
   await page.reload();
-  await page.getByRole('img', { name: '担当ごとの月の負担（調整後の点数）' }).waitFor();
+  await page.getByRole('img', { name: '担当ごとの月の負担（調整後の価値）' }).waitFor();
   const split = await page.locator('table').innerText();
-  assert.match(split, /合計\s+883点\s+1,150点|合計\s+1,150点\s+883点/, 'はなこ 733+150, 太郎 1000+150');
-  assert.match(await page.locator('.balance').innerText(), /山田 太郎 が はなこ より 267点 多い/);
+  assert.match(split, /合計\s+883円\s+1,150円|合計\s+1,150円\s+883円/, 'はなこ 733+150, 太郎 1000+150');
+  assert.match(await page.locator('.balance').innerText(), /山田 太郎 が はなこ より 267円 多い/);
   await page.getByRole('link', { name: '一覧', exact: true }).click();
   await page.locator('.chore-group').first().waitFor();
   const heads = await page.locator('.chore-group-head').allInnerTexts();
@@ -1085,22 +1085,73 @@ try {
   await page.getByText('予約を取り消しました。').waitFor();
   assert.ok(!mock.db.notices.some((n) => n.title === '電気代の過去分の精算'));
 
-  step('変更の確認: a change waits for everyone to confirm it; who confirmed is shown to all');
-  mock.db.notices.push({ id: 'chg1', kind: 'change', key: 'change:budget:2027:x:1', from_member: hanako.id, to_members: [], title: '2027年の予算・負担率が変わりました', body: '二人の負担額の合計 月253,000円 → 170,210円', url: '#/flow/budget/2027', needs_ack: true, deliver_at: nowIso, delivered_at: nowIso, created_at: nowIso });
+  step('ワークフロー: 変更の回覧, 相談・申請, 家事の実施 (問いかけ → 承認 → 回数), 個人間の支払い, 家事の対価');
+  mock.db.workflow_requests.push({ id: 'chg1', type_key: 'change', key: 'change:budget:2027:x:1', applicant: hanako.id, title: '2027年の予算・負担率が変わりました', body: '二人の負担額の合計 月253,000円 → 170,210円', payload: {}, approvers: ['m-admin', hanako.id], status: 'open', url: '#/flow/budget/2027', created_at: nowIso, updated_at: nowIso, pushed_at: nowIso });
   await page.goto(`${appUrl}#/`);
   await page.reload();
-  await page.locator('.unread-notices').waitFor();
-  assert.match(await page.locator('.unread-notices').innerText(), /うち確認待ち 1件[\s\S]*2027年の予算・負担率が変わりました[\s\S]*確認：[^\n]*未確認/);
-  await page.locator('#bell').click();
-  await page.getByText('253,000円 → 170,210円').waitFor();
-  await page.waitForTimeout(300); // opening marks it as read, but it still waits for 「確認しました」
+  await page.locator('.unread-notices').first().waitFor();
+  assert.match(await page.locator('#view').innerText(), /あなたの返事待ち（1件）[\s\S]*2027年の予算・負担率が変わりました[\s\S]*確認：[^\n]*共通（管理者） 未/);
   assert.equal(await page.locator('#bell .bell-count').innerText(), '1');
-  assert.equal(await page.locator('.needs-ack').getByRole('button', { name: '消す' }).count(), 0, 'a change cannot be cleared before it is confirmed');
+  await page.locator('#bell').click();
+  await page.getByRole('heading', { name: '承認・確認', exact: true }).waitFor();
+  await page.getByText('253,000円 → 170,210円').waitFor();
   await page.getByRole('button', { name: '確認しました' }).click();
   await page.getByText('確認しました。').waitFor();
-  assert.ok(mock.db.notice_reads.find((r) => r.notice_id === 'chg1' && r.member_id === 'm-admin').acked_at);
-  assert.match(await page.locator('.needs-ack .ack-status').innerText(), /共通（管理者） 済（/);
+  assert.equal(mock.db.workflow_replies.find((r) => r.request_id === 'chg1' && r.member_id === 'm-admin').reply, 'acked');
+  assert.equal(mock.db.workflow_requests.find((r) => r.id === 'chg1').status, 'open', 'はな has not confirmed yet');
   await page.waitForFunction(() => document.querySelector('#bell .bell-count').hidden);
+  // a generic 相談・申請
+  await page.getByRole('link', { name: '新しい申請' }).click();
+  await page.locator('#wf-type').selectOption('proposal');
+  await page.getByRole('button', { name: '送る', exact: true }).click();
+  await page.getByText('タイトルを入力してください。').waitFor();
+  await page.locator('#wf-title').fill('洗濯機を買い替えたい');
+  await page.locator('#wf-body').fill('10万円まで');
+  await page.getByRole('button', { name: '送る', exact: true }).click();
+  await page.waitForFunction(() => location.hash === '#/workflow/applied');
+  const proposal = mock.db.workflow_requests.find((r) => r.title === '洗濯機を買い替えたい');
+  assert.deepEqual([proposal.type_key, proposal.status, proposal.approvers.includes('m-admin')], ['proposal', 'open', false]);
+
+  // 家事の対価: はなこ makes dinner for 1,200円 a time, asked every day; the admin pays
+  mock.db.chores.push({ id: 'cook', name: '夕ご飯づくり', category: '料理', status: 'active', cycle: 'day', schedule: [], times: 1, minutes: 60, adjust: 1.2, assignee_type: 'member', assignee_id: hanako.id, paid_by: 'm-admin', prompt_hour: 0, created_at: nowIso, updated_at: nowIso });
+  const wfCtx = await browser.newContext({ viewport: { width: 390, height: 844 }, locale: 'ja-JP', serviceWorkers: 'block' });
+  const hp = await wfCtx.newPage();
+  await login(hp, { email: MEMBER.email, password: mock.passwords.get(MEMBER.email) });
+  await hp.getByText('今日「夕ご飯づくり」をやりますか？').waitFor();
+  assert.match(await hp.locator('#view').innerText(), /承認されたら1回 1,200円/);
+  await hp.getByRole('button', { name: 'はい（やります）' }).click();
+  await hp.getByText(/をやると伝えました/).waitFor();
+  const ask = mock.db.workflow_requests.find((r) => r.type_key === 'chore_done');
+  assert.deepEqual([ask.status, ask.approvers, ask.payload.value], ['open', ['m-admin'], 1200]);
+  assert.equal(await hp.getByText('今日「夕ご飯づくり」をやりますか？').count(), 0, 'asked once a day');
+  await page.goto(`${appUrl}#/workflow/mine`);
+  await page.reload();
+  await page.getByText(/「夕ご飯づくり」をやります/).waitFor();
+  await page.locator('.wf-item', { hasText: '夕ご飯づくり' }).getByRole('button', { name: '承認' }).click();
+  await page.getByText('承認しました。').waitFor();
+  assert.deepEqual(mock.db.chore_records.map((r) => [r.member_id, r.payer_id, r.value]), [[hanako.id, 'm-admin', 1200]]);
+  // the 家事の対価 of the month, and a payment that はなこ confirms
+  await page.goto(`${appUrl}#/chores/pay`);
+  await page.locator('.reward-card').waitFor();
+  assert.match(await page.locator('.reward-card').innerText(), /夕ご飯づくり\s+1回\s+1,200円[\s\S]*払った額\s+0円[\s\S]*未払い[^\n]*\s+1,200円/);
+  await page.getByRole('link', { name: '払いました' }).click();
+  await page.locator('#pay-amount').fill('1200');
+  await page.getByRole('button', { name: '送る', exact: true }).click();
+  await page.waitForFunction(() => location.hash === '#/workflow/applied');
+  await hp.goto(`${appUrl}#/workflow/mine`);
+  await hp.reload();
+  await hp.locator('.wf-item', { hasText: '1,200円を払いました' }).getByRole('button', { name: '承認' }).click();
+  await hp.getByText('承認しました。').waitFor();
+  assert.deepEqual(mock.db.person_payments.map((p) => [p.from_member, p.to_member, p.amount]), [['m-admin', hanako.id, 1200]]);
+  await page.goto(`${appUrl}#/chores/pay`);
+  await page.reload();
+  await page.locator('.reward-card').waitFor();
+  assert.match(await page.locator('.reward-card').innerText(), /払った額\s+1,200円[\s\S]*未払い[^\n]*\s+0円/);
+  // chores in yen; a chore done for its price is not shared out
+  await page.goto(`${appUrl}#/chores/load`);
+  await page.getByText('対価のある家事（分担に含めない）').waitFor();
+  assert.doesNotMatch(await page.locator('#view').innerText(), /\d点/);
+  await wfCtx.close();
 
   step('layout audit: every main page at phone width (full page + scrolled, to check the fixed page head)');
   mkdirSync(join(OUT, 'audit'), { recursive: true });
@@ -1113,6 +1164,7 @@ try {
     ['money-budget-month', `#/flow/budget/${ymNow}`], ['money-budget-year', `#/flow/budget/${yearNow}`], ['budget-edit', `#/budget/${yearNow}`], ['money-ratio', `#/flow/ratio/${yearNow}`], ['ratio-edit', `#/ratio/${yearNow}`],
     ['advance-new', `#/shared-entry/new/advance:${hanako.id}:${ymNow}`], ['report-new', `#/deposit-report/new/${hanako.id}`],
     ['settings-account', '#/settings/account'], ['settings-users', '#/settings/users'], ['settings-data', '#/settings/data'], ['settings-other', '#/settings/other'], ['notices', '#/notices'], ['notice-new', '#/notices/new'],
+    ['workflow', '#/workflow/all'], ['workflow-new', '#/workflow/new'], ['chores-pay', '#/chores/pay'], ['payment-new', '#/payment/'], ['chore-ask', '#/chore-ask/cook/2026-11-07'],
   ];
   for (const [name, route] of auditRoutes) {
     await page.goto(`${appUrl}${route}`);

@@ -766,3 +766,14 @@ details.chore-group > summary { cursor: pointer; list-style: revert; }
 .box-period-label { font-weight: 700; min-width: 6.5rem; text-align: center; }
 .box-period .segmented { margin-left: auto; }
 .segmented.small a { padding: 0.25rem 0.7rem; font-size: 0.82rem; }
+
+/* ワークフロー (2026-11-07) */
+.wf-item .notice-title { flex-wrap: wrap; }
+.tag-type { background: var(--accent-soft); color: var(--accent); font-size: 0.72rem; font-weight: 700; border-radius: 999px; padding: 0.05rem 0.5rem; }
+.tag-status { font-size: 0.72rem; border-radius: 999px; padding: 0.05rem 0.5rem; border: 1px solid var(--line); color: var(--muted); margin-left: auto; }
+.tag-status.status-open { color: var(--critical-ink); border-color: var(--critical-ink); }
+.tag-status.status-rejected, .tag-status.status-cancelled { color: var(--muted); text-decoration: line-through; }
+.ack-status .waiting { color: var(--critical-ink); font-weight: 600; }
+.wf-comment { margin: 0.3rem 0; }
+.wf-actions { margin-top: 0.3rem; }
+.reward-card .actions { margin-top: 0.5rem; }

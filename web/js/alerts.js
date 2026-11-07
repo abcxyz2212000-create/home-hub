@@ -44,5 +44,10 @@ export function householdAlert(ym, c) {
 
 // Changes of the budget, the ratios or the records that the person has not confirmed (every day until they do).
 export function confirmAlert(count) {
-  return { title: '確認待ちの変更', body: `予算・負担率・入金や立替の記録の変更が${count}件、まだ確認されていません。お知らせで内容を見て「確認しました」を押してください。` };
+  return { title: '承認・確認待ち', body: `あなたの返事を待っているものが${count}件あります。「承認・確認」で内容を見て返事をしてください。` };
+}
+
+// The daily question of a chore done for its price (one tap: はい / いいえ).
+export function choreAskAlert(name) {
+  return { title: '今日の家事', body: `今日「${name}」をやりますか？押して「はい」か「いいえ」を選んでください。` };
 }

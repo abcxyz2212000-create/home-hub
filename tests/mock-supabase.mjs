@@ -18,11 +18,11 @@ const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '
 const DEFAULTS = {
   status: 'active', links: [], tags: [], notify_days: {}, mf_linked: false, family_card: false, etc_card: false, auto_renew: false, shared_cost: false, price_history: [],
 };
-const TABLES = ['accounts', 'cards', 'contracts', 'items', 'memberships', 'item_photos', 'settings', 'push_subscriptions', 'notification_log', 'members', 'audit_log', 'chores', 'shared_rules', 'shared_entries', 'transactions', 'deposit_reports', 'shared_attachments', 'account_balances', 'budgets', 'budget_years', 'budget_attachments', 'notices', 'notice_reads'];
+const TABLES = ['accounts', 'cards', 'contracts', 'items', 'memberships', 'item_photos', 'settings', 'push_subscriptions', 'notification_log', 'members', 'audit_log', 'chores', 'shared_rules', 'shared_entries', 'transactions', 'deposit_reports', 'shared_attachments', 'account_balances', 'budgets', 'budget_years', 'budget_attachments', 'notices', 'notice_reads', 'workflow_types', 'workflow_requests', 'workflow_replies', 'chore_records', 'person_payments'];
 const TABLE_DEFAULTS = {
   members: { role: 'member', active: true, email: null, nickname: null, transfer_names: null, gender: null, notify_hour: null, birth_year: null },
   settings: {}, notification_log: {}, push_subscriptions: {}, audit_log: {},
-  chores: { status: 'active', schedule: [], adjust: 1, assignee_type: 'member', assignee_id: null },
+  chores: { status: 'active', schedule: [], adjust: 1, assignee_type: 'member', assignee_id: null, paid_by: null, prompt_hour: null },
   shared_rules: { end_ym: null, memo: null, month_of_year: null, contract_id: null },
   shared_entries: { memo: null, paid_on: null },
   deposit_reports: { memo: null },
@@ -30,6 +30,10 @@ const TABLE_DEFAULTS = {
   shared_attachments: { entry_id: null, report_id: null, bytes: 0 },
   notices: { key: null, from_member: null, to_members: [], body: '', url: null, delivered_at: null, needs_ack: false },
   notice_reads: { hidden: false, acked_at: null },
+  workflow_requests: { key: null, applicant: null, body: '', payload: {}, approvers: [], status: 'open', url: null, decided_at: null, pushed_at: null, result_pushed_at: null },
+  workflow_replies: { comment: null },
+  chore_records: { cancelled_at: null, request_id: null },
+  person_payments: { cancelled_at: null, chore_id: null, memo: null, request_id: null },
   transactions: { contract_id: null, account_id: null, card_id: null, memo: null, counted: true, transfer: false, personal_member_id: null, needs_review: false, settled_entry_id: null, deposit_entry_id: null, deposit_ignored: false },
 };
 const SET_NULL = {
@@ -42,6 +46,13 @@ const SET_NULL = {
 
 export function createMock() {
   const db = Object.fromEntries(TABLES.map((t) => [t, []]));
+  db.workflow_types.push(
+    { key: 'circular', name: '回覧', timing: 'after', reply: 'ack', audience: 'chosen', action: 'none', generic: true, sort: 1 },
+    { key: 'proposal', name: '相談・申請', timing: 'before', reply: 'approve', audience: 'chosen', action: 'none', generic: true, sort: 2 },
+    { key: 'chore_done', name: '家事の実施', timing: 'before', reply: 'approve', audience: 'counterpart', action: 'chore_record', generic: false, sort: 3 },
+    { key: 'payment', name: '個人間の支払い', timing: 'before', reply: 'approve', audience: 'counterpart', action: 'person_payment', generic: false, sort: 4 },
+    { key: 'change', name: '変更の回覧', timing: 'after', reply: 'ack', audience: 'all', action: 'none', generic: false, sort: 5 },
+  );
   const files = new Map();
   const tokens = new Map(); // access token -> user
   const refresh = new Map();
@@ -159,6 +170,80 @@ export function createMock() {
       if (hour !== null && !(Number.isInteger(hour) && hour >= 0 && hour <= 23)) return send(res, 400, { code: '22023', message: 'hour must be 0-23' });
       m.notify_hour = hour;
       return send(res, 204);
+    }
+
+    // ワークフロー: a simplified copy of wf_submit / wf_reply / wf_withdraw in supabase/schema.sql
+    if (['/rest/v1/rpc/wf_submit', '/rest/v1/rpc/wf_reply', '/rest/v1/rpc/wf_withdraw'].includes(url.pathname)) {
+      const user = tokens.get(bearer);
+      const me = user && db.members.find((x) => x.email === user.email && x.active);
+      if (!me) return send(res, 403, { code: '42501', message: 'not a member' });
+      const args = JSON.parse(body.toString() || '{}');
+      const nowIso = new Date().toISOString();
+      const nickOf = (id) => { const m = db.members.find((x) => x.id === id); return m ? (m.nickname || m.name) : '?'; };
+      const md = (d) => `${Number(d.slice(5, 7))}/${Number(d.slice(8, 10))}`;
+      const yenT = (v) => `${v < 0 ? '−' : ''}${Math.abs(v).toLocaleString('ja-JP')}円`;
+      if (url.pathname.endsWith('wf_submit')) {
+        const t = db.workflow_types.find((x) => x.key === args.p_type) || { key: args.p_type, generic: ['circular', 'proposal'].includes(args.p_type) };
+        let payload = args.p_payload || {};
+        let approvers;
+        let title = (args.p_title || '').trim();
+        let status = 'open';
+        if (t.generic) {
+          if (!title) return send(res, 400, { code: '22023', message: 'title required' });
+          approvers = db.members.filter((m) => m.active && m.email && m.id !== me.id && (!(args.p_approvers || []).length || args.p_approvers.includes(m.id))).map((m) => m.id);
+        } else if (args.p_type === 'chore_done') {
+          const c = db.chores.find((x) => x.id === payload.chore_id && x.status === 'active');
+          if (!c || !c.paid_by || !c.assignee_id) return send(res, 400, { code: '22023', message: 'not a chore done for its price' });
+          if (c.assignee_id !== me.id && me.role !== 'admin') return send(res, 403, { code: '42501', message: 'only the assignee asks' });
+          if (db.workflow_requests.some((r) => r.type_key === 'chore_done' && r.payload.chore_id === c.id && r.payload.date === payload.date
+            && (['open', 'done'].includes(r.status) || (r.status === 'withdrawn' && r.payload.skip)))) return send(res, 409, { code: '23505', message: 'already answered for this day' });
+          const value = Math.round(c.cycle === 'adhoc' ? Number(c.points_override || 0) : (Number(c.minutes || 0) / 60) * 1000 * Number(c.adjust || 1));
+          payload = { chore_id: c.id, date: payload.date, skip: Boolean(payload.skip), member_id: c.assignee_id, payer_id: c.paid_by, value };
+          approvers = [c.paid_by];
+          title = payload.skip ? `${nickOf(c.assignee_id)}「${c.name}」は今日はやりません（${md(payload.date)}）` : `${nickOf(c.assignee_id)}「${c.name}」をやります（${md(payload.date)}）`;
+          if (payload.skip) status = 'withdrawn';
+        } else if (args.p_type === 'payment') {
+          payload = { from: payload.from || me.id, to: payload.to, amount: Number(payload.amount), paid_on: payload.paid_on, chore_id: payload.chore_id || null, memo: payload.memo || '' };
+          approvers = [payload.to];
+          title = `${nickOf(payload.from)}から${nickOf(payload.to)}へ ${yenT(payload.amount)}を払いました（${md(payload.paid_on)}）`;
+        } else return send(res, 403, { code: '42501', message: 'this type is not started by hand' });
+        const row = { id: crypto.randomUUID(), type_key: args.p_type, key: null, applicant: me.id, title, body: args.p_body || payload.memo || '', payload, approvers, status,
+          url: '#/workflow', created_at: nowIso, updated_at: nowIso, decided_at: status === 'open' ? null : nowIso, pushed_at: null, result_pushed_at: null };
+        db.workflow_requests.push(row);
+        return send(res, 200, JSON.stringify(row.id));
+      }
+      const r = db.workflow_requests.find((x) => x.id === args.p_request);
+      if (!r) return send(res, 400, { code: '22023', message: 'no such request' });
+      if (url.pathname.endsWith('wf_withdraw')) {
+        if (r.applicant !== me.id && me.role !== 'admin') return send(res, 403, { code: '42501', message: 'not yours' });
+        if (r.status === 'open') Object.assign(r, { status: 'withdrawn', decided_at: nowIso });
+        else if (r.status === 'done') {
+          Object.assign(r, { status: 'cancelled', decided_at: nowIso, result_pushed_at: null });
+          for (const x of [...db.chore_records, ...db.person_payments]) if (x.request_id === r.id) x.cancelled_at = nowIso;
+        }
+        return send(res, 204);
+      }
+      if (!(r.approvers || []).includes(me.id)) return send(res, 403, { code: '42501', message: 'not asked' });
+      if (r.status !== 'open') return send(res, 400, { code: '22023', message: 'already decided' });
+      db.workflow_replies = db.workflow_replies.filter((x) => !(x.request_id === r.id && x.member_id === me.id));
+      db.workflow_replies.push({ request_id: r.id, member_id: me.id, reply: args.p_reply, comment: args.p_comment || null, replied_at: nowIso });
+      if (args.p_reply === 'rejected') {
+        Object.assign(r, { status: 'rejected', decided_at: nowIso });
+        return send(res, 200, JSON.stringify('rejected'));
+      }
+      const answered = db.workflow_replies.filter((x) => x.request_id === r.id && ['approved', 'acked'].includes(x.reply)).length;
+      if (answered < r.approvers.length) return send(res, 200, JSON.stringify('open'));
+      Object.assign(r, { status: 'done', decided_at: nowIso });
+      if (r.type_key === 'chore_done') {
+        const c = db.chores.find((x) => x.id === r.payload.chore_id);
+        db.chore_records.push({ id: crypto.randomUUID(), chore_id: r.payload.chore_id, chore_name: c ? c.name : '?', member_id: r.payload.member_id, payer_id: r.payload.payer_id,
+          done_on: r.payload.date, value: r.payload.value, request_id: r.id, cancelled_at: null, created_at: nowIso });
+      }
+      if (r.type_key === 'payment') {
+        db.person_payments.push({ id: crypto.randomUUID(), from_member: r.payload.from, to_member: r.payload.to, paid_on: r.payload.paid_on, amount: r.payload.amount,
+          chore_id: r.payload.chore_id, memo: r.payload.memo || null, request_id: r.id, cancelled_at: null, created_at: nowIso });
+      }
+      return send(res, 200, JSON.stringify('done'));
     }
 
     if (url.pathname === '/rest/v1/rpc/usage_stats') {
