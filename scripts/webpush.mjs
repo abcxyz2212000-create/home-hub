@@ -1,6 +1,7 @@
 // Web Push sender using only Node.js built-ins.
 // Implements VAPID (RFC 8292) and "aes128gcm" message encryption (RFC 8188 / RFC 8291).
 import crypto from 'node:crypto';
+import { Buffer } from 'node:buffer';
 
 export function b64urlEncode(buf) {
   return Buffer.from(buf).toString('base64url');

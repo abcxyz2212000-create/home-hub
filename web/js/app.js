@@ -518,7 +518,7 @@ async function render() {
 // ---------------------------------------------------------------- お知らせ (2026-11-03)
 //
 // What the app sent to devices and the messages people write, on one page that everyone sees. Messages
-// (also scheduled ones) are pushed by the GitHub Actions job every 10 minutes.
+// (also scheduled ones) are pushed by the Supabase Edge Function "notify" (pg_cron, every 10 minutes).
 
 const NOTICE_TITLE_MAX = 100;
 const NOTICE_BODY_MAX = 1000;
@@ -663,7 +663,7 @@ function renderNotices(sub) {
       : [['消す', async () => { await setNoticeReads([n], { hidden: true }); render(); }]];
   };
   setView('お知らせ', pageHead({ title: 'お知らせ', icon: 'bell', action: h('a', { class: 'button primary', href: '#/notices/new' }, 'メッセージを送る'),
-    help: ['お知らせ', 'アプリから端末に送った通知と、メッセージが並びます。二人とも全部見られます。', 'メッセージは送ってから10分ほどで、宛先の人の端末に通知が届きます（GitHub の都合で遅れることがあります）。予約したものは、その日時のあとに届きます。', '予算・負担率・負担額・入金や立替の記録の変更や入金の報告は、「承認・確認」の「変更の回覧」で確認します。',
+    help: ['お知らせ', 'アプリから端末に送った通知と、メッセージが並びます。二人とも全部見られます。', 'メッセージは送ってから10分ほどで、宛先の人の端末に通知が届きます（自動実行の混み具合で遅れることがあります）。予約したものは、その日時のあとに届きます。', '予算・負担率・負担額・入金や立替の記録の変更や入金の報告は、「承認・確認」の「変更の回覧」で確認します。',
       '「消す」は自分の画面から消すだけで、相手には残ります。1年たったものは全員から消えます。'] }),
     pending.length ? h('section', { class: 'card' }, h('h2', {}, '予約中'), pending.map((n) => noticeItem(n, { pending: true }))) : null,
     h('section', { class: 'card' },
@@ -4626,7 +4626,7 @@ async function fullBackup(status) {
 
 // アプリの更新: the version this device runs (APP_VERSION, the same as the service worker's cache name) and a button that drops
 // the saved files and loads the newest version. Sign-in and notifications stay as they are.
-const APP_VERSION = 'v69'; // = CACHE in sw.js (checked by tests/unit/version.test.mjs)
+const APP_VERSION = 'v70'; // = CACHE in sw.js (checked by tests/unit/version.test.mjs)
 
 function appUpdateSection() {
   const version = h('span', { class: 'num' }, APP_VERSION);
@@ -4742,7 +4742,7 @@ function notifySection() {
         nodes.push(h('button', { type: 'button', onclick: (ev) => busy(ev.currentTarget, async () => { await push.unsubscribe(); toast('この端末の通知を止めました。'); draw(); }) }, 'この端末の通知を止める'));
       }
       nodes.push(h('details', {}, h('summary', {}, '通知の鍵を作り直す'),
-        h('p', { class: 'small' }, '鍵が漏れた・GitHub に登録した秘密の値を無くした場合のみ使います。作り直すと、すべての端末で通知の設定をやり直す必要があります。'),
+        h('p', { class: 'small' }, '鍵が漏れた・Supabase に登録した秘密の値を無くした場合のみ使います。作り直すと、すべての端末で通知の設定をやり直す必要があります。'),
         h('button', { type: 'button', class: 'danger small', onclick: (ev) => busy(ev.currentTarget, () => createKeys(true)) }, '作り直す')));
     }
     body.replaceChildren(...nodes);
@@ -4758,10 +4758,10 @@ function notifySection() {
     await saveSetting('vapid_public_key', keys.publicKey);
     const box = h('textarea', { readonly: true, rows: 2, class: 'secret', value: keys.privateKey, 'aria-label': '秘密の値' });
     body.replaceChildren(
-      h('p', {}, '✓ 鍵を作成しました。下の「秘密の値」を GitHub に登録してください。この値は二度と表示されません。'),
+      h('p', {}, '✓ 鍵を作成しました。下の「秘密の値」を Supabase に登録してください。この値は二度と表示されません。'),
       h('ol', { class: 'small' },
-        h('li', {}, 'GitHub のリポジトリ → Settings → Secrets and variables → Actions を開く'),
-        h('li', {}, '「New repository secret」で Name に VAPID_PRIVATE_KEY、Secret に下の値を貼り付けて保存'),
+        h('li', {}, 'Supabase の管理画面 → Edge Functions → Secrets を開く'),
+        h('li', {}, 'Name に VAPID_PRIVATE_KEY、Value に下の値を貼り付けて保存（同じ名前があれば上書き）'),
         h('li', {}, '登録できたらこの画面を再読み込みし、「この端末で通知を受け取る」を押す')),
       box,
       h('button', { type: 'button', onclick: async () => {

@@ -26,8 +26,13 @@ const NOTICE_RETENTION_DAYS = 365; // お知らせ are kept for a year
 const DEFAULT_HOUR = 8;
 const SHARED_REMIND_DAY = 25; // monthly shared account reminder from this day of the month (sent once per month)
 
+// The environment: process.env when run by Node, the values given to run…() when run elsewhere
+// (the Supabase Edge Function).
+let ENV = typeof process !== 'undefined' && process.env ? process.env : {};
+let exitCode = 0;
+
 function env(name, required = true) {
-  const v = (process.env[name] || '').trim();
+  const v = (ENV[name] || '').trim();
   if (required && !v) throw new Error(`missing environment variable ${name}`);
   return v;
 }
@@ -115,7 +120,7 @@ async function main() {
   if (env('NOTIFY_TEST', false) === '1') {
     const delivered = await sendToAll({ title: 'テスト通知', body: 'HouseHubからの通知は正しく届いています。', url: '#/', tag: 'test' });
     console.log(`Test notification delivered to ${delivered}/${subscriptions.length} device(s).`);
-    if (failures > 0 || delivered === 0) process.exitCode = 1;
+    if (failures > 0 || delivered === 0) exitCode = 1;
     return;
   }
 
@@ -301,10 +306,25 @@ async function main() {
 
   const cutoff = new Date(Date.now() - LOG_RETENTION_DAYS * 86400000).toISOString();
   await db.remove('notification_log', `sent_at=lt.${encodeURIComponent(cutoff)}`);
-  if (failures > 0) process.exitCode = 1;
+  if (failures > 0) exitCode = 1;
 }
 
-main().catch((e) => {
-  console.error(e.message);
-  process.exitCode = 1;
-});
+// Runs once with the given environment; returns 0 when everything was sent, 1 otherwise.
+export async function runNotify(environment) {
+  ENV = environment;
+  exitCode = 0;
+  try {
+    await main();
+  } catch (e) {
+    console.error(e.message);
+    exitCode = 1;
+  }
+  return exitCode;
+}
+
+if (typeof process !== 'undefined' && process.argv && import.meta.url === `file://${process.argv[1]}`) {
+  main().catch((e) => {
+    console.error(e.message);
+    exitCode = 1;
+  }).finally(() => { process.exitCode = exitCode; });
+}

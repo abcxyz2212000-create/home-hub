@@ -16,8 +16,13 @@ import { participantIds } from '../web/js/shared.js';
 import { surveyYearFor, reiwa, lookups, lookupText } from '../web/js/wage.js';
 import { loadVapidKeys, sendPush } from './webpush.mjs';
 
+// The environment: process.env when run by Node, the values given to run…() when run elsewhere
+// (the Supabase Edge Function).
+let ENV = typeof process !== 'undefined' && process.env ? process.env : {};
+let exitCode = 0;
+
 function env(name, required = true) {
-  const v = (process.env[name] || '').trim();
+  const v = (ENV[name] || '').trim();
   if (required && !v) throw new Error(`missing environment variable ${name}`);
   return v;
 }
@@ -61,7 +66,7 @@ async function main() {
   const payload = reminderText(budgetYear, members.filter((m) => ids.includes(m.id)));
   const vapid = loadVapidKeys(env('VAPID_PRIVATE_KEY'));
   const repo = env('GITHUB_REPOSITORY', false);
-  const subject = repo ? `https://${repo.split('/')[0].toLowerCase()}.github.io/${repo.split('/')[1]}/` : 'mailto:noreply@example.com';
+  const subject = env('VAPID_SUBJECT', false) || (repo ? `https://${repo.split('/')[0].toLowerCase()}.github.io/${repo.split('/')[1]}/` : 'mailto:noreply@example.com');
   const admins = new Set(members.filter((m) => m.role === 'admin').map((m) => m.id));
   let delivered = 0;
   for (const sub of subscriptions.filter((s) => admins.has(s.member_id))) {
@@ -74,12 +79,25 @@ async function main() {
     }
   }
   console.log(`Budget ${budgetYear}: reminder delivered to ${delivered} administrator device(s).`);
-  if (delivered === 0) process.exitCode = 1;
+  if (delivered === 0) exitCode = 1;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+// Runs once with the given environment; returns 0 when the reminder reached a device, 1 otherwise.
+export async function runWage(environment) {
+  ENV = environment;
+  exitCode = 0;
+  try {
+    await main();
+  } catch (e) {
+    console.error(e.message);
+    exitCode = 1;
+  }
+  return exitCode;
+}
+
+if (typeof process !== 'undefined' && process.argv && import.meta.url === `file://${process.argv[1]}`) {
   main().catch((e) => {
     console.error(e.message);
-    process.exitCode = 1;
-  });
+    exitCode = 1;
+  }).finally(() => { process.exitCode = exitCode; });
 }
