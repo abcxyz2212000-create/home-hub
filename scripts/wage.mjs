@@ -95,7 +95,7 @@ export async function runWage(environment) {
   return exitCode;
 }
 
-if (typeof process !== 'undefined' && process.argv && import.meta.url === `file://${process.argv[1]}`) {
+if (typeof Deno === 'undefined' && typeof process !== 'undefined' && process.argv && import.meta.url === `file://${process.argv[1]}`) {
   main().catch((e) => {
     console.error(e.message);
     exitCode = 1;
