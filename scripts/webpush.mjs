@@ -30,8 +30,30 @@ export function vapidAuthorization(endpoint, vapid, subject, now = Date.now()) {
   const header = b64urlEncode(JSON.stringify({ typ: 'JWT', alg: 'ES256' }));
   const claims = b64urlEncode(JSON.stringify({ aud, exp: Math.floor(now / 1000) + 12 * 3600, sub: subject }));
   const input = `${header}.${claims}`;
-  const signature = crypto.sign('sha256', Buffer.from(input), { key: vapid.key, dsaEncoding: 'ieee-p1363' });
+  const signature = toRawSignature(crypto.sign('sha256', Buffer.from(input), { key: vapid.key, dsaEncoding: 'ieee-p1363' }));
   return `vapid t=${input}.${b64urlEncode(signature)}, k=${vapid.publicKey}`;
+}
+
+// ES256 in a JWT is r||s (64 bytes). Some runtimes (the Supabase Edge Runtime) ignore dsaEncoding and
+// return DER (SEQUENCE { INTEGER r, INTEGER s }); push services reject that, so DER is converted.
+export function toRawSignature(sig) {
+  const b = Buffer.from(sig);
+  if (b.length === 64) return b;
+  if (b[0] !== 0x30) throw new Error('unexpected ECDSA signature format');
+  let i = 2;
+  if (b[1] & 0x80) i = 2 + (b[1] & 0x7f);
+  const part = () => {
+    if (b[i] !== 0x02) throw new Error('unexpected ECDSA signature format');
+    const len = b[i + 1];
+    let v = b.subarray(i + 2, i + 2 + len);
+    i += 2 + len;
+    while (v.length > 32 && v[0] === 0) v = v.subarray(1);
+    if (v.length > 32) throw new Error('unexpected ECDSA signature format');
+    return Buffer.concat([Buffer.alloc(32 - v.length), v]);
+  };
+  const r = part();
+  const s = part();
+  return Buffer.concat([r, s]);
 }
 
 // Encrypt a payload for one subscription. `ephemeral` and `salt` are injectable for tests.

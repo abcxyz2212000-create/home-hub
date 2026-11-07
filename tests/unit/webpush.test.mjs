@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
-import { encryptPayload, loadVapidKeys, vapidAuthorization, b64urlDecode, b64urlEncode } from '../../scripts/webpush.mjs';
+import { encryptPayload, loadVapidKeys, vapidAuthorization, b64urlDecode, b64urlEncode, toRawSignature } from '../../scripts/webpush.mjs';
 
 // ECDH.getPrivateKey() drops leading zero bytes (about 1 in 256 keys); VAPID keys are always 32 bytes.
 function privateKey32(ecdh) {
@@ -46,4 +46,17 @@ test('VAPID JWT is a valid ES256 signature for the endpoint origin', () => {
 test('rejects malformed keys', () => {
   assert.throws(() => loadVapidKeys('abc'));
   assert.throws(() => encryptPayload('x', 'AAAA', RFC.auth));
+});
+
+test('a DER signature (as some runtimes return it) becomes the 64-byte r||s of a JWT', () => {
+  const { privateKey, publicKey } = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+  for (let n = 0; n < 200; n++) {
+    const msg = Buffer.from(`message ${n}`);
+    const raw = toRawSignature(crypto.sign('sha256', msg, privateKey));
+    assert.equal(raw.length, 64);
+    assert.ok(crypto.verify('sha256', msg, { key: publicKey, dsaEncoding: 'ieee-p1363' }, raw));
+    const p1363 = crypto.sign('sha256', msg, { key: privateKey, dsaEncoding: 'ieee-p1363' });
+    assert.ok(toRawSignature(p1363).equals(p1363));
+  }
+  assert.throws(() => toRawSignature(Buffer.alloc(70)), /unexpected ECDSA signature format/);
 });
