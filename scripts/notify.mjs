@@ -17,7 +17,7 @@ import { collectEvents, dueNotifications, notificationText, todayJST } from '../
 import { dueFor } from '../web/js/chores.js';
 import { participantIds, statement, contribution } from '../web/js/shared.js';
 import { categoryAdjustments, categoryRatioQuery } from '../web/js/budget.js';
-import { missingImports, latestBalance, DEFAULT_LOW_BALANCE } from '../web/js/bank.js';
+import { missingImports, lastImports, latestBalance, DEFAULT_LOW_BALANCE } from '../web/js/bank.js';
 import { lowBalanceAlert, importAlert, choresAlert, householdAlert, confirmAlert, choreAskAlert } from '../web/js/alerts.js';
 import { loadVapidKeys, sendPush } from './webpush.mjs';
 
@@ -163,7 +163,15 @@ async function main() {
   const balances = sharedId ? await db.select('account_balances', `&account_id=eq.${encodeURIComponent(sharedId)}&order=date.desc&limit=1`) : [];
   const lastBalance = latestBalance(balances);
   const threshold = Number.isFinite(Number(settings.low_balance_threshold)) && settings.low_balance_threshold !== null ? Number(settings.low_balance_threshold) : DEFAULT_LOW_BALANCE;
-  const missing = sharedId ? missingImports(today, { mf: settings.mf_imported_at, bank: settings.bank_imported_at }) : [];
+  let missing = [];
+  if (sharedId) {
+    const [newestTx, newestBalance] = await Promise.all([
+      db.select('transactions', '&order=created_at.desc&limit=1'),
+      db.select('account_balances', `&account_id=eq.${encodeURIComponent(sharedId)}&order=created_at.desc&limit=1`),
+    ]);
+    const newest = { mf: newestTx.length ? newestTx[0].created_at : null, bank: newestBalance.length ? newestBalance[0].created_at : null };
+    missing = missingImports(today, lastImports(settings, newest));
+  }
 
   // ワークフロー: open requests and who answered them
   const [openRequests, replies] = await Promise.all([
@@ -202,7 +210,7 @@ async function main() {
     }
     // monthly imports not done: the person who imports, every day until done
     if (missing.length && g === settings.import_reminder_member) {
-      items.push({ mark: `import:${today}:${g}`, notice: `import:${today}`, to: [g], payload: { ...importAlert(missing), url: '#/flow/ext', tag: 'imports' }, log: 'import reminder' });
+      items.push({ mark: `import:${today}:${g}`, notice: `import:${today}`, to: [g], payload: { ...importAlert(missing, today), url: '#/flow/ext', tag: 'imports' }, log: 'import reminder' });
     }
     if (g === 'none') return items;
     // requests waiting for this person's answer: a reminder every day until they answer (not kept as an お知らせ)

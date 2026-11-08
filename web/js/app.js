@@ -14,7 +14,7 @@ import {
 import { createZip } from './zip.js';
 import { compressImage } from './image.js';
 import { parseOcrText, receiptMemo, recognizeImage } from './ocr.js';
-import { parseBankRows, monthEndBalances, latestBalance, missingImports, DEFAULT_LOW_BALANCE } from './bank.js';
+import { parseBankRows, monthEndBalances, latestBalance, missingImports, lastImports, DEFAULT_LOW_BALANCE } from './bank.js';
 import { lowBalanceAlert, importAlert } from './alerts.js';
 import { surveyYearFor, reiwa, overviewUrl, lookups, lookupText } from './wage.js';
 import { MF_CATEGORIES, MAX_BUDGET, percents, proposal, baseRule, planBaseChange, advanceCategory, monthActual, compareRows, incomeOf, applyFrom,
@@ -336,7 +336,7 @@ function recordLink(ledger, record) {
 // ---------------------------------------------------------------- data loading
 
 async function loadAll() {
-  const [accounts, cards, contracts, items, memberships, photos, settings, members, chores, sharedRules, sharedEntries, depositReports, attachments, balances, budgets, budgetYears, budgetAttachments, notices, noticeReads, wfTypes, wfRequests, wfReplies, choreRecords, personPayments] = await Promise.all([
+  const [accounts, cards, contracts, items, memberships, photos, settings, members, chores, sharedRules, sharedEntries, depositReports, attachments, balances, budgets, budgetYears, budgetAttachments, notices, noticeReads, wfTypes, wfRequests, wfReplies, choreRecords, personPayments, newestTx] = await Promise.all([
     db.selectAll('accounts'),
     db.selectAll('cards'),
     db.selectAll('contracts'),
@@ -361,6 +361,7 @@ async function loadAll() {
     db.selectAll('workflow_replies', 'replied_at.asc'),
     db.selectAll('chore_records', 'done_on.asc'),
     db.selectAll('person_payments', 'paid_on.asc'),
+    db.selectWhere('transactions', 'order=created_at.desc&limit=1'),
   ]);
   Object.assign(state, { wfTypes, wfRequests, wfReplies, choreRecords, personPayments });
   state.data = { accounts, cards, contracts, items, memberships };
@@ -373,6 +374,7 @@ async function loadAll() {
   state.depositReports = depositReports;
   state.attachments = attachments;
   state.balances = balances;
+  state.newestTxAt = newestTx.length ? newestTx[0].created_at : null;
   state.budgets = budgets;
   state.budgetYears = budgetYears;
   state.budgetAttachments = budgetAttachments;
@@ -401,6 +403,16 @@ async function reloadLedger(ledger) {
 async function saveSetting(key, value) {
   await db.upsertRows('settings', [{ key, value }], 'key');
   state.settings[key] = value;
+}
+
+// The time of an import, for the monthly reminder. Only administrators may write settings; when saving is
+// refused the import goes on (the reminder also looks at the newest rows themselves).
+async function saveImportTime(key) {
+  try {
+    await saveSetting(key, new Date().toISOString());
+  } catch (e) {
+    console.warn(`could not save ${key}: ${e.message}`);
+  }
 }
 
 function resetState() {
@@ -1662,8 +1674,9 @@ function mfImportBox() {
     const save = h('button', { type: 'button', class: 'primary', onclick: (ev) => busy(ev.currentTarget, async () => {
       const saved = [];
       for (let i = 0; i < rows.length; i += 500) saved.push(...await db.upsertRows('transactions', rows.slice(i, i + 500), 'mf_id'));
+      state.newestTxAt = new Date().toISOString();
+      await saveImportTime('mf_imported_at');
       const recorded = await recordDeposits(depositCandidates(saved, state.members));
-      await saveSetting('mf_imported_at', new Date().toISOString());
       clearTxCache();
       await loadAdjustments();
       toast(`取り込みました（追加 ${added}件、更新 ${rows.length - added}件${recorded ? `、個人との入出金の記録 ${recorded}件` : ''}）。`);
@@ -1719,9 +1732,11 @@ function alertCards() {
   const mine = me();
   const remindTo = state.settings.import_reminder_member;
   if (sharedAccountId() && (isAdmin() || (mine && mine.id === remindTo))) {
-    const missing = missingImports(todayJST(), { mf: state.settings.mf_imported_at, bank: state.settings.bank_imported_at });
+    const shared = sharedAccountId();
+    const newestBalance = state.balances.filter((b) => b.account_id === shared).map((b) => b.created_at).sort().pop() || null;
+    const missing = missingImports(todayJST(), lastImports(state.settings, { mf: state.newestTxAt, bank: newestBalance }));
     if (missing.length) {
-      out.push(alertCard(importAlert(missing), 'alert-card', h('a', { class: 'button small', href: `#/flow/ext/${thisYM()}` }, '取り込む')));
+      out.push(alertCard(importAlert(missing, todayJST()), 'alert-card', h('a', { class: 'button small', href: `#/flow/ext/${thisYM()}` }, '取り込む')));
     }
   }
   // a low balance is an お知らせ from the app (made when the bank statement is imported)
@@ -1760,7 +1775,7 @@ function bankImportBox() {
       for (let i = 0; i < balances.length; i += 500) {
         await db.upsertRows('account_balances', balances.slice(i, i + 500).map((b) => ({ account_id: accountId, date: b.date, balance: b.balance })), 'account_id,date');
       }
-      await saveSetting('bank_imported_at', new Date().toISOString());
+      await saveImportTime('bank_imported_at');
       state.balances = await db.selectAll('account_balances', 'date.asc');
       await recordLowBalance();
       toast(`残高を取り込みました（${balances.length}日分）。`);
@@ -4626,7 +4641,7 @@ async function fullBackup(status) {
 
 // アプリの更新: the version this device runs (APP_VERSION, the same as the service worker's cache name) and a button that drops
 // the saved files and loads the newest version. Sign-in and notifications stay as they are.
-const APP_VERSION = 'v70'; // = CACHE in sw.js (checked by tests/unit/version.test.mjs)
+const APP_VERSION = 'v71'; // = CACHE in sw.js (checked by tests/unit/version.test.mjs)
 
 function appUpdateSection() {
   const version = h('span', { class: 'num' }, APP_VERSION);

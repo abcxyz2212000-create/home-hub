@@ -232,7 +232,7 @@ test('low balance to everyone once per balance date; monthly import reminder to 
     assert.deepEqual(low.map((p) => p.id).sort(), ['d-haru', 'd-shin'], 'everyone');
     assert.equal(low[0].body, '残高 26,130円（10/23時点）。目安の10万円を下回っています。');
     const imp = got.filter((p) => p.title === '明細の取り込み');
-    assert.deepEqual(imp.map((p) => [p.id, p.body]), [['d-shin', '今月の銀行の残高がまだです。取り込んでください。']], 'only the bank balance is missing, only to しん');
+    assert.deepEqual(imp.map((p) => [p.id, p.body]), [['d-shin', '10月分の銀行の残高がまだ取り込まれていません（前回の取り込み なし）。']], 'only the bank balance is missing, only to しん');
     assert.doesNotMatch(r.stdout + r.stderr, /26,130/, 'amounts never appear in public logs');
     await run('node', [SCRIPT], { env: { ...env, NOTIFY_DATE: '2026-11-07' } });
     const after = mock.pushes.map((p) => decrypt(p.body, ua, auth));

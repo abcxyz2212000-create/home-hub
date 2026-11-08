@@ -25,8 +25,14 @@ export function lowBalanceAlert(last, threshold, today) {
   };
 }
 
-export function importAlert(missing) {
-  return { title: '明細の取り込み', body: `今月の${missing.join('・')}がまだです。取り込んでください。` };
+// missing: from missingImports(); today: YYYY-MM-DD (Japan time)
+export function importAlert(missing, today) {
+  const month = Number(today.slice(5, 7)) === 1 ? 12 : Number(today.slice(5, 7)) - 1;
+  const when = (k) => (k.last ? shortDate(k.last, today) : 'なし');
+  const last = missing.length === 1
+    ? `前回の取り込み ${when(missing[0])}`
+    : `前回の取り込み：${missing.map((k) => `${k.short} ${when(k)}`).join('、')}`;
+  return { title: '明細の取り込み', body: `${month}月分の${missing.map((k) => k.label).join('・')}がまだ取り込まれていません（${last}）。` };
 }
 
 export function choresAlert(names) {
