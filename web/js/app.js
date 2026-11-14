@@ -14,7 +14,7 @@ import {
 import { createZip } from './zip.js';
 import { compressImage } from './image.js';
 import { parseOcrText, receiptMemo, recognizeImage } from './ocr.js';
-import { parseBankRows, monthEndBalances, latestBalance, missingImports, DEFAULT_LOW_BALANCE } from './bank.js';
+import { parseBankRows, monthEndBalances, latestBalance, missingImports, lastImports, DEFAULT_LOW_BALANCE } from './bank.js';
 import { lowBalanceAlert, importAlert } from './alerts.js';
 import { surveyYearFor, reiwa, overviewUrl, lookups, lookupText } from './wage.js';
 import { MF_CATEGORIES, MAX_BUDGET, percents, proposal, baseRule, planBaseChange, advanceCategory, monthActual, compareRows, incomeOf, applyFrom,
@@ -53,6 +53,11 @@ const state = {
   sharedEntries: [],
   adjustEntries: [], // per-category ratio corrections, worked out from the statement (not stored)
   notices: [], // お知らせ (newest first)
+  wfTypes: [], // ワークフロー: types, requests (newest first) and answers
+  wfRequests: [],
+  wfReplies: [],
+  choreRecords: [], // 家事の対価: chores done (approved) and payments between people
+  personPayments: [],
   noticeReads: [],
   depositReports: [], // 入金報告 (reference only)
   attachments: [], // images of one-off items and deposit reports
@@ -331,7 +336,7 @@ function recordLink(ledger, record) {
 // ---------------------------------------------------------------- data loading
 
 async function loadAll() {
-  const [accounts, cards, contracts, items, memberships, photos, settings, members, chores, sharedRules, sharedEntries, depositReports, attachments, balances, budgets, budgetYears, budgetAttachments, notices, noticeReads] = await Promise.all([
+  const [accounts, cards, contracts, items, memberships, photos, settings, members, chores, sharedRules, sharedEntries, depositReports, attachments, balances, budgets, budgetYears, budgetAttachments, notices, noticeReads, wfTypes, wfRequests, wfReplies, choreRecords, personPayments, newestTx] = await Promise.all([
     db.selectAll('accounts'),
     db.selectAll('cards'),
     db.selectAll('contracts'),
@@ -351,7 +356,14 @@ async function loadAll() {
     db.selectAll('budget_attachments', 'created_at.asc'),
     db.selectAll('notices', 'deliver_at.desc'),
     db.selectAll('notice_reads', 'read_at.asc'),
+    db.selectAll('workflow_types', 'sort.asc'),
+    db.selectAll('workflow_requests', 'created_at.desc'),
+    db.selectAll('workflow_replies', 'replied_at.asc'),
+    db.selectAll('chore_records', 'done_on.asc'),
+    db.selectAll('person_payments', 'paid_on.asc'),
+    db.selectWhere('transactions', 'order=created_at.desc&limit=1'),
   ]);
+  Object.assign(state, { wfTypes, wfRequests, wfReplies, choreRecords, personPayments });
   state.data = { accounts, cards, contracts, items, memberships };
   state.photos = photos;
   state.settings = Object.fromEntries(settings.map((s) => [s.key, s.value]));
@@ -362,6 +374,7 @@ async function loadAll() {
   state.depositReports = depositReports;
   state.attachments = attachments;
   state.balances = balances;
+  state.newestTxAt = newestTx.length ? newestTx[0].created_at : null;
   state.budgets = budgets;
   state.budgetYears = budgetYears;
   state.budgetAttachments = budgetAttachments;
@@ -390,6 +403,16 @@ async function reloadLedger(ledger) {
 async function saveSetting(key, value) {
   await db.upsertRows('settings', [{ key, value }], 'key');
   state.settings[key] = value;
+}
+
+// The time of an import, for the monthly reminder. Only administrators may write settings; when saving is
+// refused the import goes on (the reminder also looks at the newest rows themselves).
+async function saveImportTime(key) {
+  try {
+    await saveSetting(key, new Date().toISOString());
+  } catch (e) {
+    console.warn(`could not save ${key}: ${e.message}`);
+  }
 }
 
 function resetState() {
@@ -498,13 +521,16 @@ async function render() {
   else if (page === 'chore-edit') renderChoreEdit(a);
   else if (page === 'member') renderMember(a);
   else if (page === 'notices') renderNotices(a);
+  else if (page === 'workflow') renderWorkflow(a);
+  else if (page === 'chore-ask') renderChoreAsk(a, b);
+  else if (page === 'payment') renderPaymentForm(a);
   else location.hash = '#/';
 }
 
 // ---------------------------------------------------------------- お知らせ (2026-11-03)
 //
 // What the app sent to devices and the messages people write, on one page that everyone sees. Messages
-// (also scheduled ones) are pushed by the GitHub Actions job every 10 minutes.
+// (also scheduled ones) are pushed by the Supabase Edge Function "notify" (pg_cron, every 10 minutes).
 
 const NOTICE_TITLE_MAX = 100;
 const NOTICE_BODY_MAX = 1000;
@@ -546,11 +572,12 @@ function updateBell() {
   if (!bell) return;
   bell.hidden = !me();
   if (!me()) return;
-  const count = attentionNotices().length;
+  const count = attentionNotices().length + myTurn().length;
   const badge = bell.querySelector('.bell-count');
   badge.hidden = count === 0;
   badge.textContent = count > 99 ? '99+' : String(count);
-  bell.setAttribute('aria-label', count ? `お知らせ（未読・確認待ち ${count}件）` : 'お知らせ');
+  bell.setAttribute('aria-label', count ? `お知らせ・承認（未読・返事待ち ${count}件）` : 'お知らせ');
+  bell.setAttribute('href', myTurn().length ? '#/workflow' : '#/notices');
 }
 
 // お知らせ change without this app (the job, the database, the other person): fetch them again at most
@@ -559,17 +586,26 @@ let noticesFetchedAt = Date.now();
 function refreshNoticesSoon(page) {
   if (Date.now() - noticesFetchedAt < 30000) return;
   noticesFetchedAt = Date.now();
-  const before = JSON.stringify([state.notices.map((n) => [n.id, n.body, n.delivered_at]), state.noticeReads]);
+  const snapshot = () => JSON.stringify([state.notices.map((n) => [n.id, n.body, n.delivered_at]), state.noticeReads,
+    state.wfRequests.map((r) => [r.id, r.status, r.body]), state.wfReplies.length]);
+  const before = snapshot();
   reloadNotices().then(() => {
     updateBell();
-    const changed = JSON.stringify([state.notices.map((n) => [n.id, n.body, n.delivered_at]), state.noticeReads]) !== before;
-    if (changed && ['home', 'notices'].includes(page) && route().page === page) render();
+    const changed = snapshot() !== before;
+    if (changed && ['home', 'notices', 'workflow', 'chores'].includes(page) && route().page === page) render();
   }).catch((e) => console.error('refresh notices failed', e));
 }
 
 async function reloadNotices() {
   noticesFetchedAt = Date.now();
   [state.notices, state.noticeReads] = await Promise.all([db.selectAll('notices', 'deliver_at.desc'), db.selectAll('notice_reads', 'read_at.asc')]);
+  await reloadWorkflow();
+}
+
+async function reloadWorkflow() {
+  [state.wfRequests, state.wfReplies, state.choreRecords, state.personPayments] = await Promise.all([
+    db.selectAll('workflow_requests', 'created_at.desc'), db.selectAll('workflow_replies', 'replied_at.asc'),
+    db.selectAll('chore_records', 'done_on.asc'), db.selectAll('person_payments', 'paid_on.asc')]);
 }
 
 function recipientsText(n) {
@@ -639,7 +675,7 @@ function renderNotices(sub) {
       : [['消す', async () => { await setNoticeReads([n], { hidden: true }); render(); }]];
   };
   setView('お知らせ', pageHead({ title: 'お知らせ', icon: 'bell', action: h('a', { class: 'button primary', href: '#/notices/new' }, 'メッセージを送る'),
-    help: ['お知らせ', 'アプリから端末に送った通知と、メッセージが並びます。二人とも全部見られます。', 'メッセージは送ってから10分ほどで、宛先の人の端末に通知が届きます（GitHub の都合で遅れることがあります）。予約したものは、その日時のあとに届きます。', '予算・負担率・負担額・入金や立替の記録が変わったときと、入金の報告があったときは、全員に「確認待ち」のお知らせが届きます。内容を見て「確認しました」を押してください。確認するまで、毎日端末にお知らせします。',
+    help: ['お知らせ', 'アプリから端末に送った通知と、メッセージが並びます。二人とも全部見られます。', 'メッセージは送ってから10分ほどで、宛先の人の端末に通知が届きます（自動実行の混み具合で遅れることがあります）。予約したものは、その日時のあとに届きます。', '予算・負担率・負担額・入金や立替の記録の変更や入金の報告は、「承認・確認」の「変更の回覧」で確認します。',
       '「消す」は自分の画面から消すだけで、相手には残ります。1年たったものは全員から消えます。'] }),
     pending.length ? h('section', { class: 'card' }, h('h2', {}, '予約中'), pending.map((n) => noticeItem(n, { pending: true }))) : null,
     h('section', { class: 'card' },
@@ -666,11 +702,11 @@ function renderNotices(sub) {
 // ホーム's page head: the same as the top bar (who is logged in, and the お知らせ to look at).
 function homeHeadInfo() {
   const m = me();
-  const count = attentionNotices().length;
+  const count = attentionNotices().length + myTurn().length;
   return h('div', { class: 'home-head-info' },
     h('a', { class: `home-user ${personClass(m.id)}`, href: '#/settings/account' }, nick(m),
       m.role === 'admin' && !/管理者/.test(nick(m)) ? h('span', { class: 'head-role' }, '管理者') : null),
-    h('a', { class: 'home-bell', href: '#/notices', 'aria-label': count ? `お知らせ（未読・確認待ち ${count}件）` : 'お知らせ' }, icon('bell'),
+    h('a', { class: 'home-bell', href: myTurn().length ? '#/workflow' : '#/notices', 'aria-label': count ? `お知らせ（未読・確認待ち ${count}件）` : 'お知らせ' }, icon('bell'),
       count ? h('span', { class: 'bell-count' }, count > 99 ? '99+' : String(count)) : null));
 }
 
@@ -718,6 +754,291 @@ function renderNoticeForm() {
       h('div', { class: 'field' }, h('label', { for: 'notice-title' }, 'タイトル', h('span', { class: 'req' }, ' *')), title),
       h('div', { class: 'field' }, h('label', { for: 'notice-body' }, '本文'), body),
       h('div', { class: 'field' }, h('label', { for: 'notice-at' }, '送る日時（空欄ならすぐ）'), at),
+      error),
+    h('div', { class: 'actions sticky-actions' }, send));
+}
+
+// ---------------------------------------------------------------- ワークフロー (2026-11-07)
+//
+// One mechanism for asking others: a type says when its content takes effect, how people answer and who
+// answers; requests are made and answered only through the database functions (wf_submit, wf_reply,
+// wf_withdraw), which also do what an approved request does (a chore counted, a payment recorded).
+
+const WF_STATUS = { open: '返事待ち', done: '完了', rejected: '却下', withdrawn: '取り下げ', cancelled: '取り消し' };
+const WF_REPLY = { approved: '承認', rejected: '却下', acked: '確認' };
+const WF_TABS = { mine: '自分の番', applied: '自分の申請', all: 'すべて' };
+
+const wfType = (key) => state.wfTypes.find((t) => t.key === key) || { key, name: key, reply: 'ack', timing: 'after' };
+const wfReplyOf = (r, memberId) => state.wfReplies.find((x) => x.request_id === r.id && x.member_id === memberId);
+// requests waiting for my answer
+const myTurn = () => (me() ? state.wfRequests.filter((r) => r.status === 'open' && (r.approvers || []).includes(me().id) && !wfReplyOf(r, me().id)) : []);
+
+async function wfCall(name, args, done) {
+  try {
+    const result = await db.rpc(name, args);
+    await reloadWorkflow();
+    updateBell();
+    if (done) toast(done);
+    return result;
+  } catch (e) {
+    const text = String((e && (e.detail || e.message)) || '');
+    if (/already answered for this day/.test(text)) toast('この日はもう返事をしています。', 'error');
+    else if (/already decided/.test(text)) toast('もう決まっています。画面を更新してください。', 'error');
+    else if (/not asked|not yours|only the/.test(text)) toast('この操作はできません。', 'error');
+    else handleError(e);
+    throw e;
+  }
+}
+
+// What a request is about, in a line (家事の実施 and 支払い).
+function wfDetail(r) {
+  const p = r.payload || {};
+  if (r.type_key === 'chore_done' && p.value !== undefined) return `1回の価値 ${yen(p.value)}（${memberNick(p.payer_id)}が${memberNick(p.member_id)}に払う）`;
+  if (r.type_key === 'payment' && p.amount) {
+    const chore = p.chore_id ? state.chores.find((c) => c.id === p.chore_id) : null;
+    return `${memberNick(p.from)} → ${memberNick(p.to)} ${yen(p.amount)}（${dateText(p.paid_on)}）${chore ? `・${chore.name}の分` : ''}`;
+  }
+  return null;
+}
+
+function wfItem(r) {
+  const t = wfType(r.type_key);
+  const mine = me() && (r.approvers || []).includes(me().id) && r.status === 'open' && !wfReplyOf(r, me().id);
+  const comment = mine && t.reply === 'approve' ? h('input', { type: 'text', maxlength: 1000, placeholder: 'コメント（任意）', 'aria-label': 'コメント', class: 'wf-comment' }) : null;
+  const act = (label, fn, cls = 'small') => h('button', { type: 'button', class: cls, onclick: (ev) => busy(ev.currentTarget, async () => {
+    await fn();
+    render();
+  }) }, label);
+  const actions = [];
+  if (mine && t.reply === 'ack') actions.push(act('確認しました', () => wfCall('wf_reply', { p_request: r.id, p_reply: 'acked', p_comment: null }, '確認しました。'), 'small primary'));
+  if (mine && t.reply === 'approve') {
+    actions.push(act('承認', () => wfCall('wf_reply', { p_request: r.id, p_reply: 'approved', p_comment: comment.value }, '承認しました。'), 'small primary'));
+    actions.push(act('却下', () => wfCall('wf_reply', { p_request: r.id, p_reply: 'rejected', p_comment: comment.value }, '却下しました。'), 'small danger'));
+  }
+  const canManage = me() && (r.applicant === me().id || isAdmin());
+  if (r.status === 'open' && canManage && r.type_key !== 'change' && r.applicant) {
+    actions.push(act('取り下げ', async () => {
+      if (!confirm('この申請を取り下げますか？')) return;
+      await wfCall('wf_withdraw', { p_request: r.id }, '取り下げました。');
+    }, 'small'));
+  }
+  if (r.status === 'done' && canManage && ['chore_done', 'payment'].includes(r.type_key)) {
+    actions.push(act('取り消し', async () => {
+      if (!confirm('承認済みの記録を取り消します（数えなくなります）。よろしいですか？')) return;
+      await wfCall('wf_withdraw', { p_request: r.id }, '取り消しました。相手に通知します。');
+    }, 'small danger'));
+  }
+  const who = (r.approvers || []).map((id) => {
+    const x = wfReplyOf(r, id);
+    return h('span', { class: x ? (x.reply === 'rejected' ? 'not-acked' : 'acked') : 'waiting' },
+      `${memberNick(id)} ${x ? `${WF_REPLY[x.reply]}（${formatTime(x.replied_at)}）` : '未'}${x && x.comment ? `「${x.comment}」` : ''}`);
+  });
+  const detail = wfDetail(r);
+  return h('div', { class: `notice wf-item${mine ? ' unread needs-ack' : ''}` },
+    h('div', { class: 'notice-title' }, h('span', { class: 'tag tag-type' }, t.name), r.title,
+      h('span', { class: `tag tag-status status-${r.status}` }, WF_STATUS[r.status] || r.status)),
+    r.body ? h('p', { class: 'notice-body' }, r.body) : null,
+    detail ? h('p', { class: 'small' }, detail) : null,
+    h('p', { class: 'ack-status small' }, `${t.reply === 'ack' ? '確認' : '承認'}：`, who.flatMap((x, i) => (i ? ['・', x] : [x]))),
+    h('div', { class: 'notice-actions muted small' },
+      h('span', {}, `${r.applicant ? memberNick(r.applicant) : 'アプリ'}・${formatTime(r.created_at)}`),
+      r.url && /^#\//.test(r.url) && r.url !== '#/workflow' ? h('a', { href: r.url }, '開く') : null),
+    comment,
+    actions.length ? h('div', { class: 'button-row wf-actions' }, actions) : null);
+}
+
+function renderWorkflow(sub) {
+  if (sub === 'new') {
+    renderWorkflowForm();
+    return;
+  }
+  const tab = WF_TABS[sub] ? sub : (myTurn().length ? 'mine' : 'applied');
+  const meId = me().id;
+  const list = tab === 'mine' ? myTurn()
+    : tab === 'applied' ? state.wfRequests.filter((r) => r.applicant === meId)
+      : state.wfRequests;
+  const tabs = Object.entries(WF_TABS).map(([key, label]) => ({ key, label: key === 'mine' && myTurn().length ? `${label}（${myTurn().length}）` : label, href: `#/workflow/${key}` }));
+  setView('承認・確認', pageHead({ title: '承認・確認', icon: 'bell', tabs, tab,
+    action: h('a', { class: 'button primary', href: '#/workflow/new' }, '新しい申請'),
+    help: ['承認・確認', '回覧（確認だけ）や相談・申請（承認・却下）、家事の実施、個人間の支払い、変更の回覧が並びます。',
+      '「自分の番」は、あなたの返事を待っているものです。返事をするまで、毎日端末にお知らせします。',
+      '回覧と変更の回覧は、もう反映されたものを確認するだけです。相談・申請と家事の実施・支払いは、承認されたら決まります（却下が1人でもあれば却下）。'] }),
+    h('section', { class: 'card' }, list.length ? list.slice(0, 200).map(wfItem) : h('p', { class: 'muted' }, tab === 'mine' ? '返事を待っているものはありません。' : 'まだありません。')));
+}
+
+function renderWorkflowForm() {
+  const types = state.wfTypes.filter((t) => t.generic);
+  const type = h('select', { id: 'wf-type' }, types.map((t) => h('option', { value: t.key }, `${t.name}（${t.reply === 'ack' ? '確認だけ' : '承認・却下'}）`)));
+  const people = state.members.filter((m) => m.active && m.email && m.id !== me().id).sort(meFirst);
+  const boxes = people.map((m) => ({ m, input: h('input', { type: 'checkbox', value: m.id, checked: true, id: `wf-to-${m.id}` }) }));
+  const title = h('input', { type: 'text', id: 'wf-title', maxlength: 100, required: true });
+  const body = h('textarea', { id: 'wf-body', maxlength: 2000, rows: 5 });
+  const error = h('p', { class: 'error', role: 'alert' });
+  const send = h('button', { type: 'button', class: 'primary', onclick: (ev) => busy(ev.currentTarget, async () => {
+    error.textContent = '';
+    const to = boxes.filter((b) => b.input.checked).map((b) => b.m.id);
+    if (!title.value.trim()) error.textContent = 'タイトルを入力してください。';
+    else if (to.length === 0) error.textContent = '回す相手を選んでください。';
+    if (error.textContent) return;
+    await wfCall('wf_submit', { p_type: type.value, p_title: title.value.trim(), p_body: body.value.trim(), p_payload: {}, p_approvers: to }, '送りました。相手に通知します。');
+    location.hash = '#/workflow/applied';
+  }) }, '送る');
+  setView('新しい申請', pageHead({ title: '新しい申請', icon: 'bell', back: { href: '#/workflow', text: '承認・確認へ' } }),
+    h('section', { class: 'card' },
+      h('div', { class: 'field' }, h('label', { for: 'wf-type' }, '種類'), type,
+        h('p', { class: 'muted small' }, '回覧：決めたこと・変えたことを知らせ、相手が「確認しました」を押します。相談・申請：決める前に了承をとります。全員が承認したら決定、1人でも却下したら却下です（アプリの中身は変わりません）。')),
+      h('fieldset', { class: 'field' }, h('legend', {}, '回す相手'), h('div', { class: 'recipients' },
+        boxes.map((b) => h('label', { for: `wf-to-${b.m.id}` }, b.input, nick(b.m))))),
+      h('div', { class: 'field' }, h('label', { for: 'wf-title' }, 'タイトル', h('span', { class: 'req' }, ' *')), title),
+      h('div', { class: 'field' }, h('label', { for: 'wf-body' }, '内容'), body),
+      error),
+    h('div', { class: 'actions sticky-actions' }, send));
+}
+
+// ホーム: what waits for my answer (up to 10).
+function myTurnCard() {
+  const list = myTurn();
+  if (list.length === 0) return null;
+  return h('section', { class: 'card unread-notices' },
+    sectionHead('check', `あなたの返事待ち（${list.length}件）`, { href: '#/workflow/mine', text: '承認・確認へ' }),
+    list.slice(0, 10).map(wfItem));
+}
+
+// ---------------------------------------------------------------- 家事の対価 (2026-11-07)
+//
+// A chore can be done for its price: the one who asks (paid_by) pays the assignee the chore's value of one
+// time for each time that was asked for (家事の実施) and approved. A daily question (prompt_hour) asks the
+// assignee whether they do it today. Payments between people (個人間の支払い) are approved by who got them.
+
+const isPaidChore = (c) => Boolean(c && c.paid_by && c.assignee_type === 'member' && c.assignee_id && c.status !== 'closed');
+const hourJST = () => Number(new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Tokyo', hour: 'numeric', hourCycle: 'h23' }).format(new Date()));
+const choreAnswer = (c, date) => state.wfRequests.find((r) => r.type_key === 'chore_done' && r.payload && r.payload.chore_id === c.id && r.payload.date === date
+  && (r.status === 'open' || r.status === 'done' || (r.status === 'withdrawn' && r.payload.skip)));
+
+// The chores whose daily question waits for my answer today.
+function pendingChoreAsks() {
+  if (!me()) return [];
+  const today = todayJST();
+  return state.chores.filter((c) => isPaidChore(c) && c.assignee_id === me().id && Number.isInteger(c.prompt_hour)
+    && c.prompt_hour <= hourJST() && !choreAnswer(c, today));
+}
+
+function choreAskButtons(c, date, after) {
+  const ask = (skip) => (ev) => busy(ev.currentTarget, async () => {
+    await wfCall('wf_submit', { p_type: 'chore_done', p_title: null, p_body: null, p_payload: { chore_id: c.id, date, skip }, p_approvers: null },
+      skip ? '今日はやらないと記録しました。' : `「${c.name}」をやると伝えました。${memberNick(c.paid_by)}の承認を待ちます。`);
+    if (after) location.hash = after;
+    else render();
+  });
+  return h('div', { class: 'button-row equal' },
+    h('button', { type: 'button', class: 'primary', onclick: ask(false) }, 'はい（やります）'),
+    h('button', { type: 'button', onclick: ask(true) }, 'いいえ'));
+}
+
+function choreAskCards() {
+  return pendingChoreAsks().map((c) => h('section', { class: 'card notice' },
+    h('p', { class: 'with-icon alert-title' }, icon('chore'), `今日「${c.name}」をやりますか？`),
+    h('p', { class: 'muted small' }, `はいを押すと、${memberNick(c.paid_by)}に承認を頼みます（承認されたら1回 ${yen(choreValue(c))}）。`),
+    choreAskButtons(c, todayJST())));
+}
+
+function renderChoreAsk(id, date) {
+  const c = state.chores.find((x) => x.id === id);
+  const day = /^\d{4}-\d{2}-\d{2}$/.test(date || '') ? date : todayJST();
+  const head = pageHead({ title: '今日の家事', icon: 'chores', back: { href: '#/', text: 'ホームへ' } });
+  if (!isPaidChore(c)) {
+    setView('今日の家事', head, h('section', { class: 'card' }, h('p', {}, 'この家事は、対価のある家事ではありません。')));
+    return;
+  }
+  const answer = choreAnswer(c, day);
+  setView('今日の家事', head, h('section', { class: 'card' },
+    h('h2', {}, `${dateText(day)}「${c.name}」をやりますか？`),
+    answer ? h('p', {}, `もう返事をしています：${answer.status === 'withdrawn' ? 'いいえ' : `はい（${WF_STATUS[answer.status]}）`}`)
+      : c.assignee_id !== me().id && !isAdmin() ? h('p', { class: 'muted' }, `${memberNick(c.assignee_id)}が答えます。`)
+        : [h('p', { class: 'muted small' }, `はいを押すと、${memberNick(c.paid_by)}に承認を頼みます（承認されたら1回 ${yen(choreValue(c))}）。`), choreAskButtons(c, day, '#/')]));
+}
+
+// 家事の対価 of a month or a year, per pair (who pays → who does): times, value, paid, and unpaid at the end.
+function choreRewardView(period) {
+  const isYear = period.length === 4;
+  const inPeriod = (d) => d.startsWith(isYear ? `${period}-` : period);
+  const endOf = isYear ? `${period}-12-31` : `${period}-31`;
+  const records = state.choreRecords.filter((r) => !r.cancelled_at);
+  const payments = state.personPayments.filter((p) => !p.cancelled_at);
+  const pairs = new Map();
+  const pairOf = (payer, doer) => {
+    const k = `${payer}>${doer}`;
+    if (!pairs.has(k)) pairs.set(k, { payer, doer, chores: new Map(), paid: 0, owedToEnd: 0, paidToEnd: 0 });
+    return pairs.get(k);
+  };
+  for (const r of records) {
+    const pr = pairOf(r.payer_id, r.member_id);
+    if (r.done_on <= endOf) pr.owedToEnd += r.value;
+    if (inPeriod(r.done_on)) {
+      const c = pr.chores.get(r.chore_name) || { times: 0, value: 0 };
+      c.times += 1;
+      c.value += r.value;
+      pr.chores.set(r.chore_name, c);
+    }
+  }
+  for (const c of state.chores.filter(isPaidChore)) pairOf(c.paid_by, c.assignee_id);
+  for (const p of payments) {
+    const pr = pairOf(p.from_member, p.to_member);
+    if (p.paid_on <= endOf) pr.paidToEnd += p.amount;
+    if (inPeriod(p.paid_on)) pr.paid += p.amount;
+  }
+  const label = isYear ? `${Number(period)}年` : ymLabel(period);
+  const cards = [...pairs.values()].filter((pr) => pr.owedToEnd || pr.paidToEnd || state.chores.some((c) => isPaidChore(c) && c.paid_by === pr.payer && c.assignee_id === pr.doer)).map((pr) => {
+    const owed = [...pr.chores.values()].reduce((n, c) => n + c.value, 0);
+    const unpaid = pr.owedToEnd - pr.paidToEnd;
+    const canPay = me() && (me().id === pr.payer || isAdmin());
+    return h('section', { class: 'card reward-card' },
+      h('h2', { class: 'with-icon' }, icon('yen'), `${memberNick(pr.payer)} → ${memberNick(pr.doer)}（${label}）`),
+      h('div', { class: 'table-wrap' }, h('table', { class: 'table' },
+        h('thead', {}, h('tr', {}, h('th', {}, '家事'), h('th', { class: 'num' }, '回数'), h('th', { class: 'num' }, '対価'))),
+        h('tbody', {},
+          [...pr.chores].map(([name, c]) => h('tr', {}, h('td', {}, name), h('td', { class: 'num' }, `${c.times}回`), h('td', { class: 'num' }, yen(c.value)))),
+          pr.chores.size === 0 ? h('tr', {}, h('td', { colspan: '3', class: 'muted' }, 'この期間に承認された回はありません。')) : null,
+          h('tr', { class: 'total' }, h('th', { scope: 'row' }, '対価の合計'), h('td', {}), h('td', { class: 'num' }, yen(owed))),
+          h('tr', {}, h('th', { scope: 'row' }, '払った額'), h('td', {}), h('td', { class: 'num' }, yen(pr.paid))),
+          h('tr', { class: 'total' }, h('th', { scope: 'row' }, `未払い（${isYear ? '年末' : '月末'}・繰越を含む）`), h('td', {}), h('td', { class: `num${unpaid > 0 ? ' due' : ''}` }, signedYen(unpaid)))))),
+      canPay ? h('div', { class: 'actions' }, h('a', { class: 'button primary', href: `#/payment/${pr.doer}` }, '払いました')) : null);
+  });
+  return cards.length ? cards : h('section', { class: 'card' }, h('p', { class: 'muted' }, '対価のある家事はまだありません（家事の編集で「対価を払う人」を選ぶと使えます）。'));
+}
+
+function renderPaymentForm(toParam) {
+  const others = state.members.filter((m) => m.active && m.email && (isAdmin() || m.id !== me().id)).sort(meFirst);
+  const paidChores = state.chores.filter(isPaidChore);
+  const from = isAdmin() ? h('select', { id: 'pay-from' }, state.members.filter((m) => m.active && m.email).sort(meFirst).map((m) => h('option', { value: m.id, selected: m.id === me().id }, nick(m)))) : null;
+  const to = h('select', { id: 'pay-to' }, others.filter((m) => m.id !== me().id || isAdmin()).map((m) => h('option', { value: m.id, selected: m.id === toParam }, nick(m))));
+  const amount = h('input', { type: 'text', inputmode: 'numeric', id: 'pay-amount', class: 'num' });
+  const paidOn = h('input', { type: 'date', id: 'pay-on', value: todayJST() });
+  const chore = h('select', { id: 'pay-chore' }, h('option', { value: '' }, '（家事の分ではない）'), paidChores.map((c) => h('option', { value: c.id, selected: c.assignee_id === toParam }, c.name)));
+  const memo = h('input', { type: 'text', id: 'pay-memo', maxlength: 1000 });
+  const error = h('p', { class: 'error', role: 'alert' });
+  const send = h('button', { type: 'button', class: 'primary', onclick: (ev) => busy(ev.currentTarget, async () => {
+    error.textContent = '';
+    const v = parseYen(amount.value);
+    const fromId = from ? from.value : me().id;
+    if (!(v >= 1 && v <= 10000000)) error.textContent = '金額は1円から1,000万円までで入力してください。';
+    else if (!/^\d{4}-\d{2}-\d{2}$/.test(paidOn.value)) error.textContent = '払った日を入力してください。';
+    else if (fromId === to.value) error.textContent = '払った人と受け取った人が同じです。';
+    if (error.textContent) return;
+    await wfCall('wf_submit', { p_type: 'payment', p_title: null, p_body: null,
+      p_payload: { from: fromId, to: to.value, amount: v, paid_on: paidOn.value, chore_id: chore.value || null, memo: memo.value.trim() }, p_approvers: null },
+    `${memberNick(to.value)}に「受け取りました」の確認を頼みました。`);
+    location.hash = '#/workflow/applied';
+  }) }, '送る');
+  setView('払いました', pageHead({ title: '払いました', icon: 'chores', back: { href: '#/chores/pay', text: '家事の対価へ' } }),
+    h('section', { class: 'card' },
+      h('p', { class: 'muted small' }, '受け取った人が「承認（受け取りました）」を押すと、支払いとして数えます。家計費とは関係ありません。'),
+      from ? h('div', { class: 'field' }, h('label', { for: 'pay-from' }, '払った人'), from) : null,
+      h('div', { class: 'field' }, h('label', { for: 'pay-to' }, '受け取った人'), to),
+      h('div', { class: 'field' }, h('label', { for: 'pay-amount' }, '金額（円）', h('span', { class: 'req' }, ' *')), amount),
+      h('div', { class: 'field' }, h('label', { for: 'pay-on' }, '払った日'), paidOn),
+      h('div', { class: 'field' }, h('label', { for: 'pay-chore' }, 'どの家事の分か'), chore),
+      h('div', { class: 'field' }, h('label', { for: 'pay-memo' }, 'メモ'), memo),
       error),
     h('div', { class: 'actions sticky-actions' }, send));
 }
@@ -975,6 +1296,8 @@ function renderHome() {
   setView('ホーム',
     pageHead({ title: `${m}/${d}(${weekdayJa(today)})`, icon: 'home', action: homeHeadInfo() }),
     alertCards(),
+    choreAskCards(),
+    myTurnCard(),
     unreadNoticesCard(),
     backupReminder(),
     pushHint,
@@ -1351,8 +1674,9 @@ function mfImportBox() {
     const save = h('button', { type: 'button', class: 'primary', onclick: (ev) => busy(ev.currentTarget, async () => {
       const saved = [];
       for (let i = 0; i < rows.length; i += 500) saved.push(...await db.upsertRows('transactions', rows.slice(i, i + 500), 'mf_id'));
+      state.newestTxAt = new Date().toISOString();
+      await saveImportTime('mf_imported_at');
       const recorded = await recordDeposits(depositCandidates(saved, state.members));
-      await saveSetting('mf_imported_at', new Date().toISOString());
       clearTxCache();
       await loadAdjustments();
       toast(`取り込みました（追加 ${added}件、更新 ${rows.length - added}件${recorded ? `、個人との入出金の記録 ${recorded}件` : ''}）。`);
@@ -1408,9 +1732,11 @@ function alertCards() {
   const mine = me();
   const remindTo = state.settings.import_reminder_member;
   if (sharedAccountId() && (isAdmin() || (mine && mine.id === remindTo))) {
-    const missing = missingImports(todayJST(), { mf: state.settings.mf_imported_at, bank: state.settings.bank_imported_at });
+    const shared = sharedAccountId();
+    const newestBalance = state.balances.filter((b) => b.account_id === shared).map((b) => b.created_at).sort().pop() || null;
+    const missing = missingImports(todayJST(), lastImports(state.settings, { mf: state.newestTxAt, bank: newestBalance }));
     if (missing.length) {
-      out.push(alertCard(importAlert(missing), 'alert-card', h('a', { class: 'button small', href: `#/flow/ext/${thisYM()}` }, '取り込む')));
+      out.push(alertCard(importAlert(missing, todayJST()), 'alert-card', h('a', { class: 'button small', href: `#/flow/ext/${thisYM()}` }, '取り込む')));
     }
   }
   // a low balance is an お知らせ from the app (made when the bank statement is imported)
@@ -1449,7 +1775,7 @@ function bankImportBox() {
       for (let i = 0; i < balances.length; i += 500) {
         await db.upsertRows('account_balances', balances.slice(i, i + 500).map((b) => ({ account_id: accountId, date: b.date, balance: b.balance })), 'account_id,date');
       }
-      await saveSetting('bank_imported_at', new Date().toISOString());
+      await saveImportTime('bank_imported_at');
       state.balances = await db.selectAll('account_balances', 'date.asc');
       await recordLowBalance();
       toast(`残高を取り込みました（${balances.length}日分）。`);
@@ -4315,7 +4641,7 @@ async function fullBackup(status) {
 
 // アプリの更新: the version this device runs (APP_VERSION, the same as the service worker's cache name) and a button that drops
 // the saved files and loads the newest version. Sign-in and notifications stay as they are.
-const APP_VERSION = 'v68'; // = CACHE in sw.js (checked by tests/unit/version.test.mjs)
+const APP_VERSION = 'v71'; // = CACHE in sw.js (checked by tests/unit/version.test.mjs)
 
 function appUpdateSection() {
   const version = h('span', { class: 'num' }, APP_VERSION);
@@ -4431,7 +4757,7 @@ function notifySection() {
         nodes.push(h('button', { type: 'button', onclick: (ev) => busy(ev.currentTarget, async () => { await push.unsubscribe(); toast('この端末の通知を止めました。'); draw(); }) }, 'この端末の通知を止める'));
       }
       nodes.push(h('details', {}, h('summary', {}, '通知の鍵を作り直す'),
-        h('p', { class: 'small' }, '鍵が漏れた・GitHub に登録した秘密の値を無くした場合のみ使います。作り直すと、すべての端末で通知の設定をやり直す必要があります。'),
+        h('p', { class: 'small' }, '鍵が漏れた・Supabase に登録した秘密の値を無くした場合のみ使います。作り直すと、すべての端末で通知の設定をやり直す必要があります。'),
         h('button', { type: 'button', class: 'danger small', onclick: (ev) => busy(ev.currentTarget, () => createKeys(true)) }, '作り直す')));
     }
     body.replaceChildren(...nodes);
@@ -4447,10 +4773,10 @@ function notifySection() {
     await saveSetting('vapid_public_key', keys.publicKey);
     const box = h('textarea', { readonly: true, rows: 2, class: 'secret', value: keys.privateKey, 'aria-label': '秘密の値' });
     body.replaceChildren(
-      h('p', {}, '✓ 鍵を作成しました。下の「秘密の値」を GitHub に登録してください。この値は二度と表示されません。'),
+      h('p', {}, '✓ 鍵を作成しました。下の「秘密の値」を Supabase に登録してください。この値は二度と表示されません。'),
       h('ol', { class: 'small' },
-        h('li', {}, 'GitHub のリポジトリ → Settings → Secrets and variables → Actions を開く'),
-        h('li', {}, '「New repository secret」で Name に VAPID_PRIVATE_KEY、Secret に下の値を貼り付けて保存'),
+        h('li', {}, 'Supabase の管理画面 → Edge Functions → Secrets を開く'),
+        h('li', {}, 'Name に VAPID_PRIVATE_KEY、Value に下の値を貼り付けて保存（同じ名前があれば上書き）'),
         h('li', {}, '登録できたらこの画面を再読み込みし、「この端末で通知を受け取る」を押す')),
       box,
       h('button', { type: 'button', onclick: async () => {
@@ -4636,15 +4962,22 @@ const CHORE_FIELDS = [
   { key: 'times', label: '回数（サイクルあたり）', type: 'decimal', min: 0.1, max: 1000 },
   { key: 'minutes', label: '1回の時間（分）', type: 'decimal', min: 0, max: 10000 },
   { key: 'adjust', label: '調整係数', type: 'decimal', min: 0.1, max: 5, help: '大変さの重み（標準 1.0。今の表では 0.8〜1.1）。' },
-  { key: 'points_override', label: '点数/月（随時のみ）', type: 'decimal', min: 0, max: 1000000 },
+  { key: 'points_override', label: '1回の価値（円・随時のみ）', type: 'decimal', min: 0, max: 1000000 },
   { key: 'assignee', label: '担当', type: 'assignee' },
   { key: 'status', label: '状態', type: 'status', options: [['active', '利用中'], ['closed', '停止']] },
   { key: 'memo', label: 'メモ', type: 'textarea', max: 5000 },
 ];
 const ASSIGNEE_LABEL = { all: '全員', tbd: '未定' };
 
+// The value of chores in yen (1 hour = 1,000円 × the adjustment; it used to be called 点).
 function points(n) {
-  return `${Math.round(n).toLocaleString('ja-JP')}点`;
+  return `${Math.round(n).toLocaleString('ja-JP')}円`;
+}
+
+// The value of one time of a chore (the price of a chore done for its price); the same as the database.
+function choreValue(c) {
+  if (c.cycle === 'adhoc') return Math.round(Number(c.points_override) || 0);
+  return Math.round(((Number(c.minutes) || 0) / 60) * 1000 * (Number(c.adjust) || 1));
 }
 
 function hours(n) {
@@ -4711,15 +5044,17 @@ function todayChoresCard() {
 }
 
 function workloadSection() {
-  const { rows: all, tbd } = workload(state.chores, state.members);
+  // chores done for a price are not shared out: they are shown on their own below
+  const { rows: all, tbd } = workload(state.chores.filter((c) => !isPaidChore(c)), state.members);
+  const paid = state.chores.filter(isPaidChore);
   const rows = [...all].sort((a, b) => meFirst(a.member, b.member));
   if (rows.length === 0 && tbd.count === 0) return h('section', { class: 'card' }, h('p', { class: 'muted' }, '家事を登録すると、担当ごとの負担を表示します。'));
   const sorted = [...rows].sort((a, b) => b.points - a.points);
   const diff = sorted.length >= 2 ? sorted[0].points - sorted[sorted.length - 1].points : 0;
   const categories = [...new Set(rows.flatMap((r) => Object.keys(r.byCategory)))].sort((a, b) => CATEGORIES.indexOf(a) - CATEGORIES.indexOf(b));
   return h('section', { class: 'card' },
-    h('h2', { class: 'with-icon' }, icon('user'), '分担（月あたりの負担）', helpButton('分担の点数', '点数＝月の時間×1000×調整係数（随時は入力した点数×調整係数）。', '「全員」の家事は、担当のある人で等分しています。担当が未定の家事は合計に含めません。')),
-    barChart(rows.map((r) => [nick(r.member), r.points, personColor(r.member.id)]), '担当ごとの月の負担（調整後の点数）', points),
+    h('h2', { class: 'with-icon' }, icon('user'), '分担（月あたりの負担）', helpButton('分担の価値', '家事の価値（円）＝月の時間×1,000円×調整係数（随時は入力した1回の価値×調整係数）。', '「全員」の家事は、担当のある人で等分しています。担当が未定の家事は合計に含めません。', '対価のある家事（頼んだ人が払う家事）は、分担には入れず下に別に出します。')),
+    barChart(rows.map((r) => [nick(r.member), r.points, personColor(r.member.id)]), '担当ごとの月の負担（調整後の価値）', points),
     sorted.length >= 2
       ? h('p', { class: 'balance' }, diff < 0.5 ? '負担は同じです。' : `${nick(sorted[0].member)} が ${nick(sorted[sorted.length - 1].member)} より ${points(diff)} 多い`)
       : null,
@@ -4729,10 +5064,12 @@ function workloadSection() {
         categories.map((cat) => h('tr', {}, h('td', {}, cat), rows.map((r) => h('td', { class: 'num' }, points(r.byCategory[cat] || 0))))),
         h('tr', { class: 'total' }, h('td', {}, '合計'), rows.map((r) => h('td', { class: 'num' }, points(r.points)))),
         h('tr', {}, h('td', {}, '時間/月'), rows.map((r) => h('td', { class: 'num' }, hours(r.hours)))))),
-    tbd.count > 0 ? h('p', { class: 'meta' }, `担当が未定 ${points(tbd.points)}（${Math.round(tbd.count)}件・合計に含めない）`) : null);
+    tbd.count > 0 ? h('p', { class: 'meta' }, `担当が未定 ${points(tbd.points)}（${Math.round(tbd.count)}件・合計に含めない）`) : null,
+    paid.length ? h('div', {}, h('h3', {}, '対価のある家事（分担に含めない）'), h('ul', { class: 'plain small' }, paid.map((c) => h('li', {},
+      `${c.name}：${memberNick(c.assignee_id)} 月 ${points(adjustedPoints(c))}・1回 ${yen(choreValue(c))}（${memberNick(c.paid_by)}が依頼）`)))) : null);
 }
 
-const CHORE_TABS = { today: '今日', list: '一覧', load: '負担の割合' };
+const CHORE_TABS = { today: '今日', list: '一覧', load: '負担の割合', pay: '家事の対価' };
 
 function renderChores(tabParam) {
   const cat = h('select', { 'aria-label': 'カテゴリで絞り込み' }, h('option', { value: '' }, 'カテゴリ: すべて'), CATEGORIES.map((c) => h('option', { value: c }, c)));
@@ -4760,9 +5097,25 @@ function renderChores(tabParam) {
   const tabs = Object.entries(CHORE_TABS).map(([key, label]) => ({ key, label, href: `#/chores/${key}` }));
   setView('家事',
     pageHead({ title: '家事', icon: 'chores', tabs, tab, action: isAdmin() ? h('a', { class: 'button primary', href: '#/chore-edit/new' }, '＋ 追加') : null }),
-    tab === 'today' ? todayChoresCard() : null,
+    tab === 'today' ? [choreAskCards(), todayChoresCard()] : null,
     tab === 'load' ? workloadSection() : null,
+    tab === 'pay' ? periodBox('chores', { key: 'pay', mode: 'both', title: '家事の対価', build: choreRewardView }) : null,
     tab === 'list' ? [h('div', { class: 'filters' }, cat), list] : null);
+}
+
+// On a chore done for its price: ask now, and this month's times.
+function choreRewardCard(c) {
+  const today = todayJST();
+  const answer = choreAnswer(c, today);
+  const mine = me() && (c.assignee_id === me().id || isAdmin());
+  const month = today.slice(0, 7);
+  const times = state.choreRecords.filter((r) => !r.cancelled_at && r.chore_id === c.id && r.done_on.startsWith(month));
+  return h('section', { class: 'card' },
+    h('h2', { class: 'with-icon' }, icon('yen'), '家事の対価'),
+    h('p', {}, `${memberNick(c.assignee_id)}がやり、${memberNick(c.paid_by)}が1回 ${yen(choreValue(c))}を払います。`),
+    h('p', { class: 'small' }, `今月 ${times.length}回・${yen(times.reduce((n, r) => n + r.value, 0))}`, ' ', h('a', { href: '#/chores/pay' }, '家事の対価へ')),
+    answer ? h('p', { class: 'muted small' }, `今日：${answer.status === 'withdrawn' ? 'やらない' : `やる（${WF_STATUS[answer.status]}）`}`)
+      : mine ? [h('p', { class: 'small' }, '今日やりますか？'), choreAskButtons(c, today)] : null);
 }
 
 function renderChore(id) {
@@ -4777,7 +5130,9 @@ function renderChore(id) {
     : `${Number(c.minutes || 0)}分 × ${timesPerCycle(c)}回 × ${CYCLES[c.cycle].label}の換算 ${CYCLES[c.cycle].perMonth === 1 / 12 ? '1/12' : CYCLES[c.cycle].perMonth} ÷ 60 = ${hours(h1)}/月 → ${points(basePoints(c))} × 調整係数 ${Number(c.adjust)} = ${points(adjustedPoints(c))}`;
   const rows = [
     ['カテゴリ', c.category || '—'], ['グループ', c.chore_group || '—'], ['やる日', scheduleText(c)],
-    ['担当', assigneeText(c)], ['状態', c.status === 'closed' ? '停止' : '利用中'], ['メモ', c.memo || '—'],
+    ['担当', assigneeText(c)], ['対価', c.paid_by ? `あり（${memberNick(c.paid_by)}が払う）` : 'なし'],
+    ['問いかけ', Number.isInteger(c.prompt_hour) ? `毎日${c.prompt_hour}時に担当に「今日やりますか？」` : 'なし'],
+    ['状態', c.status === 'closed' ? '停止' : '利用中'], ['メモ', c.memo || '—'],
   ];
   const del = h('button', { type: 'button', class: 'danger', onclick: (ev) => busy(ev.currentTarget, async () => {
     if (!window.confirm(`「${c.name}」を削除します。元に戻せません。よろしいですか？（やめた家事は「停止」にもできます）`)) return;
@@ -4790,9 +5145,11 @@ function renderChore(id) {
     pageHead({ title: c.name, icon: 'chores', back: { href: '#/chores/list', text: '家事の一覧へ' }, action: isAdmin() ? h('a', { class: 'button primary', href: `#/chore-edit/${c.id}` }, '編集') : null }),
     h('section', { class: 'card' },
       h('div', { class: 'kpis kpis-2' },
-        h('div', { class: 'kpi kpi-main' }, h('div', { class: 'kpi-label' }, '点数 / 月'), h('div', { class: 'kpi-value num' }, Math.round(adjustedPoints(c)).toLocaleString('ja-JP'), h('small', {}, '点'))),
+        h('div', { class: 'kpi kpi-main' }, h('div', { class: 'kpi-label' }, '価値 / 月'), h('div', { class: 'kpi-value num' }, Math.round(adjustedPoints(c)).toLocaleString('ja-JP'), h('small', {}, '円'))),
         h('div', { class: 'kpi' }, h('div', { class: 'kpi-label' }, '時間 / 月'), h('div', { class: 'kpi-value num' }, h1 === null ? '—' : (Math.round(h1 * 100) / 100).toLocaleString('ja-JP'), h('small', {}, h1 === null ? '' : '時間')))),
-      h('p', { class: 'muted small formula' }, formula)),
+      h('p', { class: 'muted small formula' }, formula),
+      h('p', { class: 'small' }, `1回の価値 ${yen(choreValue(c))}（1時間 1,000円 × 調整係数）`)),
+    isPaidChore(c) ? choreRewardCard(c) : null,
     h('section', { class: 'card' }, h('dl', { class: 'fields' }, rows.map(([k, v]) => [h('dt', {}, k), h('dd', {}, v)]))),
     historySection('chores', c, CHORE_FIELDS.concat([{ key: 'assignee_id', label: '担当', type: 'member-nick' }, { key: 'assignee_type', label: '担当の種類', type: 'select', options: [['member', '人'], ['all', '全員'], ['tbd', '未定']] }])),
     isAdmin() ? h('div', { class: 'actions' }, del) : null);
@@ -4827,6 +5184,10 @@ function renderChoreEdit(id) {
     state.members.filter((m) => m.active || m.id === c.assignee_id).sort(byName).map((m) => h('option', { value: `member:${m.id}`, selected: c.assignee_type === 'member' && c.assignee_id === m.id }, nick(m))),
     h('option', { value: 'all', selected: c.assignee_type === 'all' }, '全員（等分）'),
     h('option', { value: 'tbd', selected: c.assignee_type === 'tbd' || (c.assignee_type === 'member' && !c.assignee_id) }, '未定'));
+  const payer = h('select', { id: 'f-paid-by' }, h('option', { value: '' }, 'なし（分担する家事）'),
+    state.members.filter((m) => m.active || m.id === c.paid_by).sort(byName).map((m) => h('option', { value: m.id, selected: m.id === c.paid_by }, `${nick(m)}が払う`)));
+  const promptHour = h('select', { id: 'f-prompt-hour' }, h('option', { value: '' }, '問いかけない'),
+    Array.from({ length: 24 }, (_, i) => h('option', { value: String(i), selected: c.prompt_hour === i }, `毎日${i}時`)));
   const scheduleBox = h('div', { class: 'field', 'data-key': 'schedule' }, h('span', { class: 'label' }, 'やる日'));
   const scheduleHelp = h('p', { class: 'muted small' });
   let schedule = scheduleInput(c.cycle, c.schedule);
@@ -4880,7 +5241,7 @@ function renderChoreEdit(id) {
       values.schedule = ['week', 'month', 'year'].includes(values.cycle) ? schedule.get().sort((a, b) => a - b) : [];
       if (values.cycle === 'adhoc') {
         values.times = null;
-        if (values.points_override === null) errors.push({ key: 'points_override', message: '随時の家事は、点数/月を入力してください。' });
+        if (values.points_override === null) errors.push({ key: 'points_override', message: '随時の家事は、1回の価値（円）を入力してください。' });
       } else {
         values.points_override = null;
         if (values.schedule.length > 0) values.times = values.schedule.length;
@@ -4891,6 +5252,10 @@ function renderChoreEdit(id) {
       const [type, memberId] = assignee.value.split(':');
       values.assignee_type = type;
       values.assignee_id = type === 'member' ? memberId : null;
+      values.paid_by = payer.value || null;
+      values.prompt_hour = values.paid_by && promptHour.value !== '' ? Number(promptHour.value) : null;
+      if (values.paid_by && (type !== 'member' || !values.assignee_id)) errors.push({ key: 'paid_by', message: '対価のある家事は、担当を1人に決めてください。' });
+      else if (values.paid_by && values.paid_by === values.assignee_id) errors.push({ key: 'paid_by', message: '担当と払う人が同じです。' });
       if (errors.length) {
         for (const e of errors) {
           const box = form.querySelector(`[data-key="${e.key}"] .field-error`);
@@ -4909,6 +5274,11 @@ function renderChoreEdit(id) {
   input.name.el, input.category.el, input.chore_group.el, input.cycle.el, scheduleBox,
   input.times.el, input.minutes.el, input.points_override.el, input.adjust.el,
   h('div', { class: 'field', 'data-key': 'assignee' }, h('label', { for: 'f-assignee' }, '担当'), assignee, h('p', { class: 'error small field-error' })),
+  h('div', { class: 'field', 'data-key': 'paid_by' }, h('div', { class: 'label-row' }, h('label', { for: 'f-paid-by' }, '対価'),
+    helpButton('対価', '分担ではなく、頼んだ人が担当に払う家事にするときに選びます。', '担当が「やります」と申請し、払う人が承認したら1回と数えます。1回の対価は、この家事の1回の価値（時間×1,000円×調整係数）です。', '家計費とは関係ありません。')),
+    payer, h('p', { class: 'error small field-error' })),
+  h('div', { class: 'field', 'data-key': 'prompt_hour' }, h('label', { for: 'f-prompt-hour' }, '問いかけ（対価のある家事）'), promptHour,
+    h('p', { class: 'muted small' }, '決めた時刻に、担当の端末へ「今日やりますか？」と聞きます（はい／いいえ）。')),
   input.status.el, input.memo.el,
   preview,
   h('div', { class: 'actions' }, h('a', { class: 'button', href: isNew ? '#/chores/list' : `#/chore/${id}` }, 'キャンセル'), submit));
@@ -4918,7 +5288,7 @@ function renderChoreEdit(id) {
 }
 
 function choresCSV() {
-  const head = ['ID', 'タスク名', 'カテゴリ', 'グループ', 'サイクル', 'やる日', '回数', '分/回', '調整係数', '点数/月（随時）', '担当', '状態', '時間/月', '調整後点数/月', 'メモ'];
+  const head = ['ID', 'タスク名', 'カテゴリ', 'グループ', 'サイクル', 'やる日', '回数', '分/回', '調整係数', '1回の価値（随時・円）', '担当', '状態', '時間/月', '調整後の価値/月（円）', 'メモ'];
   const rows = state.chores.map((c) => [c.id, c.name, c.category || '', c.chore_group || '', CYCLES[c.cycle] ? CYCLES[c.cycle].label : c.cycle,
     (c.schedule || []).join(' '), c.times ?? '', c.minutes ?? '', c.adjust ?? '', c.points_override ?? '', assigneeText(c), c.status === 'closed' ? '停止' : '利用中',
     monthlyHours(c) === null ? '' : Math.round(monthlyHours(c) * 1000) / 1000, Math.round(adjustedPoints(c) * 100) / 100, c.memo || '']);

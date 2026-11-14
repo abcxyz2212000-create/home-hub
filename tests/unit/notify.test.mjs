@@ -120,21 +120,43 @@ test('daily run sends each due notification once and removes expired devices', a
     await run('node', [SCRIPT], { env: { ...env, NOTIFY_HOUR: '3' } });
     assert.equal(mock.pushes.filter((p) => p.id === 'dev3').length, toHaru.length, 'once');
 
-    // a change (made by the database) is pushed like a message; those who have not confirmed it get a
-    // reminder once a day at their hour, until they do
-    mock.db.notices.push({ id: 'c1', kind: 'change', key: 'change:budget:2027:x:1', from_member: null, to_members: [], title: '2027年の予算・負担率が変わりました', body: '二人の負担額の合計 月170,210円', needs_ack: true, deliver_at: new Date(Date.now() - 60000).toISOString(), delivered_at: null, created_at: new Date().toISOString() });
-    mock.db.notice_reads.push({ notice_id: 'c1', member_id: 'm-shin', acked_at: new Date().toISOString(), hidden: false });
+    // ワークフロー: a new request goes to those who answer it; those who have not answered get a reminder
+    // once a day at their hour; the result goes to who made it
+    const nowIsoT = new Date().toISOString();
+    mock.db.workflow_requests.push({ id: 'w1', type_key: 'change', applicant: null, title: '2027年の予算・負担率が変わりました', body: '二人の負担額の合計 月170,210円', approvers: ['m-shin', 'm-haru'], status: 'open', pushed_at: null, result_pushed_at: null, created_at: nowIsoT });
+    mock.db.workflow_replies.push({ request_id: 'w1', member_id: 'm-shin', reply: 'acked' });
     const beforeHaru = mock.pushes.filter((p) => p.id === 'dev3').length;
     const changeRun = await run('node', [SCRIPT], { env: { ...env, NOTIFY_HOUR: '3' } });
-    assert.doesNotMatch(changeRun.stdout + changeRun.stderr, /170,210|負担額/, 'changes never appear in public logs');
-    assert.equal(decrypt(mock.pushes.filter((p) => p.id === 'dev3').at(-1).body, ua, auth).title, '2027年の予算・負担率が変わりました');
+    assert.doesNotMatch(changeRun.stdout + changeRun.stderr, /170,210|負担額|2027年/, 'requests never appear in public logs');
+    const haruNew = decrypt(mock.pushes.filter((p) => p.id === 'dev3').at(-1).body, ua, auth);
+    assert.deepEqual([haruNew.title, haruNew.body, haruNew.url], ['確認待ち', '2027年の予算・負担率が変わりました', '#/workflow']);
+    assert.ok(mock.db.workflow_requests.find((r) => r.id === 'w1').pushed_at);
     const nextDay = fromDayNumber(toDayNumber(todayJST()) + 1);
     await run('node', [SCRIPT], { env: { ...env, NOTIFY_DATE: nextDay, NOTIFY_HOUR: '22' } });
     const haruNext = mock.pushes.filter((p) => p.id === 'dev3').slice(beforeHaru + 1).map((p) => decrypt(p.body, ua, auth));
-    assert.ok(haruNext.some((p) => p.title === '確認待ちの変更' && /1件/.test(p.body)), 'はる has not confirmed: reminded');
+    assert.ok(haruNext.some((p) => p.title === '承認・確認待ち' && /1件/.test(p.body)), 'はる has not answered: reminded');
     const shinNext = mock.pushes.filter((p) => p.id === 'dev2').map((p) => decrypt(p.body, ua, auth));
-    assert.ok(!shinNext.some((p) => p.title === '確認待ちの変更'), 'しん confirmed: no reminder');
-    assert.ok(!mock.db.notices.some((n) => n.title === '確認待ちの変更'), 'the reminder is not kept as an お知らせ');
+    assert.ok(!shinNext.some((p) => p.title === '承認・確認待ち'), 'しん answered: no reminder');
+    mock.db.workflow_requests.push({ id: 'w2', type_key: 'proposal', applicant: 'm-shin', title: '洗濯機を買い替えたい', body: '', approvers: ['m-haru'], status: 'done', pushed_at: nowIsoT, result_pushed_at: null, created_at: nowIsoT });
+    await run('node', [SCRIPT], { env: { ...env, NOTIFY_DATE: nextDay, NOTIFY_HOUR: '22' } });
+    assert.deepEqual(decrypt(mock.pushes.filter((p) => p.id === 'dev2').at(-1).body, ua, auth).title, '承認されました', 'the result goes to who made it');
+
+    // 問いかけ: at the chore's hour the assignee is asked once a day, unless they already answered
+    mock.db.chores.push({ id: 'cook', name: '夕ご飯づくり', status: 'active', cycle: 'day', schedule: [], assignee_type: 'member', assignee_id: 'm-haru', paid_by: 'm-shin', prompt_hour: 17 });
+    const beforeAsk = mock.pushes.filter((p) => p.id === 'dev3').length;
+    await run('node', [SCRIPT], { env: { ...env, NOTIFY_DATE: nextDay, NOTIFY_HOUR: '16' } });
+    assert.equal(mock.pushes.filter((p) => p.id === 'dev3').length, beforeAsk, 'not before the hour');
+    await run('node', [SCRIPT], { env: { ...env, NOTIFY_DATE: nextDay, NOTIFY_HOUR: '17' } });
+    const ask = decrypt(mock.pushes.filter((p) => p.id === 'dev3').at(-1).body, ua, auth);
+    assert.deepEqual([ask.title, ask.url], ['今日の家事', `#/chore-ask/cook/${nextDay}`]);
+    assert.match(ask.body, /今日「夕ご飯づくり」をやりますか？/);
+    await run('node', [SCRIPT], { env: { ...env, NOTIFY_DATE: nextDay, NOTIFY_HOUR: '18' } });
+    assert.equal(mock.pushes.filter((p) => p.id === 'dev3').length, beforeAsk + 1, 'once a day');
+    const dayAfter = fromDayNumber(toDayNumber(todayJST()) + 2);
+    mock.db.workflow_requests.push({ id: 'w3', type_key: 'chore_done', applicant: 'm-haru', title: 'x', body: '', payload: { chore_id: 'cook', date: dayAfter }, approvers: ['m-shin'], status: 'open', pushed_at: nowIsoT, created_at: nowIsoT });
+    const beforeAnswered = mock.pushes.filter((p) => p.id === 'dev3').length;
+    await run('node', [SCRIPT], { env: { ...env, NOTIFY_DATE: dayAfter, NOTIFY_HOUR: '17' } });
+    assert.ok(!mock.pushes.filter((p) => p.id === 'dev3').slice(beforeAnswered).map((p) => decrypt(p.body, ua, auth)).some((p) => p.title === '今日の家事'), 'already answered that day');
 
     const t = await run('node', [SCRIPT], { env: { ...env, NOTIFY_TEST: '1' } });
     assert.match(t.stdout, /delivered to 3\/3/);
@@ -210,7 +232,7 @@ test('low balance to everyone once per balance date; monthly import reminder to 
     assert.deepEqual(low.map((p) => p.id).sort(), ['d-haru', 'd-shin'], 'everyone');
     assert.equal(low[0].body, '残高 26,130円（10/23時点）。目安の10万円を下回っています。');
     const imp = got.filter((p) => p.title === '明細の取り込み');
-    assert.deepEqual(imp.map((p) => [p.id, p.body]), [['d-shin', '今月の銀行の残高がまだです。取り込んでください。']], 'only the bank balance is missing, only to しん');
+    assert.deepEqual(imp.map((p) => [p.id, p.body]), [['d-shin', '10月分の銀行の残高がまだ取り込まれていません（前回の取り込み なし）。']], 'only the bank balance is missing, only to しん');
     assert.doesNotMatch(r.stdout + r.stderr, /26,130/, 'amounts never appear in public logs');
     await run('node', [SCRIPT], { env: { ...env, NOTIFY_DATE: '2026-11-07' } });
     const after = mock.pushes.map((p) => decrypt(p.body, ua, auth));

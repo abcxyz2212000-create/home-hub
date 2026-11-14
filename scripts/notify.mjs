@@ -17,8 +17,8 @@ import { collectEvents, dueNotifications, notificationText, todayJST } from '../
 import { dueFor } from '../web/js/chores.js';
 import { participantIds, statement, contribution } from '../web/js/shared.js';
 import { categoryAdjustments, categoryRatioQuery } from '../web/js/budget.js';
-import { missingImports, latestBalance, DEFAULT_LOW_BALANCE } from '../web/js/bank.js';
-import { lowBalanceAlert, importAlert, choresAlert, householdAlert, confirmAlert } from '../web/js/alerts.js';
+import { missingImports, lastImports, latestBalance, DEFAULT_LOW_BALANCE } from '../web/js/bank.js';
+import { lowBalanceAlert, importAlert, choresAlert, householdAlert, confirmAlert, choreAskAlert } from '../web/js/alerts.js';
 import { loadVapidKeys, sendPush } from './webpush.mjs';
 
 const LOG_RETENTION_DAYS = 400;
@@ -26,8 +26,13 @@ const NOTICE_RETENTION_DAYS = 365; // お知らせ are kept for a year
 const DEFAULT_HOUR = 8;
 const SHARED_REMIND_DAY = 25; // monthly shared account reminder from this day of the month (sent once per month)
 
+// The environment: process.env when run by Node, the values given to run…() when run elsewhere
+// (the Supabase Edge Function).
+let ENV = typeof process !== 'undefined' && process.env ? process.env : {};
+let exitCode = 0;
+
 function env(name, required = true) {
-  const v = (process.env[name] || '').trim();
+  const v = (ENV[name] || '').trim();
   if (required && !v) throw new Error(`missing environment variable ${name}`);
   return v;
 }
@@ -115,7 +120,7 @@ async function main() {
   if (env('NOTIFY_TEST', false) === '1') {
     const delivered = await sendToAll({ title: 'テスト通知', body: 'HouseHubからの通知は正しく届いています。', url: '#/', tag: 'test' });
     console.log(`Test notification delivered to ${delivered}/${subscriptions.length} device(s).`);
-    if (failures > 0 || delivered === 0) process.exitCode = 1;
+    if (failures > 0 || delivered === 0) exitCode = 1;
     return;
   }
 
@@ -158,13 +163,23 @@ async function main() {
   const balances = sharedId ? await db.select('account_balances', `&account_id=eq.${encodeURIComponent(sharedId)}&order=date.desc&limit=1`) : [];
   const lastBalance = latestBalance(balances);
   const threshold = Number.isFinite(Number(settings.low_balance_threshold)) && settings.low_balance_threshold !== null ? Number(settings.low_balance_threshold) : DEFAULT_LOW_BALANCE;
-  const missing = sharedId ? missingImports(today, { mf: settings.mf_imported_at, bank: settings.bank_imported_at }) : [];
+  let missing = [];
+  if (sharedId) {
+    const [newestTx, newestBalance] = await Promise.all([
+      db.select('transactions', '&order=created_at.desc&limit=1'),
+      db.select('account_balances', `&account_id=eq.${encodeURIComponent(sharedId)}&order=created_at.desc&limit=1`),
+    ]);
+    const newest = { mf: newestTx.length ? newestTx[0].created_at : null, bank: newestBalance.length ? newestBalance[0].created_at : null };
+    missing = missingImports(today, lastImports(settings, newest));
+  }
 
-  // changes (budget, ratios, records) and who confirmed them
-  const [changes, acks] = await Promise.all([
-    db.select('notices', '&kind=eq.change&needs_ack=is.true&delivered_at=not.is.null'),
-    db.select('notice_reads', '&acked_at=not.is.null'),
+  // ワークフロー: open requests and who answered them
+  const [openRequests, replies] = await Promise.all([
+    db.select('workflow_requests', '&status=eq.open'),
+    db.select('workflow_replies', ''),
   ]);
+  const waitingFor = (g) => openRequests.filter((r) => (r.approvers || []).includes(g) && r.applicant !== g
+    && !replies.some((x) => x.request_id === r.id && x.member_id === g));
 
   let shared = null;
   const sharedData = async () => {
@@ -195,13 +210,13 @@ async function main() {
     }
     // monthly imports not done: the person who imports, every day until done
     if (missing.length && g === settings.import_reminder_member) {
-      items.push({ mark: `import:${today}:${g}`, notice: `import:${today}`, to: [g], payload: { ...importAlert(missing), url: '#/flow/ext', tag: 'imports' }, log: 'import reminder' });
+      items.push({ mark: `import:${today}:${g}`, notice: `import:${today}`, to: [g], payload: { ...importAlert(missing, today), url: '#/flow/ext', tag: 'imports' }, log: 'import reminder' });
     }
     if (g === 'none') return items;
-    // changes this person has not confirmed: a reminder every day until they do (not kept as an お知らせ)
-    const unconfirmed = changes.filter((n) => !acks.some((r) => r.notice_id === n.id && r.member_id === g && r.acked_at));
-    if (unconfirmed.length) {
-      items.push({ mark: `ack:${today}:${g}`, notice: null, to: [g], payload: { ...confirmAlert(unconfirmed.length), url: '#/notices', tag: 'confirm' }, log: `unconfirmed changes: ${unconfirmed.length}` });
+    // requests waiting for this person's answer: a reminder every day until they answer (not kept as an お知らせ)
+    const waiting = waitingFor(g);
+    if (waiting.length) {
+      items.push({ mark: `ack:${today}:${g}`, notice: null, to: [g], payload: { ...confirmAlert(waiting.length), url: '#/workflow', tag: 'confirm' }, log: `waiting requests: ${waiting.length}` });
     }
     // today's chores of this person. Names never go to the log.
     const list = dueFor(chores, today, g);
@@ -243,10 +258,49 @@ async function main() {
     await mark(`notices:${today}:${m.id}`);
   }
 
-  // messages (and scheduled ones) that are due: pushed to the devices of their recipients, every run
   const nowIso = new Date().toISOString();
-  // (kind 'change': a change of the budget, the ratios or the records, made by the database)
-  const messages = await db.select('notices', `&kind=in.(message,change)&delivered_at=is.null&deliver_at=lte.${encodeURIComponent(nowIso)}`);
+  const nickOf = (id) => {
+    const m = members.find((x) => x.id === id);
+    return m ? (m.nickname || m.name) : null;
+  };
+  const devicesOf = (ids) => subscriptions.filter((sub) => ids.includes(sub.member_id));
+  // ワークフロー: a new request goes to those who answer it (not to who made it); a result to who made it;
+  // a cancelled 家事の実施 or 支払い to those who had answered. Titles and names never go to the log.
+  for (const r of openRequests.filter((x) => !x.pushed_at)) {
+    const to = (r.approvers || []).filter((id) => id !== r.applicant);
+    const from = nickOf(r.applicant);
+    const delivered = await sendTo(devicesOf(to), { title: r.type_key === 'change' ? '確認待ち' : '承認待ち', body: `${from ? `${from}より：` : ''}${r.title}`.slice(0, 200), url: '#/workflow', tag: `wf:${r.id}` });
+    await db.update('workflow_requests', `id=eq.${r.id}`, { pushed_at: nowIso });
+    console.log(`- request: delivered to ${delivered} device(s)`);
+  }
+  const decided = await db.select('workflow_requests', '&status=in.(done,rejected,cancelled)&result_pushed_at=is.null');
+  for (const r of decided) {
+    const cancelled = r.status === 'cancelled';
+    const to = cancelled ? (r.approvers || []) : (r.type_key === 'change' || !r.applicant ? [] : [r.applicant]);
+    const label = r.status === 'done' ? '承認されました' : r.status === 'rejected' ? '却下されました' : '取り消されました';
+    const delivered = to.length ? await sendTo(devicesOf(to), { title: label, body: r.title.slice(0, 200), url: '#/workflow', tag: `wf:${r.id}` }) : 0;
+    await db.update('workflow_requests', `id=eq.${r.id}`, { result_pushed_at: nowIso });
+    if (to.length) console.log(`- result: delivered to ${delivered} device(s)`);
+  }
+  // 問いかけ: at the chosen hour, ask the assignee of a chore done for its price whether they do it today
+  const promptChores = (await db.select('chores', '&status=eq.active&prompt_hour=not.is.null&paid_by=not.is.null&assignee_type=eq.member'))
+    .filter((c) => c.assignee_id && c.prompt_hour <= hour);
+  if (promptChores.length) {
+    const answered = await db.select('workflow_requests', `&type_key=eq.chore_done&created_at=gte.${encodeURIComponent(new Date(Date.now() - 2 * 86400000).toISOString())}`);
+    for (const c of promptChores) {
+      const key = `prompt:${c.id}:${today}`;
+      if (sent.has(key)) continue;
+      const done = answered.some((r) => r.payload && r.payload.chore_id === c.id && r.payload.date === today
+        && (r.status === 'open' || r.status === 'done' || (r.status === 'withdrawn' && r.payload.skip)));
+      if (done) continue;
+      const delivered = await sendTo(devicesOf([c.assignee_id]), { ...choreAskAlert(c.name), url: `#/chore-ask/${c.id}/${today}`, tag: key });
+      await mark(key);
+      console.log(`- chore question: delivered to ${delivered} device(s)`);
+    }
+  }
+
+  // messages (and scheduled ones) that are due: pushed to the devices of their recipients, every run
+  const messages = await db.select('notices', `&kind=eq.message&delivered_at=is.null&deliver_at=lte.${encodeURIComponent(nowIso)}`);
   for (const n of messages) {
     const to = n.to_members && n.to_members.length ? n.to_members : members.map((m) => m.id);
     const from = members.find((m) => m.id === n.from_member);
@@ -260,10 +314,25 @@ async function main() {
 
   const cutoff = new Date(Date.now() - LOG_RETENTION_DAYS * 86400000).toISOString();
   await db.remove('notification_log', `sent_at=lt.${encodeURIComponent(cutoff)}`);
-  if (failures > 0) process.exitCode = 1;
+  if (failures > 0) exitCode = 1;
 }
 
-main().catch((e) => {
-  console.error(e.message);
-  process.exitCode = 1;
-});
+// Runs once with the given environment; returns 0 when everything was sent, 1 otherwise.
+export async function runNotify(environment) {
+  ENV = environment;
+  exitCode = 0;
+  try {
+    await main();
+  } catch (e) {
+    console.error(e.message);
+    exitCode = 1;
+  }
+  return exitCode;
+}
+
+if (typeof Deno === 'undefined' && typeof process !== 'undefined' && process.argv && import.meta.url === `file://${process.argv[1]}`) {
+  main().catch((e) => {
+    console.error(e.message);
+    exitCode = 1;
+  }).finally(() => { process.exitCode = exitCode; });
+}

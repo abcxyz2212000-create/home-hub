@@ -517,48 +517,146 @@ end $$;
 reset role;
 delete from public.notices;
 
--- 変更の通知: budget, ratio, base amounts and records become one お知らせ per person and thing (10 minutes),
--- with the values before and after; a new change asks everyone again
+-- 変更の回覧: budget, ratio, base amounts and records become one request per person and thing (10 minutes),
+-- with the values before and after, for everyone to confirm; a new change asks everyone again
 reset role;
-delete from public.notices;
+delete from public.workflow_requests;
 set role authenticated;
 select pg_temp.login('owner@example.com');
 do $$
 declare
   haru uuid := (select id from public.members where name = '佐藤 春子');
-  n public.notices;
+  n public.workflow_requests;
 begin
   insert into public.budget_years (year, income_monthly, ratio) values (2031, 170210, jsonb_build_object(haru, 299.6));
   insert into public.budgets (year, category, monthly) values (2031, '食費', 30000);
   update public.budgets set monthly = 35000 where year = 2031 and category = '食費';
   update public.budget_years set income_monthly = 180000, category_ratios = jsonb_build_array(jsonb_build_object('category', '水道・光熱費', 'subcategory', '電気代', 'ratio', jsonb_build_object(haru, 30), 'from', '2031-01')) where year = 2031;
   update public.budget_years set updated_at = now() where year = 2031; -- nothing changed: no line
-  select * into n from public.notices where kind = 'change';
-  if (select count(*) from public.notices) <> 1 then raise exception 'one change notice per person and year expected'; end if;
-  if n.title <> '2031年の予算・負担率が変わりました' or not n.needs_ack or n.from_member is distinct from public.current_member_id() or n.to_members <> '{}' then raise exception 'change notice fields: %', row_to_json(n); end if;
+  select * into n from public.workflow_requests where type_key = 'change';
+  if (select count(*) from public.workflow_requests) <> 1 then raise exception 'one change request per person and year expected'; end if;
+  if n.title <> '2031年の予算・負担率が変わりました' or n.status <> 'open' or n.applicant is distinct from public.current_member_id()
+     or cardinality(n.approvers) <> (select count(*) from public.members where active and email is not null) then raise exception 'change request fields: %', row_to_json(n); end if;
   if n.body not like '%二人の負担額の合計 月170,210円%' or n.body not like '%賃金・千円）：はる 299.6%' or n.body not like '%費目「食費」の予算 月30,000円 → 35,000円%'
      or n.body not like '%二人の負担額の合計 月170,210円 → 180,000円%' or n.body not like '%費目ごとの負担率：電気代 はる 30%（2031年1月から）%' then
-    raise exception 'change notice body: %', n.body;
+    raise exception 'change request body: %', n.body;
   end if;
-  insert into public.notice_reads (notice_id, member_id, acked_at) values (n.id, public.current_member_id(), now());
+  begin perform public.wf_reply(n.id, 'approved', null); raise exception 'approved a 回覧';
+  exception when invalid_parameter_value then null; end;
+  if public.wf_reply(n.id, 'acked', 'みました') <> 'open' then raise exception 'one confirmation is not everyone'; end if;
   insert into public.shared_entries (member_id, ym, kind, label, amount, memo) values (haru, '2031-01', 'adjust', '精算', -81600, '理由');
-  if (select body from public.notices where key like 'change:entries:%') <> '追加：はる 2031年1月 調整「精算」 −81,600円（理由）' then
-    raise exception 'entry change: %', (select body from public.notices where key like 'change:entries:%');
+  if (select body from public.workflow_requests where key like 'change:entries:%') <> '追加：はる 2031年1月 調整「精算」 −81,600円（理由）' then
+    raise exception 'entry change: %', (select body from public.workflow_requests where key like 'change:entries:%');
   end if;
   update public.budgets set monthly = 36000 where year = 2031;
-  if exists (select 1 from public.notice_reads where notice_id = n.id) then raise exception 'a new change must ask everyone again'; end if;
+  if exists (select 1 from public.workflow_replies where request_id = n.id) then raise exception 'a new change must ask everyone again'; end if;
   insert into public.deposit_reports (member_id, paid_on, amount, memo) values (haru, '2031-01-25', 79560, '1月分');
-  if (select body from public.notices where key like 'change:reports:%') <> '報告：はる 1/25 79,560円（1月分）' then
-    raise exception 'deposit report: %', (select body from public.notices where key like 'change:reports:%');
+  if (select body from public.workflow_requests where key like 'change:reports:%') <> '報告：はる 1/25 79,560円（1月分）' then
+    raise exception 'deposit report: %', (select body from public.workflow_requests where key like 'change:reports:%');
   end if;
   delete from public.deposit_reports where paid_on = '2031-01-25';
+  -- people never write requests or replies directly
+  begin insert into public.workflow_requests (type_key, title) values ('circular', 'x'); raise exception 'request written directly';
+  exception when insufficient_privilege then null; end;
+  begin insert into public.workflow_replies (request_id, member_id, reply) values (n.id, public.current_member_id(), 'acked'); raise exception 'reply written directly';
+  exception when insufficient_privilege then null; end;
 end $$;
 reset role;
-delete from public.notices;
+delete from public.workflow_requests;
 delete from public.shared_entries where ym = '2031-01';
 delete from public.budgets where year = 2031;
 delete from public.budget_years where year = 2031;
-delete from public.notices;
+delete from public.workflow_requests;
+
+-- 相談・申請 (generic): everyone else answers; one 却下 ends it, everyone's 承認 decides it
+set role authenticated;
+select pg_temp.login('adv@example.com');
+do $$
+declare
+  rid uuid;
+begin
+  rid := public.wf_submit('proposal', '洗濯機を買い替えたい', '10万円まで', '{}', null);
+  if (select cardinality(approvers) from public.workflow_requests where id = rid) <> (select count(*) - 1 from public.members where active and email is not null) then
+    raise exception 'a proposal goes to everyone else';
+  end if;
+  begin perform public.wf_reply(rid, 'approved', null); raise exception 'the applicant answered';
+  exception when insufficient_privilege then null; end;
+  perform pg_catalog.set_config('test.rid', rid::text, false);
+end $$;
+select pg_temp.login('owner@example.com');
+do $$
+declare
+  rid uuid := current_setting('test.rid')::uuid;
+begin
+  if public.wf_reply(rid, 'rejected', '今月は無理') <> 'rejected' then raise exception 'one 却下 ends it'; end if;
+  begin perform public.wf_reply(rid, 'approved', null); raise exception 'answered a decided request';
+  exception when invalid_parameter_value then null; end;
+end $$;
+
+-- 家事の実施 and 個人間の支払い: the assignee asks the one who pays; approved = counted at the chore's value
+reset role;
+insert into public.chores (name, cycle, minutes, adjust, assignee_type, assignee_id, paid_by, prompt_hour)
+  select '夕ご飯づくり', 'day', 60, 1.2, 'member', (select id from public.members where email = 'adv@example.com'), id, 17 from public.members where email = 'owner@example.com';
+set role authenticated;
+select pg_temp.login('adv@example.com');
+do $$
+declare
+  c uuid := (select id from public.chores where name = '夕ご飯づくり');
+  rid uuid;
+begin
+  rid := public.wf_submit('chore_done', null, null, jsonb_build_object('chore_id', c, 'date', '2031-02-01'), null);
+  begin perform public.wf_submit('chore_done', null, null, jsonb_build_object('chore_id', c, 'date', '2031-02-01'), null); raise exception 'asked twice for a day';
+  exception when unique_violation then null; end;
+  perform public.wf_submit('chore_done', null, null, jsonb_build_object('chore_id', c, 'date', '2031-02-02', 'skip', true), null);
+  if (select status from public.workflow_requests where payload ->> 'date' = '2031-02-02') <> 'withdrawn' then raise exception '「いいえ」 is not kept'; end if;
+  begin perform public.wf_submit('chore_done', null, null, jsonb_build_object('chore_id', c, 'date', '2031-02-02'), null); raise exception 'asked again after いいえ';
+  exception when unique_violation then null; end;
+  perform pg_catalog.set_config('test.rid', rid::text, false);
+end $$;
+select pg_temp.login('member@example.com');
+do $$ begin
+  begin perform public.wf_reply(current_setting('test.rid')::uuid, 'approved', null); raise exception 'someone else approved';
+  exception when insufficient_privilege then null; end;
+  begin perform public.wf_submit('chore_done', null, null, jsonb_build_object('chore_id', (select id from public.chores where name = '夕ご飯づくり'), 'date', '2031-02-03'), null);
+    if not public.is_admin() then raise exception 'not the assignee asked'; end if;
+  exception when insufficient_privilege then null; end;
+end $$;
+select pg_temp.login('owner@example.com');
+do $$
+declare
+  rid uuid := current_setting('test.rid')::uuid;
+  adv uuid := (select id from public.members where email = 'adv@example.com');
+  pid uuid;
+begin
+  if public.wf_reply(rid, 'approved', null) <> 'done' then raise exception 'the one who pays decides'; end if;
+  if (select value from public.chore_records where request_id = rid) <> 1200 or (select done_on from public.chore_records where request_id = rid) <> '2031-02-01' then
+    raise exception 'chore record: %', (select row_to_json(x) from public.chore_records x where request_id = rid);
+  end if;
+  pid := public.wf_submit('payment', null, null, jsonb_build_object('to', adv, 'amount', 1200, 'paid_on', '2031-02-05', 'memo', '2/1の分'), null);
+  if (select title from public.workflow_requests where id = pid) <> '共通（管理者）から立替する人へ 1,200円を払いました（2/5）' then
+    raise exception 'payment title: %', (select title from public.workflow_requests where id = pid);
+  end if;
+  perform pg_catalog.set_config('test.pid', pid::text, false);
+end $$;
+select pg_temp.login('adv@example.com');
+do $$
+declare
+  pid uuid := current_setting('test.pid')::uuid;
+begin
+  if public.wf_reply(pid, 'approved', '受け取りました') <> 'done' then raise exception 'the receiver confirms'; end if;
+  if (select amount from public.person_payments where request_id = pid) <> 1200 then raise exception 'payment not recorded'; end if;
+  -- the applicant (or an administrator) cancels a done 家事の実施: it no longer counts
+  perform public.wf_withdraw(current_setting('test.rid')::uuid);
+  if (select cancelled_at from public.chore_records where request_id = current_setting('test.rid')::uuid) is null then raise exception 'cancel did not stop counting'; end if;
+  begin insert into public.chore_records (chore_name, member_id, payer_id, done_on, value) select 'x', id, id, '2031-01-01', 1 from public.members limit 1;
+    raise exception 'chore record written directly';
+  exception when insufficient_privilege then null; end;
+end $$;
+reset role;
+delete from public.workflow_requests;
+delete from public.chore_records;
+delete from public.person_payments;
+delete from public.chores where name = '夕ご飯づくり';
 
 -- anonymous users get nothing
 reset role;

@@ -1128,6 +1128,306 @@ end;
 $$;
 
 -- ---------------------------------------------------------------------------
+-- ワークフロー (2026-11-07): one mechanism for asking others (申請) and their answers (返事).
+-- A type says when its content takes effect (timing: 'after' = it already did and people confirm it,
+-- 'before' = only once approved), how people answer (reply: 'ack' = 確認しました, 'approve' = 承認・却下),
+-- who answers (audience: 'all', 'chosen', 'counterpart' = the other person of the request) and what
+-- happens once everyone agreed (action). Generic types (回覧, 相談・申請) change nothing in the app;
+-- the others are tied to a feature. Requests are made and answered only through the functions below.
+-- ---------------------------------------------------------------------------
+create table if not exists public.workflow_types (
+  key text primary key check (key ~ '^[a-z_]{1,40}$'),
+  name text not null check (char_length(name) between 1 and 50),
+  timing text not null check (timing in ('after', 'before')),
+  reply text not null check (reply in ('ack', 'approve')),
+  audience text not null check (audience in ('all', 'chosen', 'counterpart')),
+  action text not null default 'none' check (action in ('none', 'chore_record', 'person_payment')),
+  generic boolean not null default false, -- anyone may start one from the screen
+  sort smallint not null default 0
+);
+insert into public.workflow_types (key, name, timing, reply, audience, action, generic, sort) values
+  ('circular', '回覧', 'after', 'ack', 'chosen', 'none', true, 1),
+  ('proposal', '相談・申請', 'before', 'approve', 'chosen', 'none', true, 2),
+  ('chore_done', '家事の実施', 'before', 'approve', 'counterpart', 'chore_record', false, 3),
+  ('payment', '個人間の支払い', 'before', 'approve', 'counterpart', 'person_payment', false, 4),
+  ('change', '変更の回覧', 'after', 'ack', 'all', 'none', false, 5)
+on conflict (key) do update set name = excluded.name, timing = excluded.timing, reply = excluded.reply, audience = excluded.audience,
+  action = excluded.action, generic = excluded.generic, sort = excluded.sort;
+
+create table if not exists public.workflow_requests (
+  id uuid primary key default gen_random_uuid(),
+  type_key text not null references public.workflow_types (key),
+  key text unique check (char_length(key) <= 200), -- changes of the same person and thing within 10 minutes
+  applicant uuid references public.members (id) on delete set null, -- null: the app (an import, SQL)
+  title text not null check (char_length(title) between 1 and 100),
+  body text not null default '' check (char_length(body) <= 2000),
+  payload jsonb not null default '{}'::jsonb check (jsonb_typeof(payload) = 'object'),
+  approvers uuid[] not null default '{}',
+  status text not null default 'open' check (status in ('open', 'done', 'rejected', 'withdrawn', 'cancelled')),
+  url text check (char_length(url) <= 300),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  decided_at timestamptz,
+  pushed_at timestamptz,        -- the people who answer were told
+  result_pushed_at timestamptz  -- the applicant was told the result
+);
+create index if not exists workflow_requests_status_idx on public.workflow_requests (status, created_at);
+create table if not exists public.workflow_replies (
+  request_id uuid not null references public.workflow_requests (id) on delete cascade,
+  member_id uuid not null references public.members (id) on delete cascade,
+  reply text not null check (reply in ('approved', 'rejected', 'acked')),
+  comment text check (char_length(comment) <= 1000),
+  replied_at timestamptz not null default now(),
+  primary key (request_id, member_id)
+);
+
+-- 家事の対価: who asks for a chore and pays for it (the assignee does it), and when to ask the assignee
+alter table public.chores add column if not exists paid_by uuid references public.members (id) on delete set null;
+alter table public.chores add column if not exists prompt_hour smallint check (prompt_hour between 0 and 23);
+-- a chore done for its price (made when 家事の実施 is approved); value = the chore's value of one time then
+create table if not exists public.chore_records (
+  id uuid primary key default gen_random_uuid(),
+  chore_id uuid references public.chores (id) on delete set null,
+  chore_name text not null check (char_length(chore_name) between 1 and 200),
+  member_id uuid not null references public.members (id) on delete restrict, -- did it
+  payer_id uuid not null references public.members (id) on delete restrict,  -- pays for it
+  done_on date not null,
+  value integer not null check (value between 0 and 10000000),
+  request_id uuid references public.workflow_requests (id) on delete set null,
+  cancelled_at timestamptz,
+  created_at timestamptz not null default now()
+);
+create index if not exists chore_records_done_on_idx on public.chore_records (done_on);
+-- money between two people outside the household (made when 個人間の支払い is approved)
+create table if not exists public.person_payments (
+  id uuid primary key default gen_random_uuid(),
+  from_member uuid not null references public.members (id) on delete restrict,
+  to_member uuid not null references public.members (id) on delete restrict,
+  paid_on date not null,
+  amount integer not null check (amount between 1 and 10000000),
+  chore_id uuid references public.chores (id) on delete set null,
+  memo text check (char_length(memo) <= 1000),
+  request_id uuid references public.workflow_requests (id) on delete set null,
+  cancelled_at timestamptz,
+  created_at timestamptz not null default now(),
+  check (from_member <> to_member)
+);
+create index if not exists person_payments_paid_on_idx on public.person_payments (paid_on);
+
+do $$
+declare
+  t text;
+begin
+  foreach t in array array['workflow_types', 'workflow_requests', 'workflow_replies', 'chore_records', 'person_payments'] loop
+    execute format('alter table public.%I enable row level security', t);
+    execute format('revoke all on public.%I from anon, authenticated', t);
+    execute format('grant select, insert, update, delete on public.%I to service_role', t);
+    execute format('grant select on public.%I to authenticated', t);
+    execute format('drop policy if exists member_read on public.%I', t);
+    execute format('create policy member_read on public.%I for select to authenticated using (public.is_member())', t);
+  end loop;
+end;
+$$;
+
+-- The value of one time of a chore in yen (1 hour = 1,000円 × the adjustment), as the screens show it.
+create or replace function public.chore_value(c public.chores)
+returns integer language sql stable set search_path = public as $$
+  select round(case when c.cycle = 'adhoc' then coalesce(c.points_override, 0)
+    else coalesce(c.minutes, 0) / 60.0 * 1000 * coalesce(c.adjust, 1) end)::integer;
+$$;
+
+-- 申請: returns the new request's id. p_payload: chore_done {chore_id, date, skip?}; payment {to, amount,
+-- paid_on, chore_id?, memo?}; circular / proposal {} with p_approvers (empty = everyone else).
+create or replace function public.wf_submit(p_type text, p_title text, p_body text, p_payload jsonb, p_approvers uuid[])
+returns uuid language plpgsql security definer set search_path = public as $$
+declare
+  me uuid := public.current_member_id();
+  t public.workflow_types;
+  c public.chores;
+  v_approvers uuid[];
+  v_title text := nullif(btrim(coalesce(p_title, '')), '');
+  v_body text := coalesce(p_body, '');
+  v_payload jsonb := coalesce(p_payload, '{}'::jsonb);
+  v_status text := 'open';
+  v_url text;
+  rid uuid;
+  v_amount integer;
+begin
+  if me is null then raise exception 'not a member' using errcode = '42501'; end if;
+  select * into t from public.workflow_types where key = p_type;
+  if not found then raise exception 'unknown workflow type %', p_type using errcode = '22023'; end if;
+  if t.generic then
+    if v_title is null then raise exception 'title required' using errcode = '22023'; end if;
+    select coalesce(array_agg(m.id), '{}') into v_approvers from public.members m
+      where m.active and m.email is not null and m.id <> me
+        and (coalesce(cardinality(p_approvers), 0) = 0 or m.id = any (p_approvers));
+    if cardinality(v_approvers) = 0 then raise exception 'no one to ask' using errcode = '22023'; end if;
+    v_url := '#/workflow';
+  elsif p_type = 'chore_done' then
+    select * into c from public.chores ch where ch.id = (v_payload ->> 'chore_id')::uuid and ch.status = 'active';
+    if not found or c.paid_by is null or c.assignee_type <> 'member' or c.assignee_id is null then
+      raise exception 'not a chore done for its price' using errcode = '22023';
+    end if;
+    if c.assignee_id <> me and not public.is_admin() then raise exception 'only the assignee asks' using errcode = '42501'; end if;
+    if (v_payload ->> 'date') !~ '^\d{4}-\d{2}-\d{2}$' then raise exception 'date required' using errcode = '22023'; end if;
+    -- one answer a day: an open or done request, or a 「いいえ」 (no one asks again that day)
+    if exists (select 1 from public.workflow_requests r where r.type_key = 'chore_done'
+               and r.payload ->> 'chore_id' = c.id::text and r.payload ->> 'date' = v_payload ->> 'date'
+               and (r.status in ('open', 'done') or (r.status = 'withdrawn' and (r.payload ->> 'skip')::boolean is true))) then
+      raise exception 'already answered for this day' using errcode = '23505';
+    end if;
+    v_payload := jsonb_build_object('chore_id', c.id, 'date', v_payload ->> 'date', 'skip', coalesce((v_payload ->> 'skip')::boolean, false),
+      'member_id', c.assignee_id, 'payer_id', c.paid_by, 'value', public.chore_value(c));
+    v_approvers := array[c.paid_by];
+    v_title := format('%s「%s」をやります（%s）', public.member_label(c.assignee_id), c.name, to_char((v_payload ->> 'date')::date, 'FMMM/FMDD'));
+    v_url := '#/workflow';
+    if (v_payload ->> 'skip')::boolean then -- 「いいえ」: kept so that no one asks again that day
+      v_status := 'withdrawn';
+      v_title := format('%s「%s」は今日はやりません（%s）', public.member_label(c.assignee_id), c.name, to_char((v_payload ->> 'date')::date, 'FMMM/FMDD'));
+    end if;
+  elsif p_type = 'payment' then
+    v_amount := (v_payload ->> 'amount')::integer;
+    if v_amount is null or v_amount < 1 or v_amount > 10000000 then raise exception 'amount 1-10000000' using errcode = '22023'; end if;
+    if (v_payload ->> 'paid_on') !~ '^\d{4}-\d{2}-\d{2}$' then raise exception 'paid_on required' using errcode = '22023'; end if;
+    if (v_payload ->> 'to') is null or (v_payload ->> 'to')::uuid = me and not public.is_admin() then raise exception 'to required' using errcode = '22023'; end if;
+    v_payload := jsonb_build_object('from', coalesce((v_payload ->> 'from')::uuid, me), 'to', (v_payload ->> 'to')::uuid, 'amount', v_amount,
+      'paid_on', v_payload ->> 'paid_on', 'chore_id', v_payload -> 'chore_id', 'memo', left(coalesce(v_payload ->> 'memo', ''), 1000));
+    if (v_payload ->> 'from')::uuid <> me and not public.is_admin() then raise exception 'only the payer reports' using errcode = '42501'; end if;
+    if (v_payload ->> 'from') = (v_payload ->> 'to') then raise exception 'to the same person' using errcode = '22023'; end if;
+    v_approvers := array[(v_payload ->> 'to')::uuid];
+    v_title := format('%sから%sへ %sを払いました（%s）', public.member_label((v_payload ->> 'from')::uuid), public.member_label((v_payload ->> 'to')::uuid),
+      public.yen_text(v_amount), to_char((v_payload ->> 'paid_on')::date, 'FMMM/FMDD'));
+    v_body := coalesce(nullif(v_payload ->> 'memo', ''), v_body);
+    v_url := '#/workflow';
+  else
+    raise exception 'this type is not started by hand' using errcode = '42501';
+  end if;
+  insert into public.workflow_requests (type_key, applicant, title, body, payload, approvers, status, url, decided_at)
+  values (p_type, me, left(v_title, 100), left(v_body, 2000), v_payload, v_approvers, v_status, v_url, case when v_status = 'open' then null else now() end)
+  returning id into rid;
+  return rid;
+end;
+$$;
+
+-- 返事: p_reply 'approved' | 'rejected' | 'acked'. Once everyone agreed the request is done and its action
+-- runs; one 却下 ends it.
+create or replace function public.wf_reply(p_request uuid, p_reply text, p_comment text)
+returns text language plpgsql security definer set search_path = public as $$
+declare
+  me uuid := public.current_member_id();
+  r public.workflow_requests;
+  t public.workflow_types;
+  answered integer;
+begin
+  select * into r from public.workflow_requests where id = p_request for update;
+  if not found then raise exception 'no such request' using errcode = '22023'; end if;
+  select * into t from public.workflow_types where key = r.type_key;
+  if me is null or not (me = any (r.approvers)) then raise exception 'not asked' using errcode = '42501'; end if;
+  if r.status <> 'open' then raise exception 'already decided' using errcode = '22023'; end if;
+  if (t.reply = 'ack' and p_reply <> 'acked') or (t.reply = 'approve' and p_reply not in ('approved', 'rejected')) then
+    raise exception 'reply % not for this type', p_reply using errcode = '22023';
+  end if;
+  insert into public.workflow_replies (request_id, member_id, reply, comment) values (r.id, me, p_reply, nullif(left(btrim(coalesce(p_comment, '')), 1000), ''))
+  on conflict (request_id, member_id) do update set reply = excluded.reply, comment = excluded.comment, replied_at = now();
+  if p_reply = 'rejected' then
+    update public.workflow_requests set status = 'rejected', decided_at = now(), updated_at = now() where id = r.id;
+    return 'rejected';
+  end if;
+  select count(*) into answered from public.workflow_replies where request_id = r.id and member_id = any (r.approvers) and reply in ('approved', 'acked');
+  if answered < cardinality(r.approvers) then return 'open'; end if;
+  update public.workflow_requests set status = 'done', decided_at = now(), updated_at = now() where id = r.id;
+  if t.action = 'chore_record' then
+    insert into public.chore_records (chore_id, chore_name, member_id, payer_id, done_on, value, request_id)
+    select (r.payload ->> 'chore_id')::uuid, coalesce((select name from public.chores where id = (r.payload ->> 'chore_id')::uuid), '（削除された家事）'),
+      (r.payload ->> 'member_id')::uuid, (r.payload ->> 'payer_id')::uuid, (r.payload ->> 'date')::date, (r.payload ->> 'value')::integer, r.id;
+  elsif t.action = 'person_payment' then
+    insert into public.person_payments (from_member, to_member, paid_on, amount, chore_id, memo, request_id)
+    values ((r.payload ->> 'from')::uuid, (r.payload ->> 'to')::uuid, (r.payload ->> 'paid_on')::date, (r.payload ->> 'amount')::integer,
+      nullif(r.payload ->> 'chore_id', '')::uuid, nullif(r.payload ->> 'memo', ''), r.id);
+  end if;
+  return 'done';
+end;
+$$;
+
+-- 取り下げ (the applicant, while it is open) and 取り消し (a done 家事の実施 or 支払い: the applicant or an
+-- administrator; what it made no longer counts).
+create or replace function public.wf_withdraw(p_request uuid)
+returns void language plpgsql security definer set search_path = public as $$
+declare
+  me uuid := public.current_member_id();
+  r public.workflow_requests;
+begin
+  select * into r from public.workflow_requests where id = p_request for update;
+  if not found then raise exception 'no such request' using errcode = '22023'; end if;
+  if me is null or (r.applicant is distinct from me and not public.is_admin()) then raise exception 'not yours' using errcode = '42501'; end if;
+  if r.status = 'open' then
+    update public.workflow_requests set status = 'withdrawn', decided_at = now(), updated_at = now(), result_pushed_at = now() where id = r.id;
+  elsif r.status = 'done' and r.type_key in ('chore_done', 'payment') then
+    update public.workflow_requests set status = 'cancelled', decided_at = now(), updated_at = now(), result_pushed_at = null where id = r.id;
+    update public.chore_records set cancelled_at = now() where request_id = r.id;
+    update public.person_payments set cancelled_at = now() where request_id = r.id;
+  else
+    raise exception 'cannot withdraw' using errcode = '22023';
+  end if;
+end;
+$$;
+revoke all on function public.wf_submit(text, text, text, jsonb, uuid[]) from public, anon;
+revoke all on function public.wf_reply(uuid, text, text) from public, anon;
+revoke all on function public.wf_withdraw(uuid) from public, anon;
+grant execute on function public.wf_submit(text, text, text, jsonb, uuid[]) to authenticated;
+grant execute on function public.wf_reply(uuid, text, text) to authenticated;
+grant execute on function public.wf_withdraw(uuid) to authenticated;
+
+-- 変更の回覧: the changes made directly (by people, an import or SQL) become a request of type 'change' for
+-- everyone (replaces the お知らせ of kind 'change' of 2026-11-03).
+create or replace function public.record_change(p_group text, p_year integer, p_title text, p_url text, p_line text)
+returns void language plpgsql security definer set search_path = public as $$
+declare
+  actor uuid := public.current_member_id();
+  k text := format('change:%s:%s:%s:%s', p_group, coalesce(p_year::text, '-'), coalesce(actor::text, 'app'), floor(extract(epoch from now()) / 600)::bigint);
+  everyone uuid[];
+  rid uuid;
+begin
+  if p_line is null or p_line = '' then return; end if;
+  select coalesce(array_agg(id), '{}') into everyone from public.members where active and email is not null;
+  insert into public.workflow_requests (type_key, key, applicant, title, body, approvers, url)
+  values ('change', k, actor, left(p_title, 100), left(p_line, 2000), everyone, p_url)
+  on conflict (key) do update
+    set body = left(public.workflow_requests.body || E'\n' || excluded.body, 2000), approvers = excluded.approvers,
+        status = 'open', decided_at = null, pushed_at = null, updated_at = now()
+  returning id into rid;
+  delete from public.workflow_replies where request_id = rid; -- asked again
+end;
+$$;
+revoke all on function public.record_change(text, integer, text, text, text) from public, anon, authenticated;
+
+-- the 確認待ち of the お知らせ move to 変更の回覧 (once; the お知らせ of kind 'change' are removed)
+do $$
+declare
+  n public.notices;
+  rid uuid;
+  everyone uuid[];
+begin
+  select coalesce(array_agg(id), '{}') into everyone from public.members where active and email is not null;
+  for n in select * from public.notices where kind = 'change' loop
+    insert into public.workflow_requests (type_key, key, applicant, title, body, approvers, url, created_at, pushed_at,
+      status, decided_at)
+    values ('change', n.key, n.from_member, n.title, n.body, everyone, n.url, n.created_at, coalesce(n.delivered_at, now()),
+      case when (select count(*) from public.notice_reads x where x.notice_id = n.id and x.acked_at is not null and x.member_id = any (everyone)) >= cardinality(everyone) then 'done' else 'open' end,
+      case when (select count(*) from public.notice_reads x where x.notice_id = n.id and x.acked_at is not null and x.member_id = any (everyone)) >= cardinality(everyone) then now() end)
+    on conflict (key) do nothing
+    returning id into rid;
+    if rid is not null then
+      insert into public.workflow_replies (request_id, member_id, reply, replied_at)
+      select rid, x.member_id, 'acked', x.acked_at from public.notice_reads x where x.notice_id = n.id and x.acked_at is not null
+      on conflict do nothing;
+    end if;
+    delete from public.notices where id = n.id;
+  end loop;
+end;
+$$;
+
+-- ---------------------------------------------------------------------------
 -- Removal of the single-owner version. Run this section only after logging in with the new
 -- version has been confirmed (on a new project it does nothing).
 -- ---------------------------------------------------------------------------

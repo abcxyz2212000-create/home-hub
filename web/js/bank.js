@@ -37,21 +37,40 @@ export function latestBalance(balances) {
   return balances.length ? [...balances].sort((a, b) => b.date.localeCompare(a.date))[0] : null;
 }
 
-// Monthly import reminder: from `day` of the month, until both imports were done this month.
-// importedAt: { mf, bank } ISO timestamps (or null). Returns the missing kinds, e.g. ['マネーフォワードの明細'].
+// Monthly import reminder (2026-11-08): from `day` of the month, until both imports were done this month.
+// An import after the end of a month brings all of that month, so "done this month" means last month is in.
+// importedAt: { mf, bank } ISO timestamps (or null), as given by lastImports(). Returns the missing kinds:
+// [{ key: 'mf' | 'bank', label, last }] with `last` the date (Japan time) of the previous import, or null.
 export const REMIND_DAY = 5;
+const IMPORT_KINDS = [
+  { key: 'mf', label: 'マネーフォワードの明細', short: 'マネーフォワード' },
+  { key: 'bank', label: '銀行の残高', short: '銀行' },
+];
 export function missingImports(today, importedAt, day = REMIND_DAY) {
   if (Number(today.slice(8, 10)) < day) return [];
   const monthStart = `${today.slice(0, 7)}-01`;
-  const done = (at) => Boolean(at) && toJstDate(at) >= monthStart;
-  return [
-    done(importedAt.mf) ? null : 'マネーフォワードの明細',
-    done(importedAt.bank) ? null : '銀行の残高',
-  ].filter(Boolean);
+  return IMPORT_KINDS
+    .map((k) => ({ ...k, last: importedAt[k.key] ? toJstDate(importedAt[k.key]) : null }))
+    .filter((k) => !k.last || k.last < monthStart);
+}
+
+// The last import of each kind: the later of the time saved by the import screen and the newest row
+// (its created_at), so an import still counts when saving that time failed.
+// settings: { mf_imported_at, bank_imported_at }; newest: { mf, bank } created_at of the newest rows.
+export function lastImports(settings, newest) {
+  return {
+    mf: latestTime(settings.mf_imported_at, newest.mf),
+    bank: latestTime(settings.bank_imported_at, newest.bank),
+  };
+}
+
+function latestTime(...values) {
+  const ok = values.filter((v) => typeof v === 'string' && Number.isFinite(Date.parse(v)));
+  return ok.length ? ok.reduce((a, b) => (Date.parse(b) > Date.parse(a) ? b : a)) : null;
 }
 
 function toJstDate(iso) {
-  return new Date(new Date(iso).getTime() + 9 * 3600000).toISOString().slice(0, 10);
+  return new Date(Date.parse(iso) + 9 * 3600000).toISOString().slice(0, 10);
 }
 
 export const DEFAULT_LOW_BALANCE = 100000;

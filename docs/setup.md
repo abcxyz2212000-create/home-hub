@@ -186,3 +186,13 @@ node tests/e2e/run.mjs
 - `npm test`: 単体テスト（期限計算・CSV・ZIP・入力チェック・通知の暗号化と送信）。外部ライブラリは不要です。
 - `tests/sql/run.sh`: データベース定義と RLS のテスト。PostgreSQL が必要です。
 - `tests/e2e/run.mjs`: ブラウザでの画面操作テスト。Playwright と Chromium が必要です（アプリ本体の依存ではありません）。
+
+
+## 通知（Supabase、2026-11-07 から）
+
+通知は Supabase の Edge Function「notify」が送り、pg_cron が10分ごと（と12月1日）に呼び出します。GitHub Actions では送りません（GitHub の規約で、開発・テスト・公開と関係のない定期実行は認められていないため）。
+
+1. Edge Function を公開する: `supabase/functions/notify/index.ts` と、`scripts/notify.mjs`・`scripts/wage.mjs`・`scripts/webpush.mjs`・`web/js/` の各モジュールを同じ並びで置いて公開します（verify_jwt はオフ。関数がトークンを確かめます）。
+2. `supabase/cron.sql` を SQL エディタで1回実行します（pg_cron・pg_net を有効にし、トークンを Vault に作り、定期実行を登録します）。
+3. アプリの 設定 → アカウント → 通知 で鍵を作り（作り直し）、表示された「秘密の値」を Supabase の Edge Functions → Secrets に `VAPID_PRIVATE_KEY` として登録します。
+4. 各端末で「この端末で通知を受け取る」を押します。
