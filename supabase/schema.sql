@@ -1378,6 +1378,44 @@ grant execute on function public.wf_submit(text, text, text, jsonb, uuid[]) to a
 grant execute on function public.wf_reply(uuid, text, text) to authenticated;
 grant execute on function public.wf_withdraw(uuid) to authenticated;
 
+-- Attachments of a workflow request (2026-11-15; e.g. the transfer screen of 個人間の支払い): images in the
+-- item-photos bucket. Everyone reads; the one who sent the request adds or removes them while it waits
+-- (administrators always), up to 3 per request.
+create table if not exists public.workflow_attachments (
+  id uuid primary key default gen_random_uuid(),
+  request_id uuid not null references public.workflow_requests (id) on delete cascade,
+  path text not null unique check (char_length(path) <= 300),
+  thumb_path text not null unique check (char_length(thumb_path) <= 300),
+  bytes integer not null default 0 check (bytes >= 0),
+  created_at timestamptz not null default now(),
+  created_by uuid default public.current_member_id() references public.members (id) on delete set null
+);
+create index if not exists workflow_attachments_request_idx on public.workflow_attachments (request_id);
+
+-- whether the current member sent this request and it is still waiting
+create or replace function public.owns_open_request(p_request uuid)
+returns boolean language sql stable security definer set search_path = public as $$
+  select coalesce((select r.applicant = public.current_member_id() and r.status = 'open'
+                   from public.workflow_requests r where r.id = p_request), false);
+$$;
+revoke all on function public.owns_open_request(uuid) from public, anon;
+grant execute on function public.owns_open_request(uuid) to authenticated;
+
+alter table public.workflow_attachments enable row level security;
+revoke all on public.workflow_attachments from anon, authenticated;
+grant select, insert, delete on public.workflow_attachments to authenticated;
+grant select, insert, update, delete on public.workflow_attachments to service_role;
+drop policy if exists member_read on public.workflow_attachments;
+drop policy if exists member_insert on public.workflow_attachments;
+drop policy if exists member_delete on public.workflow_attachments;
+create policy member_read on public.workflow_attachments for select to authenticated
+  using (public.is_member());
+create policy member_insert on public.workflow_attachments for insert to authenticated
+  with check ((public.is_admin() or (public.is_member() and public.owns_open_request(request_id)))
+    and (select count(*) from public.workflow_attachments a where a.request_id = workflow_attachments.request_id) < 3);
+create policy member_delete on public.workflow_attachments for delete to authenticated
+  using (public.is_admin() or (public.is_member() and public.owns_open_request(request_id)));
+
 -- 変更の回覧: the changes made directly (by people, an import or SQL) become a request of type 'change' for
 -- everyone (replaces the お知らせ of kind 'change' of 2026-11-03).
 create or replace function public.record_change(p_group text, p_year integer, p_title text, p_url text, p_line text)
