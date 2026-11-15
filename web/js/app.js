@@ -58,6 +58,7 @@ const state = {
   wfReplies: [],
   choreRecords: [], // 家事の対価: chores done (approved) and payments between people
   personPayments: [],
+  wfAttachments: [], // images of workflow requests (個人間の支払い)
   noticeReads: [],
   depositReports: [], // 入金報告 (reference only)
   attachments: [], // images of one-off items and deposit reports
@@ -336,7 +337,7 @@ function recordLink(ledger, record) {
 // ---------------------------------------------------------------- data loading
 
 async function loadAll() {
-  const [accounts, cards, contracts, items, memberships, photos, settings, members, chores, sharedRules, sharedEntries, depositReports, attachments, balances, budgets, budgetYears, budgetAttachments, notices, noticeReads, wfTypes, wfRequests, wfReplies, choreRecords, personPayments, newestTx] = await Promise.all([
+  const [accounts, cards, contracts, items, memberships, photos, settings, members, chores, sharedRules, sharedEntries, depositReports, attachments, balances, budgets, budgetYears, budgetAttachments, notices, noticeReads, wfTypes, wfRequests, wfReplies, choreRecords, personPayments, newestTx, wfAttachments] = await Promise.all([
     db.selectAll('accounts'),
     db.selectAll('cards'),
     db.selectAll('contracts'),
@@ -362,8 +363,9 @@ async function loadAll() {
     db.selectAll('chore_records', 'done_on.asc'),
     db.selectAll('person_payments', 'paid_on.asc'),
     db.selectWhere('transactions', 'order=created_at.desc&limit=1'),
+    db.selectAll('workflow_attachments', 'created_at.asc'),
   ]);
-  Object.assign(state, { wfTypes, wfRequests, wfReplies, choreRecords, personPayments });
+  Object.assign(state, { wfTypes, wfRequests, wfReplies, choreRecords, personPayments, wfAttachments });
   state.data = { accounts, cards, contracts, items, memberships };
   state.photos = photos;
   state.settings = Object.fromEntries(settings.map((s) => [s.key, s.value]));
@@ -603,9 +605,10 @@ async function reloadNotices() {
 }
 
 async function reloadWorkflow() {
-  [state.wfRequests, state.wfReplies, state.choreRecords, state.personPayments] = await Promise.all([
+  [state.wfRequests, state.wfReplies, state.choreRecords, state.personPayments, state.wfAttachments] = await Promise.all([
     db.selectAll('workflow_requests', 'created_at.desc'), db.selectAll('workflow_replies', 'replied_at.asc'),
-    db.selectAll('chore_records', 'done_on.asc'), db.selectAll('person_payments', 'paid_on.asc')]);
+    db.selectAll('chore_records', 'done_on.asc'), db.selectAll('person_payments', 'paid_on.asc'),
+    db.selectAll('workflow_attachments', 'created_at.asc')]);
 }
 
 function recipientsText(n) {
@@ -796,7 +799,7 @@ function wfDetail(r) {
   if (r.type_key === 'chore_done' && p.value !== undefined) return `1回の価値 ${yen(p.value)}（${memberNick(p.payer_id)}が${memberNick(p.member_id)}に払う）`;
   if (r.type_key === 'payment' && p.amount) {
     const chore = p.chore_id ? state.chores.find((c) => c.id === p.chore_id) : null;
-    return `${memberNick(p.from)} → ${memberNick(p.to)} ${yen(p.amount)}（${dateText(p.paid_on)}）${chore ? `・${chore.name}の分` : ''}`;
+    return `${memberNick(p.from)} → ${memberNick(p.to)} ${yen(p.amount)}（${dateText(p.paid_on)}）${chore ? `・${chore.name}の分` : p.chore_id ? '・家事の対価' : ''}`;
   }
   return null;
 }
@@ -834,11 +837,29 @@ function wfItem(r) {
       `${memberNick(id)} ${x ? `${WF_REPLY[x.reply]}（${formatTime(x.replied_at)}）` : '未'}${x && x.comment ? `「${x.comment}」` : ''}`);
   });
   const detail = wfDetail(r);
+  // images (個人間の支払い): the one who sent it may add or remove them while it waits
+  const files = attachmentsOf('request', r.id);
+  let attachNode = files.length ? attachmentThumbs(files) : null;
+  if (r.status === 'open' && canManage && r.type_key === 'payment') {
+    const box = attachmentBox('request', r.id, '添付（振込の画面など）');
+    attachNode = h('div', { class: 'wf-attach' }, box.el,
+      h('button', { type: 'button', class: 'small', onclick: (ev) => busy(ev.currentTarget, async () => {
+        const list = box.files();
+        if (!list.length) {
+          toast('追加する画像を選んでください。', 'error');
+          return;
+        }
+        const saved = await uploadAttachments('request', r.id, list, box.status);
+        toast(saved === list.length ? '画像を保存しました。' : '保存できなかった画像があります。', saved === list.length ? 'info' : 'error');
+        render();
+      }) }, '画像を保存'));
+  }
   return h('div', { class: `notice wf-item${mine ? ' unread needs-ack' : ''}` },
     h('div', { class: 'notice-title' }, h('span', { class: 'tag tag-type' }, t.name), r.title,
       h('span', { class: `tag tag-status status-${r.status}` }, WF_STATUS[r.status] || r.status)),
     r.body ? h('p', { class: 'notice-body' }, r.body) : null,
     detail ? h('p', { class: 'small' }, detail) : null,
+    attachNode,
     h('p', { class: 'ack-status small' }, `${t.reply === 'ack' ? '確認' : '承認'}：`, who.flatMap((x, i) => (i ? ['・', x] : [x]))),
     h('div', { class: 'notice-actions muted small' },
       h('span', {}, `${r.applicant ? memberNick(r.applicant) : 'アプリ'}・${formatTime(r.created_at)}`),
@@ -964,7 +985,8 @@ function choreRewardView(period) {
   const inPeriod = (d) => d.startsWith(isYear ? `${period}-` : period);
   const endOf = isYear ? `${period}-12-31` : `${period}-31`;
   const records = state.choreRecords.filter((r) => !r.cancelled_at);
-  const payments = state.personPayments.filter((p) => !p.cancelled_at);
+  // only what was paid for chores (a payment for something else is in お金 → 個人間の支払い)
+  const payments = state.personPayments.filter((p) => !p.cancelled_at && p.chore_id);
   const pairs = new Map();
   const pairOf = (payer, doer) => {
     const k = `${payer}>${doer}`;
@@ -1007,40 +1029,147 @@ function choreRewardView(period) {
   return cards.length ? cards : h('section', { class: 'card' }, h('p', { class: 'muted' }, '対価のある家事はまだありません（家事の編集で「対価を払う人」を選ぶと使えます）。'));
 }
 
-function renderPaymentForm(toParam) {
-  const others = state.members.filter((m) => m.active && m.email && (isAdmin() || m.id !== me().id)).sort(meFirst);
+// 「払いました」: a payment from one person to another (個人間の支払い), for a chore (家事の対価) or anything
+// else. The one who got it confirms it (承認); up to MAX_ATTACHMENTS images (the transfer screen etc.).
+// param: a member id (from 家事の対価: for a chore, to that person) or 'other' (from お金: anything else).
+function renderPaymentForm(param) {
+  const fromMoney = param === 'other';
+  const toParam = fromMoney ? null : param;
   const paidChores = state.chores.filter(isPaidChore);
-  const from = isAdmin() ? h('select', { id: 'pay-from' }, state.members.filter((m) => m.active && m.email).sort(meFirst).map((m) => h('option', { value: m.id, selected: m.id === me().id }, nick(m)))) : null;
-  const to = h('select', { id: 'pay-to' }, others.filter((m) => m.id !== me().id || isAdmin()).map((m) => h('option', { value: m.id, selected: m.id === toParam }, nick(m))));
+  const choreOf = (id) => paidChores.find((c) => c.id === id) || null;
+  const senders = state.members.filter((m) => m.active && m.email).sort(meFirst);
+  const from = isAdmin() ? h('select', { id: 'pay-from' }, senders.map((m) => h('option', { value: m.id, selected: m.id === me().id }, nick(m)))) : null;
+  const fromId = () => (from ? from.value : me().id);
+  const to = h('select', { id: 'pay-to' }, senders.map((m) => h('option', { value: m.id, selected: m.id === toParam }, nick(m))));
+  if (!toParam) {
+    const other = senders.find((m) => m.id !== me().id);
+    if (other) to.value = other.id;
+  }
   const amount = h('input', { type: 'text', inputmode: 'numeric', id: 'pay-amount', class: 'num' });
   const paidOn = h('input', { type: 'date', id: 'pay-on', value: todayJST() });
-  const chore = h('select', { id: 'pay-chore' }, h('option', { value: '' }, '（家事の分ではない）'), paidChores.map((c) => h('option', { value: c.id, selected: c.assignee_id === toParam }, c.name)));
+  const kindChore = h('input', { type: 'radio', name: 'pay-kind', id: 'pay-kind-chore', value: 'chore', disabled: paidChores.length === 0 });
+  const kindOther = h('input', { type: 'radio', name: 'pay-kind', id: 'pay-kind-other', value: 'other' });
+  const useChore = !fromMoney && paidChores.length > 0;
+  kindChore.checked = useChore;
+  kindOther.checked = !useChore;
+  const chore = h('select', { id: 'pay-chore' }, paidChores.map((c) => h('option', { value: c.id, selected: c.assignee_id === toParam }, `${c.name}（${memberNick(c.paid_by)} → ${memberNick(c.assignee_id)}）`)));
   const memo = h('input', { type: 'text', id: 'pay-memo', maxlength: 1000 });
+  const memoLabel = h('label', { for: 'pay-memo' });
+  const choreField = h('div', { class: 'field' }, h('label', { for: 'pay-chore' }, 'どの家事の分か'), chore);
+  const attach = attachmentBox('request', null, '添付（振込の画面など）');
   const error = h('p', { class: 'error', role: 'alert' });
+  const sync = () => {
+    const isChore = kindChore.checked;
+    choreField.hidden = !isChore;
+    memoLabel.replaceChildren(isChore ? 'メモ' : '用途', isChore ? null : h('span', { class: 'req' }, ' *'));
+    memo.placeholder = isChore ? '' : '例：旅行代の精算';
+    // a chore payment goes from the one who pays for it to the one who does it
+    if (isChore) {
+      const c = choreOf(chore.value);
+      if (c) {
+        to.value = c.assignee_id;
+        if (from) from.value = c.paid_by;
+      }
+    }
+  };
+  for (const el of [kindChore, kindOther, chore]) el.addEventListener('change', sync);
+  sync();
   const send = h('button', { type: 'button', class: 'primary', onclick: (ev) => busy(ev.currentTarget, async () => {
     error.textContent = '';
     const v = parseYen(amount.value);
-    const fromId = from ? from.value : me().id;
+    const isChore = kindChore.checked;
+    const text = memo.value.trim();
     if (!(v >= 1 && v <= 10000000)) error.textContent = '金額は1円から1,000万円までで入力してください。';
     else if (!/^\d{4}-\d{2}-\d{2}$/.test(paidOn.value)) error.textContent = '払った日を入力してください。';
-    else if (fromId === to.value) error.textContent = '払った人と受け取った人が同じです。';
+    else if (fromId() === to.value) error.textContent = '払った人と受け取った人が同じです。';
+    else if (isChore && !choreOf(chore.value)) error.textContent = 'どの家事の分かを選んでください。';
+    else if (!isChore && !text) error.textContent = '用途を入力してください（例：旅行代の精算）。';
     if (error.textContent) return;
-    await wfCall('wf_submit', { p_type: 'payment', p_title: null, p_body: null,
-      p_payload: { from: fromId, to: to.value, amount: v, paid_on: paidOn.value, chore_id: chore.value || null, memo: memo.value.trim() }, p_approvers: null },
-    `${memberNick(to.value)}に「受け取りました」の確認を頼みました。`);
-    location.hash = '#/workflow/applied';
+    const id = await wfCall('wf_submit', { p_type: 'payment', p_title: null, p_body: null,
+      p_payload: { from: fromId(), to: to.value, amount: v, paid_on: paidOn.value, chore_id: isChore ? chore.value : null, memo: text }, p_approvers: null });
+    if (!id) return;
+    const files = attach.files();
+    const saved = files.length ? await uploadAttachments('request', id, files, attach.status) : 0;
+    toast(`${memberNick(to.value)}に「受け取りました」の確認を頼みました。${files.length && saved < files.length ? '保存できなかった画像があります。' : ''}`);
+    location.hash = fromMoney ? '#/flow/person' : '#/workflow/applied';
   }) }, '送る');
-  setView('払いました', pageHead({ title: '払いました', icon: 'chores', back: { href: '#/chores/pay', text: '家事の対価へ' } }),
+  setView('払いました', pageHead({ title: '払いました', icon: fromMoney ? 'flow' : 'chores',
+    back: fromMoney ? { href: '#/flow/person', text: '個人間の支払いへ' } : { href: '#/chores/pay', text: '家事の対価へ' } }),
     h('section', { class: 'card' },
       h('p', { class: 'muted small' }, '受け取った人が「承認（受け取りました）」を押すと、支払いとして数えます。家計費とは関係ありません。'),
+      h('fieldset', { class: 'field radio-row' }, h('legend', {}, '種類'),
+        h('label', { for: 'pay-kind-chore' }, kindChore, ' 家事の対価'),
+        h('label', { for: 'pay-kind-other' }, kindOther, ' それ以外'),
+        paidChores.length === 0 ? h('p', { class: 'muted small' }, '対価のある家事はまだありません。') : null),
+      choreField,
       from ? h('div', { class: 'field' }, h('label', { for: 'pay-from' }, '払った人'), from) : null,
       h('div', { class: 'field' }, h('label', { for: 'pay-to' }, '受け取った人'), to),
       h('div', { class: 'field' }, h('label', { for: 'pay-amount' }, '金額（円）', h('span', { class: 'req' }, ' *')), amount),
       h('div', { class: 'field' }, h('label', { for: 'pay-on' }, '払った日'), paidOn),
-      h('div', { class: 'field' }, h('label', { for: 'pay-chore' }, 'どの家事の分か'), chore),
-      h('div', { class: 'field' }, h('label', { for: 'pay-memo' }, 'メモ'), memo),
+      h('div', { class: 'field' }, memoLabel, memo),
+      attach.el,
       error),
     h('div', { class: 'actions sticky-actions' }, send));
+}
+
+// お金 → 個人間の支払い: every payment between people in the period (by the day it was paid), what is
+// waiting for the one who got it, and the totals of the confirmed ones in each direction.
+function personPaymentsView(period) {
+  const isYear = period.length === 4;
+  const rows = state.wfRequests
+    .filter((r) => r.type_key === 'payment' && r.payload && r.payload.paid_on && r.payload.paid_on.startsWith(isYear ? `${period}-` : period))
+    .sort((a, b) => b.payload.paid_on.localeCompare(a.payload.paid_on) || String(b.created_at).localeCompare(String(a.created_at)));
+  const totals = new Map();
+  for (const r of rows.filter((x) => x.status === 'done')) {
+    const k = `${r.payload.from}>${r.payload.to}`;
+    totals.set(k, (totals.get(k) || 0) + Number(r.payload.amount || 0));
+  }
+  const ids = [...new Set(rows.flatMap((r) => [r.payload.from, r.payload.to]))];
+  const pairs = [];
+  for (let i = 0; i < ids.length; i += 1) {
+    for (let j = i + 1; j < ids.length; j += 1) {
+      const ab = totals.get(`${ids[i]}>${ids[j]}`) || 0;
+      const ba = totals.get(`${ids[j]}>${ids[i]}`) || 0;
+      if (ab || ba) pairs.push({ a: ids[i], b: ids[j], ab, ba });
+    }
+  }
+  const label = isYear ? `${Number(period)}年` : ymLabel(period);
+  const purpose = (r) => {
+    const c = r.payload.chore_id ? state.chores.find((x) => x.id === r.payload.chore_id) : null;
+    if (r.payload.chore_id) return `家事の対価${c ? `（${c.name}）` : ''}${r.payload.memo ? `・${r.payload.memo}` : ''}`;
+    return r.payload.memo || r.body || '';
+  };
+  const item = (r) => {
+    const files = attachmentsOf('request', r.id);
+    return h('li', { class: `payment-item status-${r.status}` },
+      h('div', { class: 'payment-line' },
+        h('span', { class: 'payment-date' }, dateText(r.payload.paid_on)),
+        h('span', { class: 'payment-who' }, `${memberNick(r.payload.from)} → ${memberNick(r.payload.to)}`),
+        h('span', { class: 'num payment-amount' }, yen(Number(r.payload.amount || 0))),
+        h('span', { class: `tag tag-status status-${r.status}` }, r.status === 'open' ? '確認待ち' : r.status === 'done' ? '確定' : WF_STATUS[r.status] || r.status)),
+      purpose(r) ? h('p', { class: 'small muted' }, purpose(r)) : null,
+      files.length ? attachmentThumbs(files) : null);
+  };
+  return [
+    h('section', { class: 'card' },
+      h('h2', { class: 'with-icon' }, icon('yen'), `個人間の支払い（${label}）`,
+        helpButton('個人間の支払い', '二人の間のお金のやり取りの記録です。家計費（負担額・共用口座・予算）には入りません。',
+          '「払いました」で送り、受け取った人が「承認・確認」で「承認（受け取りました）」を押すと確定します。',
+          '合計は確定したものだけです。家事の対価の分は、家事 → 家事の対価 の未払いにも反映されます。')),
+      pairs.map((p) => {
+        const net = p.ab - p.ba;
+        return h('table', { class: 'table payment-totals' },
+          h('caption', { class: 'small muted' }, '確定した支払いの合計'),
+          h('tbody', {},
+            h('tr', {}, h('th', { scope: 'row' }, `${memberNick(p.a)} → ${memberNick(p.b)}`), h('td', { class: 'num' }, yen(p.ab))),
+            h('tr', {}, h('th', { scope: 'row' }, `${memberNick(p.b)} → ${memberNick(p.a)}`), h('td', { class: 'num' }, yen(p.ba))),
+            h('tr', { class: 'total' }, h('th', { scope: 'row' }, '差し引き'),
+              h('td', { class: 'num' }, net === 0 ? '0円' : `${memberNick(net > 0 ? p.a : p.b)} → ${memberNick(net > 0 ? p.b : p.a)} ${yen(Math.abs(net))}`))));
+      }),
+      rows.length ? h('ul', { class: 'payment-list' }, rows.map(item))
+        : h('p', { class: 'muted' }, 'この期間の支払いはありません。'),
+      h('div', { class: 'actions' }, h('a', { class: 'button primary', href: '#/payment/other' }, '払いました'))),
+  ];
 }
 
 // ---------------------------------------------------------------- setup / login
@@ -2137,7 +2266,7 @@ function sharedAccountPicker() {
 // balance of the shared account, then two tabs, each with its own month or year:
 //   ext    共用口座の入出金      the shared account's money in and out (people's accounts included)
 //   member 個人の入金・立替      what each member puts in (当月分, deposits, 立替, balance)
-const MONEY_TABS = { member: '個人の入金・立替', ext: '共用口座の入出金', budget: '予算と負担率', flow: '流れ図' }; // 予算と負担率 has sub tabs
+const MONEY_TABS = { member: '個人の入金・立替', ext: '共用口座の入出金', person: '個人間の支払い', budget: '予算と負担率', flow: '流れ図' }; // 予算と負担率 has sub tabs
 
 // 'YYYY-MM' (a month) or 'YYYY' (a year); anything else -> null.
 function moneyPeriod(v) {
@@ -2203,6 +2332,9 @@ function moneyBoxes(tab) {
       { key: 'categories', mode: 'both', title: '費目ごと', build: (p) => (p.length === 4 ? pick(budgetYearView(p), 2) : pick(budgetMonthView(p), 1)) },
       { key: 'cumulative', mode: 'year', title: '支出の累計', build: (p) => pick(budgetYearView(p), 1) },
     ];
+  }
+  if (tab === 'person') {
+    return [{ key: 'list', mode: 'both', title: '個人間の支払い', build: (p) => personPaymentsView(p) }];
   }
   if (tab === 'ratio') {
     return [
@@ -3364,8 +3496,9 @@ function dateText(d) {
   return `${y}/${m}/${day}`;
 }
 
-// kind: 'entry' (one-off item) | 'report' (deposit report)
+// kind: 'entry' (one-off item) | 'report' (deposit report) | 'request' (a workflow request, e.g. a payment)
 function attachmentsOf(kind, id) {
+  if (kind === 'request') return state.wfAttachments.filter((a) => a.request_id === id);
   return state.attachments.filter((a) => (kind === 'entry' ? a.entry_id : a.report_id) === id);
 }
 
@@ -3386,7 +3519,8 @@ function attachmentBox(kind, parentId, title, onRead = null) {
   const pending = [];
   const box = h('div', { class: 'field attach-box' });
   const status = h('p', { class: 'muted small', role: 'status' });
-  const input = h('input', { type: 'file', accept: 'image/*', multiple: true, id: `attach-${kind}`, class: 'visually-hidden' });
+  const inputId = `attach-${kind}${parentId ? `-${parentId}` : ''}`;
+  const input = h('input', { type: 'file', accept: 'image/*', multiple: true, id: inputId, class: 'visually-hidden' });
   const saved = () => (parentId ? attachmentsOf(kind, parentId) : []);
   const draw = () => {
     const previews = pending.map((file, i) => {
@@ -3405,7 +3539,7 @@ function attachmentBox(kind, parentId, title, onRead = null) {
       }) : null,
       previews.length ? h('div', { class: 'photos' }, previews) : null,
       h('div', { class: 'button-row' },
-        saved().length + pending.length < MAX_ATTACHMENTS ? h('label', { for: `attach-${kind}`, class: 'button' }, '画像を追加（撮影・選択）') : null,
+        saved().length + pending.length < MAX_ATTACHMENTS ? h('label', { for: inputId, class: 'button' }, '画像を追加（撮影・選択）') : null,
         onRead && (pending.length || saved().length) ? h('button', { type: 'button', onclick: (ev) => busy(ev.currentTarget, () => readFirstImage()) }, '画像から読む（OCR）') : null),
       input,
       status].filter(Boolean));
@@ -3473,13 +3607,19 @@ async function uploadAttachments(kind, parentId, files, status) {
       continue;
     }
     const id = crypto.randomUUID();
-    const dir = kind === 'entry' ? 'receipts' : 'deposit-reports';
+    const dir = kind === 'entry' ? 'receipts' : kind === 'request' ? 'requests' : 'deposit-reports';
     const path = `${dir}/${parentId}/${id}.jpg`;
     const thumbPath = `${dir}/${parentId}/${id}_thumb.jpg`;
     try {
       await db.uploadPhoto(path, compressed.photo);
       await db.uploadPhoto(thumbPath, compressed.thumb);
-      await db.insertRows('shared_attachments', [{ id, [kind === 'entry' ? 'entry_id' : 'report_id']: parentId, path, thumb_path: thumbPath, bytes: compressed.photo.size + compressed.thumb.size }]);
+      const row = { id, path, thumb_path: thumbPath, bytes: compressed.photo.size + compressed.thumb.size };
+      if (kind === 'request') {
+        const [saved] = await db.insertRows('workflow_attachments', [{ ...row, request_id: parentId }]);
+        state.wfAttachments.push(saved || { ...row, request_id: parentId });
+      } else {
+        await db.insertRows('shared_attachments', [{ ...row, [kind === 'entry' ? 'entry_id' : 'report_id']: parentId }]);
+      }
       done += 1;
     } catch (e) {
       handleError(e);
@@ -3491,10 +3631,11 @@ async function uploadAttachments(kind, parentId, files, status) {
 
 async function removeAttachments(list) {
   if (list.length === 0) return;
-  for (const p of list) await db.deleteWhere('shared_attachments', 'id', p.id);
+  for (const p of list) await db.deleteWhere(p.request_id ? 'workflow_attachments' : 'shared_attachments', 'id', p.id);
   await db.removePhotos(list.flatMap((p) => [p.path, p.thumb_path])).catch((e) => console.error(e.detail || e));
   const ids = new Set(list.map((p) => p.id));
   state.attachments = state.attachments.filter((p) => !ids.has(p.id));
+  state.wfAttachments = state.wfAttachments.filter((p) => !ids.has(p.id));
 }
 
 // preset: "kind:memberId:ym" (kind = advance | charge | deposit).
@@ -4631,17 +4772,25 @@ async function fullBackup(status) {
     files.push({ name, data: new Uint8Array(await blob.arrayBuffer()) });
     attachRows.push([a.id, a.entry_id ? '立替など' : '入金報告', a.entry_id || a.report_id, name, a.created_at]);
   }
+  for (const a of state.wfAttachments) {
+    j += 1;
+    status.textContent = `添付画像を取得しています（${j}/${state.attachments.length + state.wfAttachments.length}）…`;
+    const blob = await db.downloadPhoto(a.path);
+    const name = `attachments/${a.id}.jpg`;
+    files.push({ name, data: new Uint8Array(await blob.arrayBuffer()) });
+    attachRows.push([a.id, '承認・確認の依頼（個人間の支払いなど）', a.request_id, name, a.created_at]);
+  }
   files.push({ name: '添付画像一覧.csv', data: toCSV(attachRows) });
   status.textContent = 'ZIPファイルを作成しています…';
   const zip = createZip(files);
   download(`HouseHub_バックアップ_${todayJST()}.zip`, new Blob([zip], { type: 'application/zip' }));
   await saveSetting('last_backup_at', new Date().toISOString());
-  status.textContent = `バックアップを書き出しました（写真${state.photos.length}枚・添付画像${state.attachments.length}枚を含む）。`;
+  status.textContent = `バックアップを書き出しました（写真${state.photos.length}枚・添付画像${state.attachments.length + state.wfAttachments.length}枚を含む）。`;
 }
 
 // アプリの更新: the version this device runs (APP_VERSION, the same as the service worker's cache name) and a button that drops
 // the saved files and loads the newest version. Sign-in and notifications stay as they are.
-const APP_VERSION = 'v71'; // = CACHE in sw.js (checked by tests/unit/version.test.mjs)
+const APP_VERSION = 'v72'; // = CACHE in sw.js (checked by tests/unit/version.test.mjs)
 
 function appUpdateSection() {
   const version = h('span', { class: 'num' }, APP_VERSION);

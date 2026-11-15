@@ -593,6 +593,38 @@ begin
   exception when invalid_parameter_value then null; end;
 end $$;
 
+-- attachments of a request: the one who sent it while it waits (up to 3); everyone reads; fixed once decided
+select pg_temp.login('adv@example.com');
+do $$
+declare
+  rid uuid;
+begin
+  rid := public.wf_submit('proposal', '添付のテスト', null, '{}', null);
+  insert into public.workflow_attachments (request_id, path, thumb_path)
+    values (rid, 'requests/a.jpg', 'requests/a_t.jpg'), (rid, 'requests/b.jpg', 'requests/b_t.jpg'), (rid, 'requests/c.jpg', 'requests/c_t.jpg');
+  begin insert into public.workflow_attachments (request_id, path, thumb_path) values (rid, 'requests/d.jpg', 'requests/d_t.jpg'); raise exception 'a fourth attachment';
+  exception when insufficient_privilege then null; end;
+  perform pg_catalog.set_config('test.rid2', rid::text, false);
+end $$;
+select pg_temp.login('owner@example.com');
+do $$
+declare
+  rid uuid := current_setting('test.rid2')::uuid;
+begin
+  if (select count(*) from public.workflow_attachments where request_id = rid) <> 3 then raise exception 'others read the attachments'; end if;
+  perform public.wf_reply(rid, 'rejected', null);
+end $$;
+select pg_temp.login('adv@example.com');
+do $$
+declare
+  rid uuid := current_setting('test.rid2')::uuid;
+begin
+  delete from public.workflow_attachments where request_id = rid;
+  begin insert into public.workflow_attachments (request_id, path, thumb_path) values (rid, 'requests/e.jpg', 'requests/e_t.jpg'); raise exception 'attached to a decided request';
+  exception when insufficient_privilege then null; end;
+  if (select count(*) from public.workflow_attachments where request_id = rid) <> 3 then raise exception 'attachments changed after the decision'; end if;
+end $$;
+
 -- 家事の実施 and 個人間の支払い: the assignee asks the one who pays; approved = counted at the chore's value
 reset role;
 insert into public.chores (name, cycle, minutes, adjust, assignee_type, assignee_id, paid_by, prompt_hour)

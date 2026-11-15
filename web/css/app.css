@@ -777,3 +777,18 @@ details.chore-group > summary { cursor: pointer; list-style: revert; }
 .wf-comment { margin: 0.3rem 0; }
 .wf-actions { margin-top: 0.3rem; }
 .reward-card .actions { margin-top: 0.5rem; }
+
+/* 個人間の支払い (2026-11-15) */
+.radio-row { display: flex; flex-wrap: wrap; gap: 0.5rem 1.25rem; align-items: center; }
+.radio-row legend { padding: 0 0.25rem; }
+.radio-row label { display: inline-flex; align-items: center; gap: 0.35rem; }
+.radio-row p { flex-basis: 100%; margin: 0; }
+.payment-list { list-style: none; margin: 0.75rem 0 0; padding: 0; }
+.payment-item { border-top: 1px solid var(--line); padding: 0.6rem 0; }
+.payment-item p { margin: 0.2rem 0 0; }
+.payment-item .photos { grid-template-columns: repeat(auto-fill, minmax(72px, 1fr)); margin: 0.4rem 0 0; }
+.payment-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.25rem 0.75rem; }
+.payment-amount { font-weight: 600; }
+.payment-item.status-withdrawn .payment-amount, .payment-item.status-cancelled .payment-amount, .payment-item.status-rejected .payment-amount { text-decoration: line-through; color: var(--muted); }
+.payment-totals { margin: 0.25rem 0 0.5rem; }
+.payment-totals caption { text-align: left; padding-bottom: 0.25rem; }

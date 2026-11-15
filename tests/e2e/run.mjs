@@ -1147,6 +1147,41 @@ try {
   await page.reload();
   await page.locator('.reward-card').waitFor();
   assert.match(await page.locator('.reward-card').innerText(), /払った額\s+1,200円[\s\S]*未払い[^\n]*\s+0円/);
+  // 個人間の支払い (お金): a payment for something else, with an image; it does not change the 家事の対価
+  await page.goto(`${appUrl}#/flow/person`);
+  await page.reload();
+  await page.locator('.payment-item').first().waitFor();
+  assert.match(await page.locator('.payment-list').innerText(), /はなこ\s+1,200円\s+確定[\s\S]*家事の対価（夕ご飯づくり）/);
+  await page.getByRole('link', { name: '払いました' }).click();
+  await page.locator('#pay-kind-other').waitFor();
+  assert.ok(await page.locator('#pay-kind-other').isChecked(), 'from お金 the kind is それ以外');
+  await page.locator('#pay-amount').fill('5000');
+  await page.getByRole('button', { name: '送る', exact: true }).click();
+  await page.getByText('用途を入力してください').waitFor();
+  await page.locator('#pay-memo').fill('旅行代の精算');
+  await page.locator('#attach-request').setInputFiles({ name: 'transfer.png', mimeType: 'image/png', buffer: pngBytes(600, 1200) });
+  await page.getByRole('button', { name: '送る', exact: true }).click();
+  await page.waitForFunction(() => location.hash === '#/flow/person');
+  const spot = mock.db.workflow_requests.find((r) => r.type_key === 'payment' && r.payload.memo === '旅行代の精算');
+  assert.ok(spot && spot.payload.chore_id === null && spot.payload.amount === 5000);
+  assert.equal(mock.db.workflow_attachments.filter((a) => a.request_id === spot.id).length, 1);
+  assert.ok(mock.db.workflow_attachments.every((a) => a.path.startsWith(`requests/${spot.id}/`)));
+  await page.locator('.payment-item', { hasText: '旅行代の精算' }).locator('.tag-status', { hasText: '確認待ち' }).waitFor();
+  assert.equal(await page.locator('.payment-item', { hasText: '旅行代の精算' }).locator('.photos img').count(), 1);
+  await hp.goto(`${appUrl}#/workflow/mine`);
+  await hp.reload();
+  const spotItem = hp.locator('.wf-item', { hasText: '5,000円を払いました' });
+  await spotItem.locator('.photos img').waitFor();
+  assert.equal(await spotItem.locator('.photos img').count(), 1, 'the one who got it sees the image');
+  await spotItem.getByRole('button', { name: '承認' }).click();
+  await hp.getByText('承認しました。').waitFor();
+  await page.goto(`${appUrl}#/flow/person`);
+  await page.reload();
+  await page.locator('.payment-item', { hasText: '旅行代の精算' }).locator('.tag-status', { hasText: '確定' }).waitFor();
+  assert.match(await page.locator('.payment-totals').innerText(), /→ はなこ\s+6,200円[\s\S]*はなこ →[^\n]*\s+0円[\s\S]*差し引き\s+[^\n]*→ はなこ 6,200円/);
+  await page.goto(`${appUrl}#/chores/pay`);
+  await page.locator('.reward-card').waitFor();
+  assert.match(await page.locator('.reward-card').innerText(), /払った額\s+1,200円[\s\S]*未払い[^\n]*\s+0円/, 'a payment for something else is not a chore payment');
   // chores in yen; a chore done for its price is not shared out
   await page.goto(`${appUrl}#/chores/load`);
   await page.getByText('対価のある家事（分担に含めない）').waitFor();
@@ -1164,7 +1199,7 @@ try {
     ['money-budget-month', `#/flow/budget/${ymNow}`], ['money-budget-year', `#/flow/budget/${yearNow}`], ['budget-edit', `#/budget/${yearNow}`], ['money-ratio', `#/flow/ratio/${yearNow}`], ['ratio-edit', `#/ratio/${yearNow}`],
     ['advance-new', `#/shared-entry/new/advance:${hanako.id}:${ymNow}`], ['report-new', `#/deposit-report/new/${hanako.id}`],
     ['settings-account', '#/settings/account'], ['settings-users', '#/settings/users'], ['settings-data', '#/settings/data'], ['settings-other', '#/settings/other'], ['notices', '#/notices'], ['notice-new', '#/notices/new'],
-    ['workflow', '#/workflow/all'], ['workflow-new', '#/workflow/new'], ['chores-pay', '#/chores/pay'], ['payment-new', '#/payment/'], ['chore-ask', '#/chore-ask/cook/2026-11-07'],
+    ['workflow', '#/workflow/all'], ['workflow-new', '#/workflow/new'], ['chores-pay', '#/chores/pay'], ['payment-new', '#/payment/'], ['payment-other', '#/payment/other'], ['money-person', '#/flow/person'], ['chore-ask', '#/chore-ask/cook/2026-11-07'],
   ];
   for (const [name, route] of auditRoutes) {
     await page.goto(`${appUrl}${route}`);

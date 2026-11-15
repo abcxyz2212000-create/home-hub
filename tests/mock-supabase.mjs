@@ -18,7 +18,7 @@ const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '
 const DEFAULTS = {
   status: 'active', links: [], tags: [], notify_days: {}, mf_linked: false, family_card: false, etc_card: false, auto_renew: false, shared_cost: false, price_history: [],
 };
-const TABLES = ['accounts', 'cards', 'contracts', 'items', 'memberships', 'item_photos', 'settings', 'push_subscriptions', 'notification_log', 'members', 'audit_log', 'chores', 'shared_rules', 'shared_entries', 'transactions', 'deposit_reports', 'shared_attachments', 'account_balances', 'budgets', 'budget_years', 'budget_attachments', 'notices', 'notice_reads', 'workflow_types', 'workflow_requests', 'workflow_replies', 'chore_records', 'person_payments'];
+const TABLES = ['accounts', 'cards', 'contracts', 'items', 'memberships', 'item_photos', 'settings', 'push_subscriptions', 'notification_log', 'members', 'audit_log', 'chores', 'shared_rules', 'shared_entries', 'transactions', 'deposit_reports', 'shared_attachments', 'account_balances', 'budgets', 'budget_years', 'budget_attachments', 'notices', 'notice_reads', 'workflow_types', 'workflow_requests', 'workflow_replies', 'chore_records', 'person_payments', 'workflow_attachments'];
 const TABLE_DEFAULTS = {
   members: { role: 'member', active: true, email: null, nickname: null, transfer_names: null, gender: null, notify_hour: null, birth_year: null },
   settings: {}, notification_log: {}, push_subscriptions: {}, audit_log: {},
@@ -28,6 +28,7 @@ const TABLE_DEFAULTS = {
   deposit_reports: { memo: null },
   budgets: { memo: null }, budget_years: { savings_monthly: 0, income_monthly: null, ratio: {}, ratio_note: null },
   shared_attachments: { entry_id: null, report_id: null, bytes: 0 },
+  workflow_attachments: { bytes: 0 },
   notices: { key: null, from_member: null, to_members: [], body: '', url: null, delivered_at: null, needs_ack: false },
   notice_reads: { hidden: false, acked_at: null },
   workflow_requests: { key: null, applicant: null, body: '', payload: {}, approvers: [], status: 'open', url: null, decided_at: null, pushed_at: null, result_pushed_at: null },
