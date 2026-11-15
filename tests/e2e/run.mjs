@@ -1134,8 +1134,10 @@ try {
   await page.goto(`${appUrl}#/chores/pay`);
   await page.locator('.reward-card').waitFor();
   assert.match(await page.locator('.reward-card').innerText(), /夕ご飯づくり\s+1回\s+1,200円[\s\S]*払った額\s+0円[\s\S]*未払い[^\n]*\s+1,200円/);
-  await page.getByRole('link', { name: '払いました' }).click();
-  await page.locator('#pay-amount').fill('1200');
+  assert.match(await page.locator('.reward-card').innerText(), /前月までの未払い（繰越）\s+0円/);
+  await page.getByRole('link', { name: '未払いを払う（1,200円）' }).click();
+  assert.equal(await page.locator('#pay-amount').inputValue(), '1200', 'the unpaid is filled in');
+  assert.ok(await page.locator('#pay-kind-chore').isChecked());
   await page.getByRole('button', { name: '送る', exact: true }).click();
   await page.waitForFunction(() => location.hash === '#/workflow/applied');
   await hp.goto(`${appUrl}#/workflow/mine`);
@@ -1152,6 +1154,12 @@ try {
   await page.reload();
   await page.locator('.payment-item').first().waitFor();
   assert.match(await page.locator('.payment-list').innerText(), /はなこ\s+1,200円\s+確定[\s\S]*家事の対価（夕ご飯づくり）/);
+  assert.match(await page.locator('.reward-card').innerText(), /家事の対価[^\n]*→ はなこ[\s\S]*夕ご飯づくり\s+1回\s+1,200円[\s\S]*払った額\s+1,200円[\s\S]*未払い[^\n]*\s+0円/, 'the same 家事の対価 on お金');
+  await page.locator('.period-box[data-box="person:list"] .segmented a', { hasText: '年間' }).click();
+  await page.getByText(/家事の対価の月ごと/).waitFor();
+  assert.match(await page.locator('.card', { hasText: '家事の対価の月ごと' }).innerText(), new RegExp(`${Number(ymNow.slice(5))}月\\s+1,200円\\s+1,200円\\s+0円`));
+  await page.locator('.period-box[data-box="person:list"] .segmented a', { hasText: '月ごと' }).click();
+  await page.locator('.payment-item').first().waitFor();
   await page.getByRole('link', { name: '払いました' }).click();
   await page.locator('#pay-kind-other').waitFor();
   assert.ok(await page.locator('#pay-kind-other').isChecked(), 'from お金 the kind is それ以外');

@@ -77,3 +77,22 @@ test('kind of work from the name, the category when the name says nothing', () =
   assert.equal(k('何か', '住'), 'home');
   assert.equal(k('何か', null), 'other');
 });
+
+test('choreBalances: carry, the period, payments for chores only, pending apart', async () => {
+  const { choreBalances } = await import('../../web/js/chores.js');
+  const rec = (d, v = 1200, extra = {}) => ({ payer_id: 'a', member_id: 'b', chore_name: '夕ご飯づくり', done_on: d, value: v, ...extra });
+  const pay = (d, v, chore = 'c1', extra = {}) => ({ from_member: 'a', to_member: 'b', paid_on: d, amount: v, chore_id: chore, ...extra });
+  const input = {
+    records: [rec('2026-10-30'), rec('2026-10-31'), rec('2026-11-01'), rec('2026-11-02'), rec('2026-11-03', 1200, { cancelled_at: 'x' }), rec('2026-12-01')],
+    payments: [pay('2026-10-31', 1200), pay('2026-11-05', 2400), pay('2026-11-06', 5000, null), pay('2026-11-07', 100, 'c1', { cancelled_at: 'x' })],
+    pending: [{ payer_id: 'a', member_id: 'b', value: 1200 }],
+    pairsOf: [{ payer: 'a', doer: 'b' }, { payer: 'b', doer: 'a' }],
+  };
+  const [ab, ba] = choreBalances(input, '2026-11');
+  assert.deepEqual([ab.carry, ab.owed, ab.paid, ab.end], [1200, 2400, 2400, 1200]);
+  assert.deepEqual(ab.chores, [{ name: '夕ご飯づくり', times: 2, value: 2400 }]);
+  assert.deepEqual(ab.pending, { times: 1, value: 1200 });
+  assert.deepEqual([ba.carry, ba.owed, ba.paid, ba.end], [0, 0, 0, 0], 'a pair with nothing recorded still has a card');
+  const [year] = choreBalances(input, '2026');
+  assert.deepEqual([year.carry, year.owed, year.paid, year.end], [0, 6000, 3600, 2400]);
+});

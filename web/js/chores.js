@@ -144,3 +144,51 @@ export function scheduleText(c) {
   if (c.cycle === 'month') return `毎月 ${schedule.map((d) => `${d}日`).join('・')}`;
   return `毎年 ${schedule.map((m) => `${m}月`).join('・')}（1日にお知らせ）`;
 }
+
+// 家事の対価 between people for a period ('YYYY-MM' or 'YYYY'), per pair (who pays → who does) (2026-11-16).
+//   records:  approved times (chore_records: payer_id, member_id, chore_name, done_on, value, cancelled_at)
+//   payments: confirmed payments (person_payments: from_member, to_member, paid_on, amount, chore_id,
+//             cancelled_at); only those for a chore count (a payment for something else never lowers it)
+//   pending:  times asked and not approved yet ({ payer_id, member_id, value }), for reference only
+//   pairsOf:  [{ payer, doer }] that always get a card (the paid chores), even with nothing recorded
+// Returns [{ payer, doer, carry, chores: [{ name, times, value }], owed, paid, end, pending: { times, value } }]
+// where carry = owed - paid before the period and end = carry + owed - paid.
+export function choreBalances({ records = [], payments = [], pending = [], pairsOf = [] }, period) {
+  const isYear = period.length === 4;
+  const start = isYear ? `${period}-01-01` : `${period}-01`;
+  const inPeriod = (d) => String(d).startsWith(isYear ? `${period}-` : period);
+  const before = (d) => String(d) < start;
+  const pairs = new Map();
+  const pair = (payer, doer) => {
+    const k = `${payer}>${doer}`;
+    if (!pairs.has(k)) pairs.set(k, { payer, doer, carry: 0, chores: new Map(), owed: 0, paid: 0, pending: { times: 0, value: 0 } });
+    return pairs.get(k);
+  };
+  for (const p of pairsOf) pair(p.payer, p.doer);
+  for (const r of records) {
+    if (r.cancelled_at) continue;
+    const p = pair(r.payer_id, r.member_id);
+    const v = Number(r.value) || 0;
+    if (before(r.done_on)) p.carry += v;
+    else if (inPeriod(r.done_on)) {
+      p.owed += v;
+      const c = p.chores.get(r.chore_name) || { name: r.chore_name, times: 0, value: 0 };
+      c.times += 1;
+      c.value += v;
+      p.chores.set(r.chore_name, c);
+    }
+  }
+  for (const x of payments) {
+    if (x.cancelled_at || !x.chore_id) continue;
+    const p = pair(x.from_member, x.to_member);
+    const v = Number(x.amount) || 0;
+    if (before(x.paid_on)) p.carry -= v;
+    else if (inPeriod(x.paid_on)) p.paid += v;
+  }
+  for (const x of pending) {
+    const p = pair(x.payer_id, x.member_id);
+    p.pending.times += 1;
+    p.pending.value += Number(x.value) || 0;
+  }
+  return [...pairs.values()].map((p) => ({ ...p, chores: [...p.chores.values()], end: p.carry + p.owed - p.paid }));
+}

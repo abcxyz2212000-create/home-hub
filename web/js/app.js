@@ -26,7 +26,7 @@ import {
   ymAdd, ymLabel, participantIds, firstYM, history, statement, contribution, YM_RE, contractDeduction, planRuleSync, ruleSchedule,
 } from './shared.js';
 import {
-  CATEGORIES, GROUPS, CYCLES, WEEKDAYS, monthlyHours, basePoints, adjustedPoints, timesPerCycle, workload, choreSharers, isDueOn, scheduleText, choreKind,
+  CATEGORIES, GROUPS, CYCLES, WEEKDAYS, monthlyHours, basePoints, adjustedPoints, timesPerCycle, workload, choreSharers, isDueOn, scheduleText, choreKind, choreBalances,
 } from './chores.js';
 
 const FREE_DB_BYTES = 500 * 1024 * 1024;
@@ -979,62 +979,70 @@ function renderChoreAsk(id, date) {
         : [h('p', { class: 'muted small' }, `はいを押すと、${memberNick(c.paid_by)}に承認を頼みます（承認されたら1回 ${yen(choreValue(c))}）。`), choreAskButtons(c, day, '#/')]));
 }
 
-// 家事の対価 of a month or a year, per pair (who pays → who does): times, value, paid, and unpaid at the end.
-function choreRewardView(period) {
+// 家事の対価 of a period per pair (who pays → who does), the same numbers on 家事 and on お金 → 個人間の支払い.
+function choreBalancesOf(period) {
+  const paidChores = state.chores.filter(isPaidChore);
+  const pending = state.wfRequests
+    .filter((r) => r.type_key === 'chore_done' && r.status === 'open' && r.payload && !r.payload.skip && r.payload.payer_id)
+    .map((r) => ({ payer_id: r.payload.payer_id, member_id: r.payload.member_id, value: r.payload.value }));
+  return choreBalances({ records: state.choreRecords, payments: state.personPayments, pending,
+    pairsOf: paidChores.map((c) => ({ payer: c.paid_by, doer: c.assignee_id })) }, period);
+}
+
+// One pair's 家事の対価: carried over, this period's times per chore, paid, unpaid at the end, and the times
+// waiting for approval. origin: 'chores' | 'money' (where 「払いました」 comes back to).
+function choreBalanceCard(b, period, origin) {
   const isYear = period.length === 4;
-  const inPeriod = (d) => d.startsWith(isYear ? `${period}-` : period);
-  const endOf = isYear ? `${period}-12-31` : `${period}-31`;
-  const records = state.choreRecords.filter((r) => !r.cancelled_at);
-  // only what was paid for chores (a payment for something else is in お金 → 個人間の支払い)
-  const payments = state.personPayments.filter((p) => !p.cancelled_at && p.chore_id);
-  const pairs = new Map();
-  const pairOf = (payer, doer) => {
-    const k = `${payer}>${doer}`;
-    if (!pairs.has(k)) pairs.set(k, { payer, doer, chores: new Map(), paid: 0, owedToEnd: 0, paidToEnd: 0 });
-    return pairs.get(k);
-  };
-  for (const r of records) {
-    const pr = pairOf(r.payer_id, r.member_id);
-    if (r.done_on <= endOf) pr.owedToEnd += r.value;
-    if (inPeriod(r.done_on)) {
-      const c = pr.chores.get(r.chore_name) || { times: 0, value: 0 };
-      c.times += 1;
-      c.value += r.value;
-      pr.chores.set(r.chore_name, c);
-    }
-  }
-  for (const c of state.chores.filter(isPaidChore)) pairOf(c.paid_by, c.assignee_id);
-  for (const p of payments) {
-    const pr = pairOf(p.from_member, p.to_member);
-    if (p.paid_on <= endOf) pr.paidToEnd += p.amount;
-    if (inPeriod(p.paid_on)) pr.paid += p.amount;
-  }
   const label = isYear ? `${Number(period)}年` : ymLabel(period);
-  const cards = [...pairs.values()].filter((pr) => pr.owedToEnd || pr.paidToEnd || state.chores.some((c) => isPaidChore(c) && c.paid_by === pr.payer && c.assignee_id === pr.doer)).map((pr) => {
-    const owed = [...pr.chores.values()].reduce((n, c) => n + c.value, 0);
-    const unpaid = pr.owedToEnd - pr.paidToEnd;
-    const canPay = me() && (me().id === pr.payer || isAdmin());
-    return h('section', { class: 'card reward-card' },
-      h('h2', { class: 'with-icon' }, icon('yen'), `${memberNick(pr.payer)} → ${memberNick(pr.doer)}（${label}）`),
-      h('div', { class: 'table-wrap' }, h('table', { class: 'table' },
-        h('thead', {}, h('tr', {}, h('th', {}, '家事'), h('th', { class: 'num' }, '回数'), h('th', { class: 'num' }, '対価'))),
-        h('tbody', {},
-          [...pr.chores].map(([name, c]) => h('tr', {}, h('td', {}, name), h('td', { class: 'num' }, `${c.times}回`), h('td', { class: 'num' }, yen(c.value)))),
-          pr.chores.size === 0 ? h('tr', {}, h('td', { colspan: '3', class: 'muted' }, 'この期間に承認された回はありません。')) : null,
-          h('tr', { class: 'total' }, h('th', { scope: 'row' }, '対価の合計'), h('td', {}), h('td', { class: 'num' }, yen(owed))),
-          h('tr', {}, h('th', { scope: 'row' }, '払った額'), h('td', {}), h('td', { class: 'num' }, yen(pr.paid))),
-          h('tr', { class: 'total' }, h('th', { scope: 'row' }, `未払い（${isYear ? '年末' : '月末'}・繰越を含む）`), h('td', {}), h('td', { class: `num${unpaid > 0 ? ' due' : ''}` }, signedYen(unpaid)))))),
-      canPay ? h('div', { class: 'actions' }, h('a', { class: 'button primary', href: `#/payment/${pr.doer}` }, '払いました')) : null);
-  });
+  const canPay = me() && (me().id === b.payer || isAdmin());
+  const payHref = b.end > 0 ? `#/payment/due:${b.payer}:${b.doer}:${b.end}:${origin}` : `#/payment/${b.doer}`;
+  return h('section', { class: 'card reward-card' },
+    h('h2', { class: 'with-icon' }, icon('yen'), `家事の対価 ${memberNick(b.payer)} → ${memberNick(b.doer)}（${label}）`),
+    h('div', { class: 'table-wrap' }, h('table', { class: 'table' },
+      h('thead', {}, h('tr', {}, h('th', {}, '家事'), h('th', { class: 'num' }, '回数'), h('th', { class: 'num' }, '対価'))),
+      h('tbody', {},
+        h('tr', {}, h('th', { scope: 'row' }, `${isYear ? '前年' : '前月'}までの未払い（繰越）`), h('td', {}), h('td', { class: 'num' }, signedYen(b.carry))),
+        b.chores.map((c) => h('tr', {}, h('td', {}, c.name), h('td', { class: 'num' }, `${c.times}回`), h('td', { class: 'num' }, yen(c.value)))),
+        b.chores.length === 0 ? h('tr', {}, h('td', { colspan: '3', class: 'muted' }, 'この期間に承認された回はありません。')) : null,
+        h('tr', { class: 'total' }, h('th', { scope: 'row' }, '対価の合計'), h('td', {}), h('td', { class: 'num' }, yen(b.owed))),
+        h('tr', {}, h('th', { scope: 'row' }, '払った額'), h('td', {}), h('td', { class: 'num' }, yen(b.paid))),
+        h('tr', { class: 'total' }, h('th', { scope: 'row' }, `未払い（${isYear ? '年末' : '月末'}・繰越を含む）`), h('td', {}), h('td', { class: `num${b.end > 0 ? ' due' : ''}` }, signedYen(b.end))),
+        b.pending.times ? h('tr', { class: 'muted' }, h('th', { scope: 'row' }, '承認待ち（参考・合計に入らない）'), h('td', { class: 'num' }, `${b.pending.times}回`), h('td', { class: 'num' }, yen(b.pending.value))) : null))),
+    // on お金 the list below has its own 「払いました」, so only the unpaid is offered here
+    canPay && (origin === 'chores' || b.end > 0)
+      ? h('div', { class: 'actions' }, h('a', { class: 'button primary', href: payHref }, b.end > 0 ? `未払いを払う（${yen(b.end)}）` : '払いました')) : null);
+}
+
+function choreRewardView(period) {
+  const cards = choreBalancesOf(period).map((b) => choreBalanceCard(b, period, 'chores'));
   return cards.length ? cards : h('section', { class: 'card' }, h('p', { class: 'muted' }, '対価のある家事はまだありません（家事の編集で「対価を払う人」を選ぶと使えます）。'));
+}
+
+// The months of a year of one pair: 対価, 払った額 and the unpaid at each month's end.
+function choreYearTable(year, payer, doer) {
+  const rows = [];
+  for (let m = 1; m <= 12; m += 1) {
+    const ym = `${year}-${String(m).padStart(2, '0')}`;
+    if (ym > thisYM()) break;
+    const b = choreBalancesOf(ym).find((x) => x.payer === payer && x.doer === doer);
+    if (b) rows.push({ ym, ...b });
+  }
+  if (!rows.length) return null;
+  return h('section', { class: 'card' }, h('div', { class: 'table-wrap' }, h('table', { class: 'table' },
+    h('caption', { class: 'small muted' }, `家事の対価の月ごと（${memberNick(payer)} → ${memberNick(doer)}）`),
+    h('thead', {}, h('tr', {}, h('th', {}, '月'), h('th', { class: 'num' }, '対価'), h('th', { class: 'num' }, '払った額'), h('th', { class: 'num' }, '月末の未払い'))),
+    h('tbody', {}, rows.map((r) => h('tr', {}, h('td', {}, `${Number(r.ym.slice(5))}月`), h('td', { class: 'num' }, yen(r.owed)), h('td', { class: 'num' }, yen(r.paid)),
+      h('td', { class: `num${r.end > 0 ? ' due' : ''}` }, signedYen(r.end))))))));
 }
 
 // 「払いました」: a payment from one person to another (個人間の支払い), for a chore (家事の対価) or anything
 // else. The one who got it confirms it (承認); up to MAX_ATTACHMENTS images (the transfer screen etc.).
 // param: a member id (from 家事の対価: for a chore, to that person) or 'other' (from お金: anything else).
 function renderPaymentForm(param) {
-  const fromMoney = param === 'other';
-  const toParam = fromMoney ? null : param;
+  // 'due:<payer>:<doer>:<amount>:<origin>': paying what is unpaid of 家事の対価 (from its card)
+  const due = /^due:([^:]+):([^:]+):(\d+):(chores|money)$/.exec(param || '');
+  const fromMoney = param === 'other' || Boolean(due && due[4] === 'money');
+  const toParam = due ? due[2] : param === 'other' ? null : param;
   const paidChores = state.chores.filter(isPaidChore);
   const choreOf = (id) => paidChores.find((c) => c.id === id) || null;
   const senders = state.members.filter((m) => m.active && m.email).sort(meFirst);
@@ -1045,14 +1053,14 @@ function renderPaymentForm(param) {
     const other = senders.find((m) => m.id !== me().id);
     if (other) to.value = other.id;
   }
-  const amount = h('input', { type: 'text', inputmode: 'numeric', id: 'pay-amount', class: 'num' });
+  const amount = h('input', { type: 'text', inputmode: 'numeric', id: 'pay-amount', class: 'num', value: due ? due[3] : '' });
   const paidOn = h('input', { type: 'date', id: 'pay-on', value: todayJST() });
   const kindChore = h('input', { type: 'radio', name: 'pay-kind', id: 'pay-kind-chore', value: 'chore', disabled: paidChores.length === 0 });
   const kindOther = h('input', { type: 'radio', name: 'pay-kind', id: 'pay-kind-other', value: 'other' });
-  const useChore = !fromMoney && paidChores.length > 0;
+  const useChore = (Boolean(due) || param !== 'other') && paidChores.length > 0;
   kindChore.checked = useChore;
   kindOther.checked = !useChore;
-  const chore = h('select', { id: 'pay-chore' }, paidChores.map((c) => h('option', { value: c.id, selected: c.assignee_id === toParam }, `${c.name}（${memberNick(c.paid_by)} → ${memberNick(c.assignee_id)}）`)));
+  const chore = h('select', { id: 'pay-chore' }, paidChores.map((c) => h('option', { value: c.id, selected: c.assignee_id === toParam && (!due || c.paid_by === due[1]) }, `${c.name}（${memberNick(c.paid_by)} → ${memberNick(c.assignee_id)}）`)));
   const memo = h('input', { type: 'text', id: 'pay-memo', maxlength: 1000 });
   const memoLabel = h('label', { for: 'pay-memo' });
   const choreField = h('div', { class: 'field' }, h('label', { for: 'pay-chore' }, 'どの家事の分か'), chore);
@@ -1150,7 +1158,9 @@ function personPaymentsView(period) {
       purpose(r) ? h('p', { class: 'small muted' }, purpose(r)) : null,
       files.length ? attachmentThumbs(files) : null);
   };
+  const balances = choreBalancesOf(period).map((b) => [choreBalanceCard(b, period, 'money'), isYear ? choreYearTable(period, b.payer, b.doer) : null]);
   return [
+    balances,
     h('section', { class: 'card' },
       h('h2', { class: 'with-icon' }, icon('yen'), `個人間の支払い（${label}）`,
         helpButton('個人間の支払い', '二人の間のお金のやり取りの記録です。家計費（負担額・共用口座・予算）には入りません。',
@@ -4790,7 +4800,7 @@ async function fullBackup(status) {
 
 // アプリの更新: the version this device runs (APP_VERSION, the same as the service worker's cache name) and a button that drops
 // the saved files and loads the newest version. Sign-in and notifications stay as they are.
-const APP_VERSION = 'v72'; // = CACHE in sw.js (checked by tests/unit/version.test.mjs)
+const APP_VERSION = 'v73'; // = CACHE in sw.js (checked by tests/unit/version.test.mjs)
 
 function appUpdateSection() {
   const version = h('span', { class: 'num' }, APP_VERSION);
