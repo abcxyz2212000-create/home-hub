@@ -9,7 +9,7 @@
 
 | 部分 | 内容 |
 |---|---|
-| `web/` | 画面（HTML・CSS・JavaScript、外部ライブラリなし）。GitHub Pages で公開 |
+| `web/` | 画面（HTML・CSS・JavaScript、外部ライブラリなし）。Cloudflare Pages で公開（main へのマージで自動） |
 | `supabase/schema.sql` | データベース定義と RLS（Supabase の SQL Editor で実行） |
 | `scripts/notify.mjs` | 毎朝の期限チェックと Web Push 送信（GitHub Actions で実行、Node.js 標準機能のみ） |
 | `tests/` | 単体テスト・データベース/RLS テスト・ブラウザでの画面操作テスト |

@@ -116,34 +116,37 @@ export const CONFIG = {
 
 > **秘密のキー（Secret key / service_role）は絶対に config.js に書かないでください。** config.js は公開されます。公開用のキーは公開しても問題ないもので、データは RLS で守られます。
 
-## 4. GitHub Pages で公開する
+## 4. Cloudflare Pages で公開する（2026-11 から）
 
-1. 変更が `main` に入っていることを確認します（以後の変更はプルリクエストで `main` に取り込みます）。
-2. リポジトリの **Settings** → **Pages** を開き、「Build and deployment」の **Source** を **GitHub Actions** にします。
-3. **Actions** タブで「GitHub Pages」が緑のチェックになるまで待ちます（数分）。
-4. `https://<GitHubのユーザー名>.github.io/home-hub/` を開き、ログイン画面が出れば成功です。
-   - GitHub Pages を無料で使うには、リポジトリを公開（Public）にする必要があります（2026-10-31 に GitHub の画面で確認）。公開されるのはプログラムと文書だけで、台帳のデータは含まれません。
+アプリは Cloudflare Pages のプロジェクト **househub**（`https://househub-70o.pages.dev/`）で公開しています。`main` にマージされてテストが通ると、GitHub Actions（`.github/workflows/test.yml` の deploy）が `web/` を自動で公開します。
 
-## 5. 通知の鍵を作り、GitHub に登録する
+最初に1回だけ、次を行います。
 
-1. PC でアプリを開いてログインし、**設定** → 「通知（この端末）」→ **通知の鍵を作成** を押します。
+1. Cloudflare のダッシュボードで **API トークン** を作ります。権限は「Account → Cloudflare Pages → Edit」だけ、対象は自分のアカウントだけにします。
+2. Cloudflare の **アカウント ID** を確認します（Workers & Pages の画面の右側などに表示されます）。
+3. GitHub のリポジトリ → **Settings** → **Secrets and variables** → **Actions** → **New repository secret** で、`CLOUDFLARE_API_TOKEN` と `CLOUDFLARE_ACCOUNT_ID` を登録します。
+4. 公開がうまくいかないときは、**Actions** タブの「Tests」の deploy の記録を見ます。手動で公開し直すときは「Tests」→ **Run workflow**（ブランチは main）を押します。
+5. まずい版を公開したときは、Cloudflare の househub → **デプロイ** の一覧から前の版に戻せます。
+
+- Supabase の Authentication → URL Configuration の Site URL と Redirect URLs には、上のアドレスを入れます。
+- 規約の確認結果は `docs/terms.md` にあります。
+
+## 5. 通知の鍵を作り、Supabase に登録する（2026-11 から）
+
+通知は Supabase の Edge Function **notify** が、pg_cron から10分ごとに呼ばれて送ります（`supabase/cron.sql`、`supabase/functions/notify/`）。GitHub Actions では送りません。
+
+1. アプリを開いてログインし、**設定** → **アカウント** → **通知** で **通知の鍵を作り直す** を押します。
 2. 表示された **秘密の値** をコピーします（この値は二度と表示されません）。
-3. GitHub のリポジトリ → **Settings** → **Secrets and variables** → **Actions** → **New repository secret** で、次の2つを登録します。
-
-| Name | Secret に入れる値 |
-|---|---|
-| `VAPID_PRIVATE_KEY` | 手順2でコピーした秘密の値 |
-| `SUPABASE_SERVICE_ROLE_KEY` | Supabase の Project Settings → API にある **Secret key**（`sb_secret_...`）または **service_role** キー |
-
-> `SUPABASE_SERVICE_ROLE_KEY` は全データを読み書きできる強い鍵です。GitHub の Secrets 以外（チャット・メール・ファイル）には絶対に貼り付けないでください。
+3. Supabase のダッシュボード → **Edge Functions** → **Secrets** で、`VAPID_PRIVATE_KEY` にその値を登録します。
+4. GitHub の Secrets にある `VAPID_PRIVATE_KEY` と `SUPABASE_SERVICE_ROLE_KEY` は、もう使わないので削除します。
 
 ### 負担率の確認の通知
 
-毎年12月1日に「負担率の確認（毎年12月）」の自動処理が、来年の予算の負担率を決めるよう管理者に通知します（上の2つの Secret だけで動きます）。
+毎年12月1日 9:23（日本時間）に、同じ Edge Function が来年の予算の負担率を決めるよう管理者に通知します。
 
 ## 6. スマホにアプリを追加して通知を受け取る（2人とも）
 
-1. Android の **Chrome** で `https://<GitHubのユーザー名>.github.io/home-hub/` を開き、ログインします。
+1. Android の **Chrome** で `https://househub-70o.pages.dev/` を開き、ログインします。
 2. Chrome のメニュー（︙）→ **ホーム画面に追加**（または「アプリをインストール」）を選びます。
 3. ホーム画面のアイコンからアプリを開き、**設定** → **この端末で通知を受け取る** を押して、通知を**許可**します。
 4. PC でも通知を受け取りたい場合は、PC の Chrome / Edge で同じ操作をします。
