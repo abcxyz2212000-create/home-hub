@@ -36,10 +36,45 @@ HouseHub が使う外部サービスについて、規約を読んで使い方�
 
 - 2026-11 に移行するときに、Self-Serve Subscription Agreement を確認した（依頼者が本文を貼り付け）。問題なし。
 - 2.2.1(h) を受けて、カード番号の全桁とセキュリティコードは扱わない。
-- 開発者向けサービス（Workers / Pages）だけに適用される追加の条件は未確認。
+
+確認日：2026-11-15（GitHub Actions からの自動公開を検討したとき。全文は依頼者が貼り付け）
+
+| 文書 | 版 | 状態 |
+|---|---|---|
+| Service-Specific Terms — Developer Platform（https://www.cloudflare.com/service-specific-terms-developer-platform/） | 2026-09-28 更新 | 全文確認 |
+
+照らし合わせ（Cloudflare Developer Platform の章。Pages を含む）：
+
+- 1（ネットワークへの過大な負担）：家族2人が使う静的なアプリで、公開は main へのマージごとに1回。問題なし。
+- 2（第三者ソフトウェアのライセンス）：同梱している Tesseract.js などのライセンス文書を web/vendor に置いている。
+- 4（悪意のあるコードを含まない・開発者向けドキュメントに従う）：公開には Cloudflare の公式ツール（wrangler）を、ドキュメントに書かれた方法で使う。
+- 6（紛らわしい・攻撃的なサブドメイン名の禁止）：househub は当てはまらない。
+- 7（pages.dev のサブドメインは、Cloudflare が原則1週間前の通知で変えられる）：変わった場合は、Supabase のログイン用 URL、通知の処理の SITE、端末の通知の登録をやり直す必要がある。独自ドメインならこの条項の対象外。
+- 8（違法・有害なコンテンツ、機微な個人情報を含むコンテンツ）：公開するのはアプリのプログラムだけで、家計のデータは Supabase にあり、Cloudflare には置かない。
 
 ## GitHub（コードの置き場）
 
 - 2026-11 にアカウントが規約違反で停止された（再開の申請中）。
 - 原因と考えているもの：GitHub Actions の定期実行（10分ごと）で家族への通知を送っていたこと。GitHub Actions の追加規約では、リポジトリのソフトウェア開発（作成・テスト・公開・デプロイなど）に関係しない使い方が制限されていると理解している。停止の理由は GitHub からまだ正式に確認できていない。
 - 対応：通知の定期実行は Supabase（pg_cron と Edge Functions）に移し、GitHub Actions の定期実行は削除した。GitHub には、コードの保管と CI（テスト）だけを置く。
+
+確認日：2026-11-15（Cloudflare への自動公開を検討したとき。全文は依頼者が貼り付け）
+
+| 文書 | 版 | 状態 |
+|---|---|---|
+| GitHub Terms for Additional Products and Features（Actions の章ほか全文） | 2026-08-27 発効 | 全文確認 |
+| GitHub Acceptable Use Policies | — | 全文確認 |
+| Actions: Billing and usage | — | 全文確認 |
+| Actions limits | — | 全文確認 |
+
+照らし合わせ：
+
+- 追加規約 Actions：GitHub のサーバーで動かす場合、「リポジトリのソフトウェアの作成・テスト・デプロイ・公開」に関係しない使い方は禁止。テストと、このリポジトリのアプリ（web）を Cloudflare Pages に公開することは、これに当たる。以前の通知の定期実行は、これに当たらなかった。
+- 追加規約 Actions「Use for Development and Testing」：デプロイは同じ章でソフトウェア開発の流れの一部として認められていると判断。
+- 追加規約 Actions（負担）：main へのマージごとに1〜2分の処理が1回。配信は Cloudflare が行う。
+- 利用ポリシー 4・9（過剰な自動処理・通信量）：上と同じ理由で当たらない。
+- 利用ポリシー 3・8（個人情報）：リポジトリと Actions に家計のデータは載せない。Cloudflare のトークンは GitHub の暗号化された秘密情報（Secrets）に置く。
+- 利用と課金：公開リポジトリの標準ランナーは無料。
+- 制限：ジョブ6時間・同時20・トリガー1,500回/10秒などには遠く及ばない。
+- 追加規約 Pages：GitHub Pages は個人のプロジェクトの公開として禁止には当たらない（Cloudflare へ移したので使わなくなる）。
+
