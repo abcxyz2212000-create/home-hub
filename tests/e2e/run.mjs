@@ -1196,6 +1196,40 @@ try {
   assert.doesNotMatch(await page.locator('#view').innerText(), /\d点/);
   await wfCtx.close();
 
+  step('お知らせ ⇄ 承認・確認 switch, and the notification status checked against the server');
+  await page.goto(`${appUrl}#/notices`);
+  const sw = page.locator('.page-switch');
+  await sw.waitFor();
+  assert.equal(await sw.locator('a').count(), 2);
+  assert.match(await sw.innerText(), /お知らせ[\s\S]*承認・確認/);
+  await sw.getByRole('link', { name: /承認・確認/ }).click();
+  await page.waitForFunction(() => location.hash === '#/workflow');
+  await page.locator('.page-switch a.active', { hasText: '承認・確認' }).waitFor();
+  await page.getByRole('link', { name: '新しい申請' }).waitFor();
+  await page.locator('.page-switch').getByRole('link', { name: /お知らせ/ }).click();
+  await page.waitForFunction(() => location.hash === '#/notices');
+  // a subscription left in the browser that the server no longer has (the key was made again) is not "✓"
+  const pushCtx = await browser.newContext({ viewport: { width: 390, height: 844 }, locale: 'ja-JP', serviceWorkers: 'block' });
+  await pushCtx.addInitScript(() => {
+    const sub = { endpoint: 'https://push.example.test/send/e2e-device', options: {}, toJSON() { return { endpoint: this.endpoint, keys: { p256dh: 'x', auth: 'y' } }; }, unsubscribe: async () => true };
+    const reg = { pushManager: { getSubscription: async () => sub } };
+    Object.defineProperty(navigator, 'serviceWorker', { configurable: true, value: { ready: Promise.resolve(reg), register: async () => reg, getRegistration: async () => reg, addEventListener() {} } });
+  });
+  const pp = await pushCtx.newPage();
+  await login(pp, { email: MEMBER.email, password: mock.passwords.get(MEMBER.email) });
+  await pp.getByText('この端末の通知の登録が切れています。').waitFor();
+  await pp.goto(`${appUrl}#/settings/account`);
+  await pp.getByText('通知の登録が切れています（通知の鍵が作り直されたなど）').waitFor();
+  await pp.getByRole('button', { name: '通知を登録し直す' }).waitFor();
+  mock.db.push_subscriptions.push({ id: crypto.randomUUID(), endpoint: 'https://push.example.test/send/e2e-device', p256dh: 'x', auth: 'y', device_label: 'e2e', member_id: hanako.id, created_at: new Date().toISOString() });
+  await pp.reload();
+  await pp.getByText(/✓ この端末は通知を受け取ります/).waitFor();
+  mock.db.push_subscriptions.at(-1).member_id = 'm-admin';
+  await pp.reload();
+  await pp.getByText('この端末は、別の人のアカウントで通知を受け取る設定になっています。', { exact: false }).waitFor();
+  mock.db.push_subscriptions.pop();
+  await pushCtx.close();
+
   step('layout audit: every main page at phone width (full page + scrolled, to check the fixed page head)');
   mkdirSync(join(OUT, 'audit'), { recursive: true });
   const yearNow = ymNow.slice(0, 4);

@@ -1,5 +1,5 @@
 // Web Push subscription on this device and VAPID key generation.
-import { upsertRows, deleteWhere } from './supabase.js';
+import { upsertRows, deleteWhere, selectWhere } from './supabase.js';
 
 function b64url(bytes) {
   let s = '';
@@ -43,6 +43,20 @@ export async function currentSubscription() {
 function sameKey(sub, publicKey) {
   const k = sub.options && sub.options.applicationServerKey;
   return !k || b64url(k) === publicKey;
+}
+
+// Whether this device really receives notifications (2026-11-18): it has a subscription in the browser,
+// made with the current key, and the server has it for this member. Returns
+//   { status: 'ok' } | { status: 'none' } | { status: 'broken', reason: 'key' | 'server' | 'other' }
+// ('other': the device is registered for someone else's account, e.g. a shared phone).
+export async function deviceStatus(publicKey, memberId) {
+  const sub = await currentSubscription();
+  if (!sub) return { status: 'none' };
+  if (publicKey && !sameKey(sub, publicKey)) return { status: 'broken', reason: 'key' };
+  const rows = await selectWhere('push_subscriptions', `endpoint=eq.${encodeURIComponent(sub.endpoint)}`);
+  if (!rows.length) return { status: 'broken', reason: 'server' };
+  if (memberId && rows[0].member_id !== memberId) return { status: 'broken', reason: 'other' };
+  return { status: 'ok' };
 }
 
 // Returns 'subscribed' or 'denied'.

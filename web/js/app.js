@@ -155,7 +155,7 @@ function pageIcon(name) {
 
 // { title, icon: page key or ledger key, back: { href, text }, action: node, tabs: [{ key, label, href }],
 //   tab: active key, sub: node, help: [title, ...paragraphs] }
-function pageHead({ title, icon: iconName, back, action, tabs, tab, sub, help }) {
+function pageHead({ title, icon: iconName, back, action, tabs, tab, sub, help, switcher }) {
   return h('div', { class: 'page-head' },
     h('div', { class: 'page-title' },
       back ? h('a', { class: 'back-btn', href: back.href, 'aria-label': back.text || '戻る' }, h('span', { 'aria-hidden': 'true' }, '‹')) : null,
@@ -163,6 +163,7 @@ function pageHead({ title, icon: iconName, back, action, tabs, tab, sub, help })
       h('h1', {}, title),
       help ? helpButton(...help) : null,
       action ? h('div', { class: 'page-action' }, action) : null),
+    switcher ? h('div', { class: 'page-switch' }, switcher) : null,
     tabs ? h('nav', { class: 'tabs', 'aria-label': `${title}の表示` }, tabs.map((t) => h('a', {
       class: `tab${t.key === tab ? ' active' : ''}`, href: t.href, 'aria-current': t.key === tab ? 'page' : null,
     }, t.label))) : null,
@@ -657,6 +658,17 @@ function noticeItem(n, { unread = false, pending = false, actions = [] } = {}) {
       }) }, '取り消す') : null));
 }
 
+// お知らせ ⇄ 承認・確認 (2026-11-18): the same switch at the top of both pages, with the unread and
+// waiting counts, so each can be reached at any time (the bell goes to one of them).
+function noticeSwitch(active) {
+  const unread = attentionNotices().length;
+  const waiting = myTurn().length;
+  return segmented([
+    { label: unread ? `お知らせ（${unread}）` : 'お知らせ', href: '#/notices', active: active === 'notices' },
+    { label: waiting ? `承認・確認（${waiting}）` : '承認・確認', href: '#/workflow', active: active === 'workflow' },
+  ], 'お知らせと承認・確認');
+}
+
 function renderNotices(sub) {
   if (sub === 'new') {
     renderNoticeForm();
@@ -677,8 +689,8 @@ function renderNotices(sub) {
       ? [['戻す', async () => { await setNoticeReads([n], { hidden: false }); render(); }]]
       : [['消す', async () => { await setNoticeReads([n], { hidden: true }); render(); }]];
   };
-  setView('お知らせ', pageHead({ title: 'お知らせ', icon: 'bell', action: h('a', { class: 'button primary', href: '#/notices/new' }, 'メッセージを送る'),
-    help: ['お知らせ', 'アプリから端末に送った通知と、メッセージが並びます。二人とも全部見られます。', 'メッセージは送ってから10分ほどで、宛先の人の端末に通知が届きます（自動実行の混み具合で遅れることがあります）。予約したものは、その日時のあとに届きます。', '予算・負担率・負担額・入金や立替の記録の変更や入金の報告は、「承認・確認」の「変更の回覧」で確認します。',
+  setView('お知らせ', pageHead({ title: 'お知らせ', icon: 'bell', switcher: noticeSwitch('notices'), action: h('a', { class: 'button primary', href: '#/notices/new' }, 'メッセージを送る'),
+    help: ['お知らせ', 'アプリから端末に送った通知と、メッセージが並びます。二人とも全部見られます。', 'メッセージは送ってから10分ほどで、宛先の人の端末に通知が届きます（自動実行の混み具合で遅れることがあります）。予約したものは、その日時のあとに届きます。', '予算・負担率・負担額・入金や立替の記録の変更や入金の報告は、上の切り替えの「承認・確認」→「変更の回覧」で確認します。',
       '「消す」は自分の画面から消すだけで、相手には残ります。1年たったものは全員から消えます。'] }),
     pending.length ? h('section', { class: 'card' }, h('h2', {}, '予約中'), pending.map((n) => noticeItem(n, { pending: true }))) : null,
     h('section', { class: 'card' },
@@ -879,7 +891,7 @@ function renderWorkflow(sub) {
     : tab === 'applied' ? state.wfRequests.filter((r) => r.applicant === meId)
       : state.wfRequests;
   const tabs = Object.entries(WF_TABS).map(([key, label]) => ({ key, label: key === 'mine' && myTurn().length ? `${label}（${myTurn().length}）` : label, href: `#/workflow/${key}` }));
-  setView('承認・確認', pageHead({ title: '承認・確認', icon: 'bell', tabs, tab,
+  setView('承認・確認', pageHead({ title: '承認・確認', icon: 'bell', switcher: noticeSwitch('workflow'), tabs, tab,
     action: h('a', { class: 'button primary', href: '#/workflow/new' }, '新しい申請'),
     help: ['承認・確認', '回覧（確認だけ）や相談・申請（承認・却下）、家事の実施、個人間の支払い、変更の回覧が並びます。',
       '「自分の番」は、あなたの返事を待っているものです。返事をするまで、毎日端末にお知らせします。',
@@ -1451,13 +1463,16 @@ function renderHome() {
         sectionHead('link', 'ショートカット', null, ['口座・カードの台帳の「関連リンク」も表示します。その他は設定画面で変更できます。']),
         h('div', { class: 'shortcuts' }, shortcuts.map(shortcutTile)))));
 
-  push.currentSubscription().then((sub) => {
-    if (!sub && push.pushSupported()) {
-      pushHint.replaceChildren(h('section', { class: 'card notice' },
-        h('p', { class: 'with-icon' }, icon('bell'), 'この端末ではまだ通知を受け取る設定をしていません。'),
-        h('a', { href: '#/settings/account', class: 'button' }, '通知を設定する')));
-    }
-  }).catch((e) => console.error(`push status check failed: ${e.message}`));
+  if (push.pushSupported() && state.settings.vapid_public_key) {
+    push.deviceStatus(state.settings.vapid_public_key, me().id).then((st) => {
+      if (st.status === 'ok') return;
+      pushHint.replaceChildren(h('section', { class: `card notice${st.status === 'broken' ? ' alert-card' : ''}` },
+        h('p', { class: 'with-icon' }, icon('bell'), st.status === 'broken'
+          ? 'この端末の通知の登録が切れています。登録し直してください。'
+          : 'この端末ではまだ通知を受け取る設定をしていません。'),
+        h('a', { href: '#/settings/account', class: 'button' }, st.status === 'broken' ? '通知を登録し直す' : '通知を設定する')));
+    }).catch((e) => console.error(`push status check failed: ${e.message}`));
+  }
 }
 
 // ---------------------------------------------------------------- money flow
@@ -4800,7 +4815,7 @@ async function fullBackup(status) {
 
 // アプリの更新: the version this device runs (APP_VERSION, the same as the service worker's cache name) and a button that drops
 // the saved files and loads the newest version. Sign-in and notifications stay as they are.
-const APP_VERSION = 'v73'; // = CACHE in sw.js (checked by tests/unit/version.test.mjs)
+const APP_VERSION = 'v74'; // = CACHE in sw.js (checked by tests/unit/version.test.mjs)
 
 function appUpdateSection() {
   const version = h('span', { class: 'num' }, APP_VERSION);
@@ -4899,10 +4914,23 @@ function notifySection() {
       nodes.push(h('p', {}, '通知の鍵がまだありません。最初に1回だけ作成します。'));
       nodes.push(h('button', { type: 'button', class: 'primary', onclick: (ev) => busy(ev.currentTarget, () => createKeys(false)) }, '通知の鍵を作成'));
     } else {
-      const sub = await push.currentSubscription();
+      let st;
+      try {
+        st = await push.deviceStatus(key, me().id);
+      } catch (e) {
+        console.error(`push status check failed: ${e.message}`);
+        st = { status: (await push.currentSubscription()) ? 'ok' : 'none' };
+      }
+      const sub = st.status === 'ok';
       const label = h('input', { type: 'text', id: 'device-label', value: defaultDeviceLabel(), maxlength: 100 });
       const myHour = Number.isInteger(me().notify_hour) ? me().notify_hour : NOTIFY_DEFAULT_HOUR;
-      nodes.push(h('p', {}, sub ? `✓ この端末は通知を受け取ります（毎日${myHour}時ごろ）。` : 'この端末は通知を受け取っていません。'));
+      if (st.status === 'broken') {
+        nodes.push(h('p', { class: 'error' }, st.reason === 'other'
+          ? 'この端末は、別の人のアカウントで通知を受け取る設定になっています。登録し直すと、このアカウント（あなた）に届くようになります。'
+          : '通知の登録が切れています（通知の鍵が作り直されたなど）。下のボタンで登録し直してください。'));
+      } else {
+        nodes.push(h('p', {}, sub ? `✓ この端末は通知を受け取ります（毎日${myHour}時ごろ）。` : 'この端末は通知を受け取っていません。'));
+      }
       if (Notification.permission === 'denied') nodes.push(h('p', { class: 'error small' }, '通知がブラウザでブロックされています。ブラウザのサイト設定で通知を許可してください。'));
       if (!sub) {
         nodes.push(h('label', { for: 'device-label' }, '端末の名前'), label);
@@ -4911,7 +4939,7 @@ function notifySection() {
           if (res === 'denied') toast('通知が許可されませんでした。', 'error');
           else toast('この端末で通知を受け取る設定をしました。');
           draw();
-        }) }, 'この端末で通知を受け取る'));
+        }) }, st.status === 'broken' ? '通知を登録し直す' : 'この端末で通知を受け取る'));
       } else {
         nodes.push(h('button', { type: 'button', onclick: (ev) => busy(ev.currentTarget, async () => { await push.unsubscribe(); toast('この端末の通知を止めました。'); draw(); }) }, 'この端末の通知を止める'));
       }
