@@ -792,3 +792,4 @@ details.chore-group > summary { cursor: pointer; list-style: revert; }
 .payment-item.status-withdrawn .payment-amount, .payment-item.status-cancelled .payment-amount, .payment-item.status-rejected .payment-amount { text-decoration: line-through; color: var(--muted); }
 .payment-totals { margin: 0.25rem 0 0.5rem; }
 .payment-totals caption { text-align: left; padding-bottom: 0.25rem; }
+.page-switch { margin: 0.25rem 0 0.5rem; }
