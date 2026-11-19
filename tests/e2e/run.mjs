@@ -1196,6 +1196,36 @@ try {
   assert.doesNotMatch(await page.locator('#view').innerText(), /\d点/);
   await wfCtx.close();
 
+  step('レポート: the month and the year from the money page, the same numbers, and a clean print');
+  await page.goto(`${appUrl}#/flow/member`);
+  await page.getByRole('link', { name: 'レポート' }).click();
+  await page.waitForFunction(() => location.hash.startsWith('#/report/'));
+  await page.goto(`${appUrl}#/report/${ymNow}`);
+  await page.locator('.report-summary').waitFor();
+  await page.getByText('この月はまだ終わっていません（途中の数字です）。').waitFor();
+  await page.locator('.report-compare').waitFor();
+  const reportText = await page.locator('#view').innerText();
+  assert.match(reportText, /まとめ[\s\S]*予算との差[\s\S]*前月との差[\s\S]*前年同月との差/);
+  assert.match(await page.locator('.report-compare tbody tr').nth(2).innerText(), /前年同月との差\s+—\s+—\s+—/, 'nothing recorded a year before: no comparison');
+  assert.match(reportText, /の予算と実績/, 'the budget of the month');
+  assert.match(reportText, /共用口座/);
+  await page.locator('.report .shared-card').first().waitFor();
+  // the spending in the summary is the one on お金 → 予算と負担率
+  const fromReport = (/支出\s+([\d,]+)/.exec(await page.locator('.report-summary .kpis').innerText()) || [])[1];
+  await page.goto(`${appUrl}#/flow/budget/${ymNow}`);
+  await page.getByText(/の予算と実績/).first().waitFor();
+  const budgetTabText = await page.locator('.period-box[data-box="budget:summary"]').innerText();
+  assert.ok(fromReport && budgetTabText.includes(fromReport), `report spending ${fromReport} is on the budget tab`);
+  await page.goto(`${appUrl}#/report/${ymNow.slice(0, 4)}`);
+  await page.getByText('年間レポート', { exact: true }).first().waitFor();
+  await page.locator('.report-summary').waitFor();
+  assert.match(await page.locator('#view').innerText(), /前年との差[\s\S]*支出の累計/);
+  await page.emulateMedia({ media: 'print' });
+  assert.equal(await page.locator('.app-header').isVisible(), false, 'no bars when printed');
+  assert.equal(await page.locator('.report-title').isVisible(), true);
+  await page.screenshot({ path: join(OUT, 'report-print.png'), fullPage: true });
+  await page.emulateMedia({ media: 'screen' });
+
   step('お知らせ ⇄ 承認・確認 switch, and the notification status checked against the server');
   await page.goto(`${appUrl}#/notices`);
   const sw = page.locator('.page-switch');
@@ -1241,7 +1271,7 @@ try {
     ['money-budget-month', `#/flow/budget/${ymNow}`], ['money-budget-year', `#/flow/budget/${yearNow}`], ['budget-edit', `#/budget/${yearNow}`], ['money-ratio', `#/flow/ratio/${yearNow}`], ['ratio-edit', `#/ratio/${yearNow}`],
     ['advance-new', `#/shared-entry/new/advance:${hanako.id}:${ymNow}`], ['report-new', `#/deposit-report/new/${hanako.id}`],
     ['settings-account', '#/settings/account'], ['settings-users', '#/settings/users'], ['settings-data', '#/settings/data'], ['settings-other', '#/settings/other'], ['notices', '#/notices'], ['notice-new', '#/notices/new'],
-    ['workflow', '#/workflow/all'], ['workflow-new', '#/workflow/new'], ['chores-pay', '#/chores/pay'], ['payment-new', '#/payment/'], ['payment-other', '#/payment/other'], ['money-person', '#/flow/person'], ['chore-ask', '#/chore-ask/cook/2026-11-07'],
+    ['workflow', '#/workflow/all'], ['workflow-new', '#/workflow/new'], ['chores-pay', '#/chores/pay'], ['payment-new', '#/payment/'], ['payment-other', '#/payment/other'], ['money-person', '#/flow/person'], ['report-month', `#/report/${ymNow}`], ['report-year', `#/report/${ymNow.slice(0, 4)}`], ['chore-ask', '#/chore-ask/cook/2026-11-07'],
   ];
   for (const [name, route] of auditRoutes) {
     await page.goto(`${appUrl}${route}`);

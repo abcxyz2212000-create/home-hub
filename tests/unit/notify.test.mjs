@@ -242,3 +242,38 @@ test('low balance to everyone once per balance date; monthly import reminder to 
     await mock.stop();
   }
 });
+
+test('the report of last month goes to everyone once, when both imports are in (from the 10th as not final)', async () => {
+  const mock = createMock();
+  const { apiUrl } = await mock.start();
+  try {
+    const vapid = crypto.createECDH('prime256v1');
+    vapid.generateKeys();
+    const ua = crypto.createECDH('prime256v1');
+    ua.generateKeys();
+    const auth = crypto.randomBytes(16);
+    const dev = (id, memberId) => ({ id, endpoint: `${apiUrl}/push/${id}`, p256dh: b64urlEncode(ua.getPublicKey()), auth: b64urlEncode(auth), member_id: memberId });
+    mock.db.settings.push({ key: 'vapid_public_key', value: b64urlEncode(vapid.getPublicKey()) }, { key: 'shared_account_id', value: 'acc-s' },
+      { key: 'mf_imported_at', value: '2026-11-02T00:00:00Z' });
+    mock.db.members.push({ id: 'm-shin', name: '佐藤 真一', nickname: 'しん', active: true }, { id: 'm-haru', name: '佐藤 春子', nickname: 'はる', active: true });
+    mock.db.push_subscriptions.push(dev('d-shin', 'm-shin'), dev('d-haru', 'm-haru'));
+    const env = { ...process.env, SUPABASE_URL: apiUrl, SUPABASE_SERVICE_ROLE_KEY: SERVICE_KEY, VAPID_PRIVATE_KEY: b64urlEncode(privateKey32(vapid)), GITHUB_REPOSITORY: 'Owner/home-hub', NOTIFY_HOUR: '9' };
+    const reports = () => mock.pushes.map((p) => ({ id: p.id, ...decrypt(p.body, ua, auth) })).filter((p) => p.title === '月間レポート');
+    await run('node', [SCRIPT], { env: { ...env, NOTIFY_DATE: '2026-11-03' } });
+    assert.equal(reports().length, 0, 'the bank balance of October is not in yet');
+    mock.db.settings.push({ key: 'bank_imported_at', value: '2026-11-03T05:00:00Z' });
+    await run('node', [SCRIPT], { env: { ...env, NOTIFY_DATE: '2026-11-04' } });
+    assert.deepEqual(reports().map((p) => [p.id, p.body, p.url]).sort(), [
+      ['d-haru', '10月のレポートができました。家計費と各人の負担・支払いを確認してください。', '#/report/2026-10'],
+      ['d-shin', '10月のレポートができました。家計費と各人の負担・支払いを確認してください。', '#/report/2026-10'],
+    ]);
+    assert.ok(mock.db.notices.some((n) => n.key === 'report:2026-10'), 'kept as an お知らせ');
+    await run('node', [SCRIPT], { env: { ...env, NOTIFY_DATE: '2026-11-05' } });
+    assert.equal(reports().length, 2, 'once');
+    // December: nothing imported by the 10th -> sent as not final
+    await run('node', [SCRIPT], { env: { ...env, NOTIFY_DATE: '2026-12-10' } });
+    assert.match(reports().at(-1).body, /^11月のレポート[\s\S]*数字は途中です/);
+  } finally {
+    await mock.stop();
+  }
+});

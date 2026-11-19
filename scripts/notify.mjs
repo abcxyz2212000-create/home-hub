@@ -17,8 +17,8 @@ import { collectEvents, dueNotifications, notificationText, todayJST } from '../
 import { dueFor } from '../web/js/chores.js';
 import { participantIds, statement, contribution } from '../web/js/shared.js';
 import { categoryAdjustments, categoryRatioQuery } from '../web/js/budget.js';
-import { missingImports, lastImports, latestBalance, DEFAULT_LOW_BALANCE } from '../web/js/bank.js';
-import { lowBalanceAlert, importAlert, choresAlert, householdAlert, confirmAlert, choreAskAlert } from '../web/js/alerts.js';
+import { missingImports, lastImports, reportsDue, latestBalance, DEFAULT_LOW_BALANCE } from '../web/js/bank.js';
+import { lowBalanceAlert, importAlert, reportAlert, choresAlert, householdAlert, confirmAlert, choreAskAlert } from '../web/js/alerts.js';
 import { loadVapidKeys, sendPush } from './webpush.mjs';
 
 const LOG_RETENTION_DAYS = 400;
@@ -164,6 +164,7 @@ async function main() {
   const lastBalance = latestBalance(balances);
   const threshold = Number.isFinite(Number(settings.low_balance_threshold)) && settings.low_balance_threshold !== null ? Number(settings.low_balance_threshold) : DEFAULT_LOW_BALANCE;
   let missing = [];
+  let reports = [];
   if (sharedId) {
     const [newestTx, newestBalance] = await Promise.all([
       db.select('transactions', '&order=created_at.desc&limit=1'),
@@ -171,6 +172,7 @@ async function main() {
     ]);
     const newest = { mf: newestTx.length ? newestTx[0].created_at : null, bank: newestBalance.length ? newestBalance[0].created_at : null };
     missing = missingImports(today, lastImports(settings, newest));
+    reports = reportsDue(today, lastImports(settings, newest));
   }
 
   // ワークフロー: open requests and who answered them
@@ -213,6 +215,10 @@ async function main() {
       items.push({ mark: `import:${today}:${g}`, notice: `import:${today}`, to: [g], payload: { ...importAlert(missing, today), url: '#/flow/ext', tag: 'imports' }, log: 'import reminder' });
     }
     if (g === 'none') return items;
+    // last month's (and in January last year's) report: everyone, once, when the imports are in (2026-11-19)
+    for (const r of reports) {
+      items.push({ mark: `report:${r.period}:${g}`, notice: `report:${r.period}`, to: [], payload: { ...reportAlert(r.period, r.partial), url: `#/report/${r.period}`, tag: `report:${r.period}` }, log: `report ${r.period.length === 4 ? 'year' : 'month'}${r.partial ? ' (not final)' : ''}` });
+    }
     // requests waiting for this person's answer: a reminder every day until they answer (not kept as an お知らせ)
     const waiting = waitingFor(g);
     if (waiting.length) {

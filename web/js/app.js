@@ -454,7 +454,7 @@ function setNav(page) {
     const active = target === page || (target === 'ledgers' && ['list', 'view', 'edit'].includes(page))
       || (target === 'settings' && page === 'member')
       || (target === 'chores' && ['chore', 'chore-edit'].includes(page))
-      || (target === 'flow' && ['shared', 'shared-entry', 'shared-rule', 'tx', 'deposit-report', 'budget', 'ratio'].includes(page));
+      || (target === 'flow' && ['shared', 'shared-entry', 'shared-rule', 'tx', 'deposit-report', 'budget', 'ratio', 'report'].includes(page));
     a.classList.toggle('active', active);
     if (active) a.setAttribute('aria-current', 'page');
     else a.removeAttribute('aria-current');
@@ -527,6 +527,7 @@ async function render() {
   else if (page === 'workflow') renderWorkflow(a);
   else if (page === 'chore-ask') renderChoreAsk(a, b);
   else if (page === 'payment') renderPaymentForm(a);
+  else if (page === 'report') renderReport(a);
   else location.hash = '#/';
 }
 
@@ -1754,7 +1755,7 @@ function monthTransactions(ym) {
     .then((rows) => {
       state.tx.set(ym, rows);
       const { page } = route();
-      if (page === 'flow' || page === 'shared') render();
+      if (page === 'flow' || page === 'shared' || page === 'report') render();
     })
     .catch((e) => {
       state.tx.delete(ym);
@@ -2056,7 +2057,7 @@ function personalLines() {
   ]).then(([pending, review]) => {
     state.personal = { pending, review };
     const { page } = route();
-    if (page === 'flow' || page === 'shared') render();
+    if (page === 'flow' || page === 'shared' || page === 'report') render();
   }).catch((e) => {
     state.personal = null;
     handleError(e);
@@ -2322,7 +2323,7 @@ function renderMoney(tabParam, periodParam) {
     ? segmented(Object.entries(BUDGET_SUBTABS).map(([key, label]) => ({ label, href: hrefOf(key), active: key === tab })), '予算・負担率')
     : null;
   const content = boxes.map((b) => (b.key ? periodBox(tab, b) : b.build(current)));
-  setView('お金', pageHead({ title: 'お金', icon: 'flow', tabs, tab: mainTab, sub }), alertCards(), ...[content].flat(Infinity).filter(Boolean));
+  setView('お金', pageHead({ title: 'お金', icon: 'flow', tabs, tab: mainTab, sub, action: h('a', { class: 'button small', href: `#/report/${ymAdd(current, -1)}` }, 'レポート') }), alertCards(), ...[content].flat(Infinity).filter(Boolean));
 }
 
 // A period that a box can show: mode 'both' (a month or a year), 'month' or 'year'.
@@ -2406,6 +2407,140 @@ function periodBox(tab, box) {
   const content = [box.build(period)].flat(Infinity).filter(Boolean);
   return h('div', { class: 'period-box', 'data-box': id }, bar,
     content.length ? content : h('section', { class: 'card' }, h('p', { class: 'muted' }, 'この期間に表示するものはありません。')));
+}
+
+// ---------------------------------------------------------------- レポート (2026-11-19)
+//
+// A month's or a year's report on one page, made of the same numbers as the お金 tabs: a summary (income,
+// spending, savings, against the budget and the month before / the year before), the budget per 大項目,
+// the shared account, and what each person was to pay and paid. Prints without the app's bars.
+
+// Whether the period's statements are all in: an import after the end of the period brings all of it.
+function reportDataState(period) {
+  const isYear = period.length === 4;
+  const last = isYear ? `${period}-12` : period;
+  const current = thisYM();
+  if (last >= current) return { done: false, text: isYear ? 'この年はまだ終わっていません（今月までの数字です）。' : 'この月はまだ終わっていません（途中の数字です）。' };
+  const after = `${ymAdd(last, 1)}-01`;
+  const newestBalance = sharedBalances().map((b) => b.created_at).sort().pop() || null;
+  const li = lastImports(state.settings, { mf: state.newestTxAt, bank: newestBalance });
+  const jst = (iso) => (iso ? new Date(Date.parse(iso) + 9 * 3600000).toISOString().slice(0, 10) : '');
+  const missing = [jst(li.mf) >= after ? null : 'マネーフォワードの明細', jst(li.bank) >= after ? null : '銀行の残高'].filter(Boolean);
+  return missing.length
+    ? { done: false, text: `${missing.join('・')}を、${isYear ? 'この年' : 'この月'}が終わったあとにまだ取り込んでいないので、数字は途中です。` }
+    : { done: true, text: '明細と残高は取り込み済みです。' };
+}
+
+// income, spending and savings of a month (null while loading); comparisons use the same counting
+function reportMonthNumbers(ym) {
+  const txs = sharedAccountId() ? monthTransactions(ym) : [];
+  if (txs === null) return null;
+  const a = budgetActual(txs, ym);
+  return { income: a.income, spending: a.spendingTotal, savings: a.income - a.spendingTotal };
+}
+
+function reportYearNumbers(year) {
+  const txs = sharedAccountId() ? yearTransactions(year) : [];
+  if (txs === null) return null;
+  const current = thisYM();
+  const last = year < current.slice(0, 4) ? 12 : year > current.slice(0, 4) ? 0 : Number(current.slice(5));
+  const t = { income: 0, spending: 0, months: last };
+  for (let m = 1; m <= last; m += 1) {
+    const ym = `${year}-${String(m).padStart(2, '0')}`;
+    const a = budgetActual(txs.filter((x) => x.date.startsWith(ym)), ym);
+    t.income += a.income;
+    t.spending += a.spendingTotal;
+  }
+  return { ...t, savings: t.income - t.spending };
+}
+
+function reportSummaryCard(period) {
+  const isYear = period.length === 4;
+  const now = isYear ? reportYearNumbers(period) : reportMonthNumbers(period);
+  if (!now) return h('section', { class: 'card' }, h('p', { class: 'muted' }, '読み込み中…'));
+  const b = budgetOf(period.slice(0, 4));
+  const plan = b.has ? proposal(b.rows, b.year, budgetMemberIds()) : null;
+  const months = isYear ? now.months : 1;
+  const planOf = (k) => (plan ? (k === 'income' ? plan.total : plan[k]) * months : null);
+  const prev = isYear ? reportYearNumbers(String(Number(period) - 1)) : reportMonthNumbers(ymAdd(period, -1));
+  const lastYear = isYear ? null : reportMonthNumbers(ymAdd(period, -12));
+  // a period with nothing recorded (before the app was used) is not compared with
+  const empty = (x) => !x || (x.income === 0 && x.spending === 0);
+  const keys = ['income', 'spending', 'savings'];
+  const line = (label, f) => h('tr', {}, h('th', { scope: 'row' }, label), keys.map((k) => h('td', { class: 'num' }, f(k))));
+  return h('section', { class: 'card report-summary' },
+    cardHead('yen', 'まとめ', { help: ['収入は二人がその期間に払うべき額（各人の今月分）の合計、支出は共用口座の明細と立替の合計、貯蓄 ＝ 収入 − 支出です（お金 → 予算と負担率 と同じ数え方）。',
+      isYear ? '予算との差は、今月までの月数分の予算と比べています。' : '前月・前年同月との差は、同じ数え方でのその月との差です。記録のない期間とは比べません（—）。'] }),
+    h('div', { class: 'kpis' },
+      kpi('収入', yen(now.income).replace('円', ''), '円'),
+      kpi('支出', yen(now.spending).replace('円', ''), '円', 'kpi-main'),
+      kpi('貯蓄', signedYen(now.savings).replace('円', ''), '円')),
+    h('div', { class: 'table-wrap' }, h('table', { class: 'table report-compare' },
+      h('thead', {}, h('tr', {}, h('th', {}), h('th', { class: 'num' }, '収入'), h('th', { class: 'num' }, '支出'), h('th', { class: 'num' }, '貯蓄'))),
+      h('tbody', {},
+        line('予算との差', (k) => (planOf(k) === null ? '—' : signedYen(now[k] - planOf(k)))),
+        line(isYear ? '前年との差' : '前月との差', (k) => (prev === null ? '…' : empty(prev) ? '—' : signedYen(now[k] - prev[k]))),
+        isYear ? null : line('前年同月との差', (k) => (lastYear === null ? '…' : empty(lastYear) ? '—' : signedYen(now[k] - lastYear[k])))))),
+    plan ? null : h('p', { class: 'muted small' }, `${Number(period.slice(0, 4))}年の予算がないので、予算との差は出ません。`));
+}
+
+// the shared account: balance at the start and the end, money in and out (its own lines)
+function reportAccountCard(period) {
+  const id = sharedAccountId();
+  if (!id) return h('section', { class: 'card' }, h('h2', { class: 'with-icon' }, icon('bank'), '共用口座'), h('p', { class: 'muted' }, '共用口座がまだ設定されていません。'));
+  const isYear = period.length === 4;
+  const first = isYear ? `${period}-01` : period;
+  const last = isYear ? `${period}-12` : period;
+  const list = sharedBalances();
+  const before = latestBalance(list.filter((b) => b.date < `${first}-01`));
+  const end = latestBalance(list.filter((b) => b.date.slice(0, 7) <= last));
+  const txs = isYear ? yearTransactions(period) : monthTransactions(period);
+  if (txs === null) return h('section', { class: 'card' }, h('p', { class: 'muted' }, '読み込み中…'));
+  const own = txs.filter((t) => t.account_id === id);
+  const inSum = own.filter((t) => t.amount > 0).reduce((n, t) => n + t.amount, 0);
+  const outSum = -own.filter((t) => t.amount < 0).reduce((n, t) => n + t.amount, 0);
+  const ends = isYear ? monthEndBalances(list).filter((m) => m.ym.startsWith(`${period}-`)) : [];
+  return h('section', { class: 'card' },
+    cardHead('bank', '共用口座', { help: ['残高は銀行の取引明細 CSV から取り込んだ、その日の終わりの残高です。',
+      '入った額・出た額は、マネーフォワードの共用口座の明細（入金・引き落とし・振替を含む）の合計です。カードの明細は、引き落とされた日に口座の出た額に入ります。'] }),
+    h('div', { class: 'table-wrap' }, h('table', { class: 'table' }, h('tbody', {},
+      h('tr', {}, h('th', { scope: 'row' }, `${isYear ? '年' : '月'}の初めの残高`), h('td', { class: 'num' }, before ? `${yen(before.balance)}（${dateText(before.date)}）` : '—')),
+      h('tr', {}, h('th', { scope: 'row' }, '入った額'), h('td', { class: 'num' }, yen(inSum))),
+      h('tr', {}, h('th', { scope: 'row' }, '出た額'), h('td', { class: 'num' }, yen(outSum))),
+      h('tr', { class: 'total' }, h('th', { scope: 'row' }, `${isYear ? '年' : '月'}の終わりの残高`), h('td', { class: 'num' }, end ? `${yen(end.balance)}（${dateText(end.date)}）` : '—'))))),
+    ends.length >= 2 ? lineChart([{ label: '残高', color: 'var(--accent)', points: ends.map((m) => ({ x: m.ym, y: m.balance })) }], '共用口座の月末残高') : null,
+    ends.length ? h('div', { class: 'table-wrap' }, h('table', { class: 'table' },
+      h('thead', {}, h('tr', {}, h('th', {}, '月'), h('th', { class: 'num' }, '月末の残高'))),
+      h('tbody', {}, ends.map((m) => h('tr', {}, h('td', {}, `${Number(m.ym.slice(5))}月`), h('td', { class: 'num' }, yen(m.balance))))))) : null);
+}
+
+function renderReport(param) {
+  const current = thisYM();
+  const period = moneyPeriod(param) || ymAdd(current, -1);
+  const isYear = period.length === 4;
+  const year = period.slice(0, 4);
+  const go = (p) => `#/report/${p}`;
+  const step = (n) => (isYear ? String(Number(year) + n) : ymAdd(period, n));
+  const label = isYear ? `${Number(year)}年` : ymLabel(period);
+  const st = reportDataState(period);
+  const bar = h('div', { class: 'box-period report-period', role: 'group', 'aria-label': 'レポートの期間' },
+    h('a', { class: 'button small', href: go(step(-1)), 'aria-label': isYear ? '前の年' : '前の月' }, '◀'),
+    h('span', { class: 'box-period-label' }, label),
+    h('a', { class: 'button small', href: go(step(1)), 'aria-label': isYear ? '次の年' : '次の月' }, '▶'),
+    h('div', { class: 'segmented small', role: 'group', 'aria-label': '月間・年間' },
+      h('a', { class: isYear ? '' : 'active', href: go(isYear ? (year === current.slice(0, 4) ? ymAdd(current, -1) : `${year}-12`) : period) }, '月間'),
+      h('a', { class: isYear ? 'active' : '', href: go(year) }, '年間')),
+    h('button', { type: 'button', class: 'small', onclick: () => window.print() }, '印刷・PDF'));
+  const pick = (nodes, i) => [nodes].flat()[i] || null;
+  const sections = isYear
+    ? [reportSummaryCard(period), budgetYearView(year), reportAccountCard(period), memberYearView(year)]
+    : [reportSummaryCard(period), budgetMonthView(period), reportAccountCard(period), pick(memberMonthView(period), 0), pick(memberMonthView(period), 1)];
+  setView(`${isYear ? '年間' : '月間'}レポート`, pageHead({ title: `${isYear ? '年間' : '月間'}レポート`, icon: 'flow', back: { href: '#/flow', text: 'お金へ' } }),
+    h('div', { class: 'report' },
+      h('h2', { class: 'report-title' }, `HouseHub ${label}のレポート`),
+      bar,
+      h('p', { class: st.done ? 'muted small' : 'notice-text small' }, st.text),
+      ...[sections].flat(Infinity).filter(Boolean)));
 }
 
 // ---------------------------------------------------------------- tab: 予算 (予実管理, 2026-11-03)
@@ -2980,7 +3115,7 @@ function yearTransactions(year) {
     .then((rows) => {
       state.txYear.set(year, rows);
       const { page } = route();
-      if (page === 'flow' || page === 'shared') render();
+      if (page === 'flow' || page === 'shared' || page === 'report') render();
     })
     .catch((e) => {
       state.txYear.delete(year);
@@ -4815,7 +4950,7 @@ async function fullBackup(status) {
 
 // アプリの更新: the version this device runs (APP_VERSION, the same as the service worker's cache name) and a button that drops
 // the saved files and loads the newest version. Sign-in and notifications stay as they are.
-const APP_VERSION = 'v74'; // = CACHE in sw.js (checked by tests/unit/version.test.mjs)
+const APP_VERSION = 'v75'; // = CACHE in sw.js (checked by tests/unit/version.test.mjs)
 
 function appUpdateSection() {
   const version = h('span', { class: 'num' }, APP_VERSION);

@@ -57,3 +57,14 @@ export function confirmAlert(count) {
 export function choreAskAlert(name) {
   return { title: '今日の家事', body: `今日「${name}」をやりますか？押して「はい」か「いいえ」を選んでください。` };
 }
+
+// The monthly / yearly report is ready (period 'YYYY-MM' or 'YYYY'; partial: the imports were not done).
+export function reportAlert(period, partial) {
+  const isYear = period.length === 4;
+  const what = isYear ? `${Number(period)}年` : `${Number(period.slice(5))}月`;
+  return {
+    title: isYear ? '年間レポート' : '月間レポート',
+    body: `${what}のレポートができました。家計費と各人の負担・支払いを確認してください。${partial ? '（明細の取り込みがまだなので、数字は途中です）' : ''}`,
+  };
+}
+

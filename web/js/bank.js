@@ -54,6 +54,22 @@ export function missingImports(today, importedAt, day = REMIND_DAY) {
     .filter((k) => !k.last || k.last < monthStart);
 }
 
+// The report of last month (2026-11-19): ready when both imports were done this month (an import after a
+// month's end brings all of it), or anyway from `day` with the numbers marked as not final.
+// Returns [] (not yet) or [{ period: 'YYYY-MM', partial }], in January also { period: 'YYYY', partial }.
+export const REPORT_LATEST_DAY = 10;
+export function reportsDue(today, importedAt, day = REPORT_LATEST_DAY) {
+  const monthStart = `${today.slice(0, 7)}-01`;
+  const done = (at) => Boolean(at) && toJstDate(at) >= monthStart;
+  const complete = done(importedAt.mf) && done(importedAt.bank);
+  if (!complete && Number(today.slice(8, 10)) < day) return [];
+  const [y, m] = today.slice(0, 7).split('-').map(Number);
+  const prev = m === 1 ? `${y - 1}-12` : `${y}-${String(m - 1).padStart(2, '0')}`;
+  const out = [{ period: prev, partial: !complete }];
+  if (m === 1) out.push({ period: String(y - 1), partial: !complete });
+  return out;
+}
+
 // The last import of each kind: the later of the time saved by the import screen and the newest row
 // (its created_at), so an import still counts when saving that time failed.
 // settings: { mf_imported_at, bank_imported_at }; newest: { mf, bank } created_at of the newest rows.
