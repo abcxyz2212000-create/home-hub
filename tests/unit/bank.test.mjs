@@ -1,8 +1,8 @@
 // Bank statement balances and the import / low balance checks. All values are fictional.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseBankRows, monthEndBalances, latestBalance, missingImports, lastImports } from '../../web/js/bank.js';
-import { importAlert } from '../../web/js/alerts.js';
+import { parseBankRows, monthEndBalances, latestBalance, missingImports, lastImports, reportsDue } from '../../web/js/bank.js';
+import { importAlert, reportAlert } from '../../web/js/alerts.js';
 
 test('bank CSV: the balance at the end of each day, then of each month', () => {
   const rows = [['取引日', '入出金(円)', '取引後残高(円)', '入出金内容'],
@@ -39,4 +39,16 @@ test('importAlert names the month and the previous import', () => {
   assert.equal(one.body, '10月分のマネーフォワードの明細がまだ取り込まれていません（前回の取り込み 10/3）。');
   const both = importAlert(missingImports('2027-01-06', { mf: null, bank: '2026-12-02T00:00:00Z' }), '2027-01-06');
   assert.equal(both.body, '12月分のマネーフォワードの明細・銀行の残高がまだ取り込まれていません（前回の取り込み：マネーフォワード なし、銀行 2026/12/2）。');
+});
+
+test('reportsDue: last month once both imports are done this month, or from the 10th as not final; the year in January', () => {
+  const done = { mf: '2026-12-03T01:00:00Z', bank: '2026-12-02T01:00:00Z' };
+  assert.deepEqual(reportsDue('2026-12-04', done), [{ period: '2026-11', partial: false }]);
+  assert.deepEqual(reportsDue('2026-12-04', { mf: done.mf, bank: '2026-11-30T01:00:00Z' }), [], 'the bank balance of November is not in yet');
+  assert.deepEqual(reportsDue('2026-12-10', { mf: null, bank: null }), [{ period: '2026-11', partial: true }]);
+  assert.deepEqual(reportsDue('2027-01-05', { mf: '2027-01-02T00:00:00Z', bank: '2027-01-02T00:00:00Z' }),
+    [{ period: '2026-12', partial: false }, { period: '2026', partial: false }]);
+  assert.equal(reportAlert('2026-11', false).body, '11月のレポートができました。家計費と各人の負担・支払いを確認してください。');
+  assert.match(reportAlert('2026', true).body, /^2026年のレポート[\s\S]*数字は途中です/);
+  assert.equal(reportAlert('2026', true).title, '年間レポート');
 });
