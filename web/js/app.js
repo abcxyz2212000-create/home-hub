@@ -541,6 +541,8 @@ const NOTICE_BODY_MAX = 1000;
 
 const noticeDelivered = (n) => new Date(n.deliver_at).getTime() <= Date.now();
 const noticeForMe = (n) => !n.to_members || n.to_members.length === 0 || n.to_members.includes(me().id);
+// what my お知らせ list shows (2026-11-20): for me, for everyone, or a message I sent; never someone else's
+const noticeVisibleToMe = (n) => noticeForMe(n) || (n.kind === 'message' && n.from_member === me().id);
 const myRead = (n) => state.noticeReads.find((r) => r.notice_id === n.id && r.member_id === me().id);
 const noticeRead = (n) => Boolean(myRead(n));
 const noticeHidden = (n) => Boolean(myRead(n) && myRead(n).hidden);
@@ -678,7 +680,7 @@ function renderNotices(sub) {
   const mine = me().id;
   const pending = state.notices.filter((n) => n.kind === 'message' && n.from_member === mine && !n.delivered_at && !noticeDelivered(n))
     .sort((a, b) => a.deliver_at.localeCompare(b.deliver_at));
-  const delivered = state.notices.filter(noticeDelivered);
+  const delivered = state.notices.filter((n) => noticeDelivered(n) && noticeVisibleToMe(n));
   const hiddenCount = delivered.filter(noticeHidden).length;
   const showHidden = state.showHiddenNotices;
   const list = delivered.filter((n) => showHidden || !noticeHidden(n));
@@ -691,7 +693,7 @@ function renderNotices(sub) {
       : [['消す', async () => { await setNoticeReads([n], { hidden: true }); render(); }]];
   };
   setView('お知らせ', pageHead({ title: 'お知らせ', icon: 'bell', switcher: noticeSwitch('notices'), action: h('a', { class: 'button primary', href: '#/notices/new' }, 'メッセージを送る'),
-    help: ['お知らせ', 'アプリから端末に送った通知と、メッセージが並びます。二人とも全部見られます。', 'メッセージは送ってから10分ほどで、宛先の人の端末に通知が届きます（自動実行の混み具合で遅れることがあります）。予約したものは、その日時のあとに届きます。', '予算・負担率・負担額・入金や立替の記録の変更や入金の報告は、上の切り替えの「承認・確認」→「変更の回覧」で確認します。',
+    help: ['お知らせ', 'アプリから端末に送った通知と、メッセージが並びます。出るのは、自分宛てと全員宛てのもの、自分が送ったメッセージだけです（ほかの人宛てのものは出ません）。', 'メッセージは送ってから10分ほどで、宛先の人の端末に通知が届きます（自動実行の混み具合で遅れることがあります）。予約したものは、その日時のあとに届きます。', '予算・負担率・負担額・入金や立替の記録の変更や入金の報告は、上の切り替えの「承認・確認」→「変更の回覧」で確認します。',
       '「消す」は自分の画面から消すだけで、相手には残ります。1年たったものは全員から消えます。'] }),
     pending.length ? h('section', { class: 'card' }, h('h2', {}, '予約中'), pending.map((n) => noticeItem(n, { pending: true }))) : null,
     h('section', { class: 'card' },
@@ -4950,7 +4952,7 @@ async function fullBackup(status) {
 
 // アプリの更新: the version this device runs (APP_VERSION, the same as the service worker's cache name) and a button that drops
 // the saved files and loads the newest version. Sign-in and notifications stay as they are.
-const APP_VERSION = 'v75'; // = CACHE in sw.js (checked by tests/unit/version.test.mjs)
+const APP_VERSION = 'v76'; // = CACHE in sw.js (checked by tests/unit/version.test.mjs)
 
 function appUpdateSection() {
   const version = h('span', { class: 'num' }, APP_VERSION);
