@@ -1084,6 +1084,12 @@ try {
   await page.getByRole('button', { name: '取り消す' }).click();
   await page.getByText('予約を取り消しました。').waitFor();
   assert.ok(!mock.db.notices.some((n) => n.title === '電気代の過去分の精算'));
+  // only mine, everyone's and what I sent: a notice for はなこ alone is not on my list
+  mock.db.notices.push({ id: crypto.randomUUID(), kind: 'system', key: 'chores:e2e:hanako', from_member: null, to_members: [hanako.id], title: 'はなこの今日の家事', body: '1件：洗濯', url: '#/chores', deliver_at: nowIso, delivered_at: nowIso, created_at: nowIso });
+  await page.goto(`${appUrl}#/notices`);
+  await page.reload();
+  await page.getByText('帰りにおねがい').waitFor();
+  assert.equal(await page.getByText('はなこの今日の家事').count(), 0, "someone else's notice is not shown");
 
   step('ワークフロー: 変更の回覧, 相談・申請, 家事の実施 (問いかけ → 承認 → 回数), 個人間の支払い, 家事の対価');
   mock.db.workflow_requests.push({ id: 'chg1', type_key: 'change', key: 'change:budget:2027:x:1', applicant: hanako.id, title: '2027年の予算・負担率が変わりました', body: '二人の負担額の合計 月253,000円 → 170,210円', payload: {}, approvers: ['m-admin', hanako.id], status: 'open', url: '#/flow/budget/2027', created_at: nowIso, updated_at: nowIso, pushed_at: nowIso });
